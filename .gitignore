@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+config.json
+state/
+facepack/
+portraits/
+kits/
+build/
+dist/
+*.spec
+.env
+.env.*
+!.env.example
+*.log
+*.fm
+.codex/

@@ -1,0 +1,7 @@
+{
+  "game_date": "2027-07-02",
+  "managed_club_ids": ["20"],
+  "players": [
+    {"id": "900001", "uid": 100, "name": "Demo Player", "birth_date": "2006-01-01", "age": 21, "club_id": "20", "club_name": "Club B"}
+  ]
+}
