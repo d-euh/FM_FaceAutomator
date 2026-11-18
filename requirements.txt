@@ -1,2 +1,2 @@
-fmsave==0.12.5
+fmsave==0.12.6
 Pillow==12.3.0

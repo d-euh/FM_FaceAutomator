@@ -250,6 +250,52 @@ class EngineTests(unittest.TestCase):
             self.assertNotEqual(Path(opened.call_args.args[0]), Path(self.c["source"]))
             self.assertTrue(opened.call_args.kwargs["strict"])
 
+    def test_reported_fm27_271_build_reads_even_when_known_build_is_false(self):
+        self.c["source"] = str(self.root / "fm27-271.fm")
+        Path(self.c["source"]).write_bytes(b"mock FM27 27.1 save")
+        fake = SimpleNamespace(
+            info=SimpleNamespace(game="FM27", known_build=False, build="27.1.0+2505117", game_date="2027-01-01"),
+            clubs=lambda: [SimpleNamespace(uid=0, unique_id=20)],
+            managed_clubs=lambda: [SimpleNamespace(club_uid=0)],
+            players=lambda: [SimpleNamespace(unique_id=900001, uid=100, name="Player", birth_date="2006-01-01", age=21, club_uid=0, club_name="Club")])
+        with patch("fmsave.open") as opened:
+            opened.return_value.__enter__.return_value = fake
+            data = read_source(self.c)
+            self.assertEqual(data["build"], "27.1.0+2505117")
+            self.assertEqual(data["reader_mode"], "compatible")
+            self.assertEqual(data["players"][0]["club_id"], "20")
+            self.assertTrue(opened.call_args.kwargs["strict"])
+
+    def test_unrecognised_future_build_is_still_rejected(self):
+        self.c["source"] = str(self.root / "future.fm")
+        Path(self.c["source"]).write_bytes(b"mock future save")
+        with patch("fmsave.open") as opened:
+            fake = opened.return_value.__enter__.return_value
+            fake.info = SimpleNamespace(game="FM27", known_build=False, build="27.9.0+9999999")
+            with self.assertRaisesRegex(ValueError, "검증 대상 외 게임 빌드"):
+                read_source(self.c)
+            fake.clubs.assert_not_called()
+
+    def test_old_save_reader_gives_upgrade_instructions_before_parsing(self):
+        self.c["source"] = str(self.root / "old-reader.fm")
+        Path(self.c["source"]).write_bytes(b"mock save")
+        with patch("engine.package_version", return_value="0.12.5"), patch("fmsave.open") as opened:
+            with self.assertRaisesRegex(ValueError, "setup_windows.bat"):
+                read_source(self.c)
+            opened.assert_not_called()
+
+    def test_compatible_build_does_not_suppress_reader_integrity_errors(self):
+        self.c["source"] = str(self.root / "inconsistent.fm")
+        Path(self.c["source"]).write_bytes(b"mock inconsistent save")
+        with patch("fmsave.open") as opened:
+            fake = opened.return_value.__enter__.return_value
+            fake.info = SimpleNamespace(game="FM27", known_build=False, build="27.1.0+2505117")
+            fake.clubs.side_effect = ValueError("club integrity check failed")
+            with self.assertRaisesRegex(ValueError, "club integrity check failed"):
+                read_source(self.c)
+            self.assertTrue(opened.call_args.kwargs["strict"])
+            self.assertEqual(self.e.jobs(), [])
+
     def test_invalid_image_rejected(self):
         path = self.root / "bad.png"
         path.write_text("not an image")

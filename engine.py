@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import contextlib
 import csv
+from importlib.metadata import version as package_version
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -32,6 +34,17 @@ DEFAULTS = {
 }
 
 LEGACY_STYLE = "Photorealistic square head-and-shoulders football portrait, clean neutral background, no text or frame. Preserve the original person's identity and facial features; change only the jersey to the reference kit."
+
+# fmsave 0.12.6 registers this build's club layout, but known_build remains
+# false until layouts for ALL readers exist. We only need people and clubs.
+COMPATIBLE_FM27_BUILDS = frozenset({"27.1.0+2505117"})
+
+
+def check_save_reader():
+    installed = package_version("fmsave")
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", installed)
+    if not match or tuple(map(int, match.groups())) < (0, 12, 6):
+        raise ValueError(f"세이브 리더 업데이트 필요: fmsave {installed}. 프로그램을 닫고 setup_windows.bat를 다시 실행하세요(0.12.6 이상 필요).")
 
 
 def read_json(path):
@@ -157,13 +170,14 @@ def read_source(config):
         result = normalise(read_json(source))
     elif source.suffix.lower() == ".fm":
         import fmsave
+        check_save_reader()
         with tempfile.TemporaryDirectory(prefix="fm-face-save-") as temp:
             copied = Path(temp) / "career.fm"
             shutil.copyfile(source, copied)
             if before != file_stamp(source):
                 raise ValueError("저장 중인 파일입니다. 다음 점검 때 다시 읽습니다.")
             with fmsave.open(copied, strict=True) as save:
-                if save.info.game != "FM27" or not save.info.known_build:
+                if save.info.game != "FM27" or (not save.info.known_build and save.info.build not in COMPATIBLE_FM27_BUILDS):
                     raise ValueError(f"검증 대상 외 게임 빌드: {save.info.game} {save.info.build}")
                 clubs = {c.uid: c for c in save.clubs()}
                 managed = []
@@ -185,7 +199,8 @@ def read_source(config):
                                     "club_name": p.club_name or ""})
                 result = normalise({"players": players, "managed_club_ids": managed,
                                     "game_date": str(save.info.game_date or ""),
-                                    "build": save.info.build})
+                                    "build": save.info.build,
+                                    "reader_mode": "registered" if save.info.known_build else "compatible"})
     else:
         raise ValueError("입력은 .fm 세이브 또는 정규화된 .json이어야 합니다.")
     if before != file_stamp(source):
