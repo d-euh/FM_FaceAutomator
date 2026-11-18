@@ -16,7 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from engine import DEFAULTS, Engine, load_config, process_lock, read_source, write_atomic
+from engine import DEFAULTS, Engine, detection_messages, load_config, process_lock, read_source, write_atomic
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
 
@@ -98,7 +98,10 @@ class App:
         actions.pack(fill="x", pady=10)
         for title, callback in [("이미지 미리보기", self.preview), ("저장 재시도", self.apply), ("합성 재시도", self.retry), ("선수 ID 목록 저장", self.export), ("적용 백업 복구", self.restore), ("선수별 이름·지시", self.edit_player)]:
             ttk.Button(actions, text=title, command=callback).pack(side="left", padx=(0, 6))
-        ttk.Button(jobs, text="유니폼 이미지 선택", command=self.choose_kit).pack(anchor="w", pady=(0, 8))
+        optional = ttk.Frame(jobs)
+        optional.pack(fill="x", pady=(0, 8))
+        ttk.Button(optional, text="유니폼 이미지 선택", command=self.choose_kit).pack(side="left", padx=(0, 6))
+        ttk.Button(optional, text="감지 진단 저장", command=self.export_detection).pack(side="left")
         self.detail = tk.StringVar(value="원본·키트는 기존 팩의 config.xml에서 ID로 찾습니다. 매핑이 없으면 ID 파일명을 사용합니다.")
         ttk.Label(jobs, textvariable=self.detail, wraplength=1000).pack(fill="x", pady=(0, 8))
         self.log = tk.Text(window, height=5, font=("Consolas", 10), state="disabled")
@@ -293,6 +296,8 @@ class App:
         def task(e):
             count = e.ingest(read_source(e.c))
             self.events.put(f"선수 목록 읽기 완료 · 새 이적 작업 {count}개")
+            for message in detection_messages(json.loads(e.meta("detection_summary"))):
+                self.events.put(message)
         self.background(task)
 
     def enqueue(self):
@@ -314,11 +319,14 @@ class App:
             if converted:
                 self.events.put(f"기존 결과 {converted}개를 선수 ID 파일명으로 갱신했습니다. 재합성하지 않습니다.")
             self.events.put("감시·합성 실행 중 · Codex 사용량이 발생할 수 있습니다.")
+            self.events.put("감시 파일: " + e.c["source"])
             while not self.stop.is_set():
                 try:
                     result = e.watch_step()
                     if result.get("changed"):
                         self.events.put(f'세이브 변경 점검 · 신규 작업 {result["added"]}개')
+                        for message in detection_messages(result["detection"]):
+                            self.events.put(message)
                     if result["processed"]:
                         self.events.put("합성 작업 1개 처리 · 대기열에서 상태를 확인하세요.")
                     elif result.get("waiting"):
@@ -332,6 +340,20 @@ class App:
         self.start_after_discovery = False
         self.stop.set()
         self.status.set("정지 요청 · 진행 중인 Codex 작업이 끝나면 멈춥니다.")
+
+    def export_detection(self):
+        source = Path(self.config["state_dir"]) / "latest_detection.json"
+        if not source.is_file():
+            messagebox.showinfo("감지 진단", "선수·이적을 읽거나 감시 중 세이브 점검이 끝나면 진단 정보가 만들어집니다.")
+            return
+        path = filedialog.asksaveasfilename(title="감지 진단 저장", defaultextension=".json",
+                                          initialfile="fm_detection.json", filetypes=[("JSON", "*.json")])
+        if path:
+            try:
+                write_atomic(path, source.read_bytes())
+                self.events.put("감지 진단 저장 완료: " + path)
+            except Exception as exc:
+                messagebox.showerror("감지 진단", str(exc))
 
     def selected(self):
         selection = self.tree.selection()

@@ -12,7 +12,7 @@ from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from PIL import Image
-from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, game_english_name, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
+from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, detection_messages, game_english_name, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
 from gunzo import LAYOUT, render_gunzo
 
 
@@ -20,6 +20,14 @@ def snapshot(club="10", player="900001", identity=100, date="2027-07-01"):
     return normalise({"game_date": date, "managed_club_ids": ["20"], "players": [
         {"id": player, "uid": identity, "birth_date": "2006-01-01", "name": "Player $(no shell)",
          "age": 21, "club_id": club, "club_name": "Club " + str(club)}]})
+
+
+def membership_snapshot(registered="10", contract="10", on_loan=False, date="2027-07-01"):
+    data = snapshot(registered, date=date)
+    data["players"][0].update(registered_club_id=registered, registered_club_name="Registered " + registered,
+                              contract_club_id=contract, contract_club_name="Contract " + contract,
+                              on_loan=on_loan, registered_team_id=999)
+    return data
 
 
 class EngineTests(unittest.TestCase):
@@ -64,6 +72,66 @@ class EngineTests(unittest.TestCase):
     def test_first_read_is_baseline(self):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
+
+    def test_editor_contract_only_transfer_is_detected_and_completes(self):
+        self.refs()
+        self.e.ingest(membership_snapshot())
+        after = membership_snapshot(contract="20", date="2027-07-02")
+        self.source(after)
+        self.assertEqual(self.e.ingest(read_source(self.c)), 1)
+        row = json.loads(self.e.jobs()[0]["data"])
+        self.assertEqual((row["club_id"], row["club_basis"]), ("20", "contract_change"))
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.assertEqual(self.e.ingest(after), 0)
+        self.assertEqual(json.loads(self.e.db.execute("SELECT data FROM people").fetchone()[0])["club_id"], "20")
+
+    def test_registered_team_change_beats_unchanged_old_contract(self):
+        self.e.ingest(membership_snapshot())
+        self.assertEqual(self.e.ingest(membership_snapshot(registered="20", contract="10", date="2027-07-02")), 1)
+        row = json.loads(self.e.jobs()[0]["data"])
+        self.assertEqual((row["club_id"], row["club_basis"]), ("20", "registered_team"))
+
+    def test_active_loan_never_switches_jersey_to_contract_parent(self):
+        self.e.ingest(membership_snapshot(registered="20", contract="10", on_loan=True))
+        self.assertEqual(self.e.ingest(membership_snapshot(registered="20", contract="30", on_loan=True, date="2027-07-02")), 0)
+        row = json.loads(self.e.db.execute("SELECT data FROM people").fetchone()[0])
+        self.assertEqual(row["club_id"], "20")
+
+    def test_baseline_contract_disagreement_is_not_guessed_as_transfer(self):
+        self.c["player_ids"] = ["900001"]
+        baseline = membership_snapshot(contract="20")
+        self.assertEqual(self.e.ingest(baseline), 0)
+        self.assertEqual(self.e.ingest(baseline), 0)
+        summary = json.loads(self.e.meta("detection_summary"))
+        self.assertEqual(summary["tracked"][0]["club_id"], "10")
+        self.assertEqual(summary["tracked"][0]["contract_club_id"], "20")
+
+    def test_unknown_loan_status_does_not_guess_contract_as_club(self):
+        self.e.ingest(membership_snapshot(on_loan=None))
+        self.assertEqual(self.e.ingest(membership_snapshot(contract="20", on_loan=None, date="2027-07-02")), 0)
+
+    def test_upgrade_adds_contract_baseline_without_fabricating_past_change(self):
+        self.e.ingest(snapshot())
+        self.assertEqual(self.e.ingest(membership_snapshot(contract="20")), 0)
+        self.assertEqual(self.e.ingest(membership_snapshot(contract="30", date="2027-07-02")), 1)
+        self.assertEqual(json.loads(self.e.jobs()[0]["data"])["club_id"], "30")
+
+    def test_diagnostic_distinguishes_transfer_from_scope_filter(self):
+        self.c.update(all_players=False, my_club_only=False, club_ids=["10"])
+        self.e.ingest(snapshot())
+        self.assertEqual(self.e.ingest(snapshot("20", date="2027-07-02")), 0)
+        summary = json.loads(self.e.meta("detection_summary"))
+        self.assertEqual((summary["club_changes"], summary["filtered"], summary["queued"]), (1, 1, 0))
+        self.assertIn("선택한 구단·선수 범위 밖", " ".join(detection_messages(summary)))
+        self.assertEqual(json.loads((Path(self.c["state_dir"]) / "latest_detection.json").read_text())["source"], self.c["source"])
+
+    def test_diagnostic_identifies_wrong_player_id(self):
+        self.c["player_ids"] = ["29178504"]
+        self.e.ingest(snapshot())
+        summary = json.loads(self.e.meta("detection_summary"))
+        self.assertEqual(summary["missing_player_ids"], ["29178504"])
+        self.assertIn("29178504", " ".join(detection_messages(summary)))
 
     def test_saved_kit_choice_takes_priority_over_random_candidates(self):
         self.refs()
@@ -540,6 +608,21 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(data["managed_club_ids"], ["20"])
             self.assertNotEqual(Path(opened.call_args.args[0]), Path(self.c["source"]))
             self.assertTrue(opened.call_args.kwargs["strict"])
+
+    def test_fmsave_adapter_keeps_registered_and_current_contract_clubs(self):
+        self.c["source"] = str(self.root / "editor.fm")
+        Path(self.c["source"]).write_bytes(b"mock save")
+        player = SimpleNamespace(unique_id=29178504, uid=100, name="Djed Spence", birth_date="2000-08-09", age=27,
+                                 club_uid=1, club_name="Manchester United", on_loan=False, team_id=44,
+                                 contract=SimpleNamespace(club_uid=2, club_name="Arsenal"))
+        fake = SimpleNamespace(info=SimpleNamespace(game="FM27", known_build=True, build="27.0.0+2486695", game_date="2027-07-01"),
+                               clubs=lambda: [SimpleNamespace(uid=1, unique_id=680, name="Manchester United"),
+                                              SimpleNamespace(uid=2, unique_id=602, name="Arsenal")],
+                               managed_clubs=lambda: [], players=lambda: [player])
+        with patch("fmsave.open") as opened:
+            opened.return_value.__enter__.return_value = fake
+            row = read_source(self.c)["players"][0]
+        self.assertEqual((row["registered_club_id"], row["contract_club_id"], row["on_loan"]), ("680", "602", False))
 
     def test_reported_fm27_271_build_reads_even_when_known_build_is_false(self):
         self.c["source"] = str(self.root / "fm27-271.fm")

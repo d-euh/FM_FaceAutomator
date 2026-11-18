@@ -193,6 +193,60 @@ def normalise(raw):
     return dict(raw, players=result, managed_club_ids=[str(v) for v in raw.get("managed_club_ids", [])])
 
 
+def resolve_membership(row, before):
+    """Track editor changes to the current contract without overriding real loans."""
+    row = dict(row)
+    if "registered_club_id" not in row:
+        return row
+    registered = row["registered_club_id"]
+    contract = row.get("contract_club_id", "")
+    basis = "registered_team"
+    chosen = registered
+    if before and before["identity"] == row["identity"] and row.get("on_loan") is False:
+        old_registered = before.get("registered_club_id", before["club_id"])
+        old_contract = before.get("contract_club_id")
+        if registered == old_registered and contract and contract != registered:
+            contract_changed = old_contract is not None and contract != old_contract
+            contract_retained = before.get("club_basis") == "contract_change" and contract == old_contract
+            loan_ended = before.get("on_loan") is True
+            if contract_changed or contract_retained or loan_ended:
+                chosen, basis = contract, "contract_change"
+    row["club_id"] = chosen
+    row["club_name"] = row.get("contract_club_name", chosen) if basis == "contract_change" else row.get("registered_club_name", row["club_name"])
+    row["club_basis"] = basis
+    return row
+
+
+def scope_reason(row, config, managed):
+    if row["id"] in config["exclude_player_ids"]:
+        return "제외 선수 ID"
+    if not row["club_id"]:
+        return "무소속 또는 소속 미확인"
+    selected = (config["all_players"] or row["id"] in config["player_ids"] or row["club_id"] in config["club_ids"]
+                or (config["my_club_only"] and row["club_id"] in managed))
+    if not selected:
+        return "선택한 구단·선수 범위 밖"
+    if config["max_age"] and (row.get("age") is None or int(row["age"]) > config["max_age"]):
+        return "나이 제한"
+    return "대상"
+
+
+def detection_messages(summary):
+    if summary["baseline"]:
+        text = f'최초 기준 기록 · 선수 {summary["players"]}명 · 이후 저장부터 이적 비교'
+    else:
+        text = f'소속 변화 {summary["club_changes"]}명 · 범위 제외 {summary["filtered"]}명 · 신규 작업 {summary["queued"]}개'
+    messages = [text]
+    for item in (summary["tracked"][:10] or summary["changes"][:5]):
+        before = item["previous_club_id"]
+        membership = (f'기준 {item["club_id"] or "없음"}' if before is None else f'{before or "없음"} → {item["club_id"] or "없음"}')
+        messages.append(f'감지 진단 · {item["name"]}({item["id"]}) · {membership} · 등록팀 {item.get("registered_club_id", item["club_id"]) or "없음"}'
+                        f' / 계약구단 {item.get("contract_club_id") or "미확인"} · {item["result"]}')
+    if summary["missing_player_ids"]:
+        messages.append("지정 선수 ID를 세이브에서 찾지 못함: " + ", ".join(summary["missing_player_ids"][:20]))
+    return messages
+
+
 def read_source(config):
     """Read a stable COPY; never open a game's actively written file for parsing."""
     source = Path(config["source"])
@@ -220,14 +274,26 @@ def read_source(config):
                 for p in save.players():
                     if p.unique_id is None:
                         continue
-                    # club_uid follows the registered team; parent loan club is not used.
+                    # Keep registration and the CURRENT contract separately. Editor
+                    # moves can update only one; real loans must keep the loan team.
                     club = clubs.get(p.club_uid)
                     if p.club_uid is not None and (club is None or club.unique_id is None):
                         raise ValueError("구단 ID를 연결하지 못했습니다. 이 스냅샷을 건너뜁니다.")
+                    contract = getattr(p, "contract", None)
+                    contract_uid = getattr(contract, "club_uid", None)
+                    contract_club = clubs.get(contract_uid)
+                    contract_id = str(contract_club.unique_id) if contract_club is not None and contract_club.unique_id is not None else ""
+                    registered_id = str(club.unique_id) if club is not None else ""
+                    registered_name = getattr(club, "name", None) or p.club_name or ""
                     players.append({"id": p.unique_id, "uid": p.uid, "name": p.name or str(p.unique_id), "english_name": game_english_name(p),
                                     "birth_date": str(p.birth_date or ""), "age": p.age,
                                     "club_id": club.unique_id if club is not None else None,
-                                    "club_name": p.club_name or ""})
+                                    "club_name": registered_name,
+                                    "registered_club_id": registered_id, "registered_club_name": registered_name,
+                                    "contract_club_id": contract_id,
+                                    "contract_club_name": getattr(contract_club, "name", None) or getattr(contract, "club_name", "") or "",
+                                    "on_loan": getattr(p, "on_loan", None),
+                                    "registered_team_id": getattr(p, "team_id", None)})
                 result = normalise({"players": players, "managed_club_ids": managed,
                                     "game_date": str(save.info.game_date or ""),
                                     "build": save.info.build,
@@ -371,7 +437,8 @@ class Engine:
                         self.update(job["id"], "apply_failed", "자동 저장 재시도 대기: " + str(exc))
         processed = self.run_one(runner)
         waiting = self.db.execute("SELECT count(*) FROM jobs WHERE status='pending'").fetchone()[0]
-        return {"saving": False, "changed": changed, "added": added, "processed": processed, "waiting": waiting}
+        return {"saving": False, "changed": changed, "added": added, "processed": processed, "waiting": waiting,
+                "detection": json.loads(self.meta("detection_summary") or "null") if changed else None}
 
     def meta(self, key):
         found = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -390,21 +457,47 @@ class Engine:
         if date and previous and date < previous:
             raise ValueError("과거 세이브로 돌아갔습니다. 새 작업 폴더로 시작하세요.")
         count = 0
+        summary = {"baseline": not bool(self.meta("baseline")), "source": self.c["source"],
+                   "game_date": date, "read_at": now, "source_stamp": snapshot.get("source_stamp"),
+                   "players": len(snapshot["players"]), "club_changes": 0, "filtered": 0,
+                   "queued": 0, "tracked": [], "changes": [], "missing_player_ids": [],
+                   "managed_club_ids": snapshot.get("managed_club_ids", [])}
+        requested = set(self.c["player_ids"])
         with self.db:
             self.setmeta("managed", json.dumps(snapshot.get("managed_club_ids", [])))
             for row in snapshot["players"]:
                 old = self.db.execute("SELECT data FROM people WHERE id=?", (row["id"],)).fetchone()
                 before = json.loads(old[0]) if old else None
+                row = resolve_membership(row, before)
                 changed = before is not None and (before["club_id"], before["identity"]) != (row["club_id"], row["identity"])
+                club_changed = before is not None and before["club_id"] != row["club_id"]
+                summary["club_changes"] += int(club_changed)
                 added = before is None and self.c["initial_generation"]
+                reason = scope_reason(row, self.c, snapshot.get("managed_club_ids", []))
+                outcome = "소속 변화 없음" if before else "최초 기준 기록"
                 if changed or added:
                     self.db.execute("UPDATE jobs SET status='superseded', note='새 소속팀/인물 정보 감지' WHERE player_id=? AND status IN ('pending','blocked','generated','running','apply_failed')", (row["id"],))
                     if self.scope(row):
                         self.db.execute("INSERT INTO jobs(player_id,data,status,created) VALUES (?,?,'pending',?)", (row["id"], json.dumps(row, ensure_ascii=False), now))
                         count += 1
+                        outcome = "생성 대기열 추가"
+                    else:
+                        summary["filtered"] += 1
+                        outcome = "생성 제외: " + reason
+                elif reason != "대상":
+                    outcome += " · 생성 범위: " + reason
+                item = {key: row[key] for key in ("id", "name", "club_id", "club_name", "registered_club_id", "contract_club_id", "on_loan", "club_basis", "registered_team_id") if key in row}
+                item.update(previous_club_id=before["club_id"] if before else None,
+                            previous_registered_club_id=before.get("registered_club_id", before["club_id"]) if before else None,
+                            previous_contract_club_id=before.get("contract_club_id") if before else None, result=outcome)
+                if row["id"] in requested and len(summary["tracked"]) < 100:
+                    summary["tracked"].append(item)
+                if changed and len(summary["changes"]) < 200:
+                    summary["changes"].append(item)
                 self.db.execute("INSERT OR REPLACE INTO people VALUES (?,?)", (row["id"], json.dumps(row, ensure_ascii=False)))
             # A deleted player must not get a stale portrait applied.
             present = {p["id"] for p in snapshot["players"]}
+            summary["missing_player_ids"] = sorted(requested - present)
             for old in self.db.execute("SELECT id FROM people").fetchall():
                 if old[0] not in present:
                     self.db.execute("UPDATE jobs SET status='superseded',note='선수 목록에서 사라짐' WHERE player_id=? AND status IN ('pending','blocked','generated','running','apply_failed')", (old[0],))
@@ -414,6 +507,13 @@ class Engine:
                 self.setmeta("source_stamp", json.dumps(snapshot["source_stamp"]))
             if date:
                 self.setmeta("game_date", date)
+            summary["queued"] = count
+            self.setmeta("detection_summary", json.dumps(summary, ensure_ascii=False))
+        try:
+            write_atomic(Path(self.c["state_dir"]) / "latest_detection.json", json.dumps(summary, ensure_ascii=False, indent=2).encode("utf-8"))
+        except OSError as exc:
+            with self.db:
+                self.setmeta("diagnostic_write_error", str(exc))
         return count
 
     def refresh(self):
