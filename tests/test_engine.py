@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from PIL import Image
-from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, in_scope, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
+from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, game_english_name, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
 from gunzo import LAYOUT, render_gunzo
 
 
@@ -64,19 +65,14 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
 
-    def test_saved_kit_choice_resolves_conflict_and_is_staged(self):
+    def test_saved_kit_choice_takes_priority_over_random_candidates(self):
         self.refs()
         duplicate = Path(self.c["kits_dir"]) / "another" / "20.png"
         duplicate.parent.mkdir()
         Image.new("RGB", (256, 256), "red").save(duplicate)
         jid = self.transfer()
         with patch.object(self, "good_runner", wraps=self.good_runner) as runner:
-            self.e.run_one(runner)
-            self.assertEqual(self.e.jobs()[0]["status"], "blocked")
-            runner.assert_not_called()
-            self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
             self.c["kit_overrides"] = {"20:home": str(duplicate)}
-            self.e.retry(jid)
             self.e.run_one(runner)
             runner.assert_called_once()
             self.assertEqual(self.e.jobs()[0]["status"], "applied")
@@ -208,9 +204,128 @@ class EngineTests(unittest.TestCase):
         maps = ET.parse(pack / "config.xml").findall("./list/record")
         self.assertEqual(maps[0].attrib["to"], "graphics/pictures/person/900001/portrait")
         self.assertTrue((pack / (maps[0].attrib["from"] + ".png")).is_file())
+        self.assertEqual(maps[0].attrib["from"], "900001")
         backup = next((pack / "backups").glob("*.xml"))
         self.e.restore(backup)
         self.assertEqual(ET.parse(pack / "config.xml").findall("./list/record"), [])
+
+    def test_watch_baseline_then_transfer_completes_without_manual_queue_actions(self):
+        self.refs()
+        self.source(snapshot())
+        old = time.time() - 10
+        os.utime(self.c["source"], (old, old))
+        first = self.e.watch_step(self.good_runner)
+        self.assertEqual(self.e.jobs(), [])
+        self.assertEqual(first["added"], 0)
+        self.source(snapshot("20", date="2027-07-02"))
+        os.utime(self.c["source"], (old + 1, old + 1))
+        second = self.e.watch_step(self.good_runner)
+        self.assertEqual(second["added"], 1)
+        self.assertTrue(second["processed"])
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.assertTrue((Path(self.c["pack_dir"]) / "900001.png").is_file())
+
+    def test_watch_skips_save_that_is_still_being_written(self):
+        self.source(snapshot())
+        self.assertTrue(self.e.watch_step(self.good_runner)["saving"])
+        self.assertIsNone(self.e.meta("baseline"))
+
+    def test_preflight_recovers_automatically_but_ai_failures_do_not(self):
+        jid = self.transfer()
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+        self.refs()
+        self.e.retry_preflight()
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.e.db.execute("UPDATE jobs SET status='blocked',started=? WHERE id=?", (time.time(), jid))
+        self.e.db.commit()
+        self.e.retry_preflight()
+        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+
+    def test_watch_retries_only_application_after_disk_recovers(self):
+        self.refs(); self.transfer()
+        def fail_xml(path, data):
+            if Path(path).name == "config.xml":
+                raise OSError("temporary disk failure")
+            return write_atomic(path, data)
+        with patch("engine.write_atomic", side_effect=fail_xml):
+            self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "apply_failed")
+        old = time.time() - 10
+        os.utime(self.c["source"], (old, old))
+        with patch.object(self, "good_runner") as forbidden:
+            self.e.watch_step(forbidden)
+            forbidden.assert_not_called()
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 1)
+
+    def test_legacy_xml_only_backup_can_restore_archived_filename(self):
+        self.refs(); self.transfer(); self.e.run_one(self.good_runner)
+        pack = Path(self.c["pack_dir"])
+        old = (pack / "900001.png").read_bytes()
+        write_atomic(pack / "900001_1.png", old)
+        write_atomic(pack / "config.xml", self.e.mapping_xml({"900001": "900001_1"}))
+        backup = pack / "backups" / "old-format.xml"
+        write_atomic(backup, (pack / "config.xml").read_bytes())
+        self.e.migrate_pack_filenames()
+        self.e.restore(backup)
+        self.assertEqual((pack / "900001_1.png").read_bytes(), old)
+        self.assertEqual(self.e.pack_mapping((pack / "config.xml").read_bytes()), {"900001": "900001_1"})
+
+    def test_legacy_id_job_filename_migrates_without_ai_and_is_idempotent(self):
+        self.transfer(); self.refs(); self.e.run_one(self.good_runner)
+        pack = Path(self.c["pack_dir"])
+        (pack / "900001.png").rename(pack / "900001_1.png")
+        write_atomic(pack / "config.xml", self.e.mapping_xml({"900001": "900001_1"}))
+        self.assertEqual(self.e.prepare_watch(), 1)
+        self.assertEqual((pack / "900001.png").read_bytes(), (pack / "backups/legacy/900001_1.png").read_bytes())
+        self.assertFalse((pack / "900001_1.png").exists())
+        self.assertEqual(self.e.pack_mapping((pack / "config.xml").read_bytes()), {"900001": "900001"})
+        self.assertEqual(self.e.prepare_watch(), 0)
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 1)
+
+    def test_overwriting_id_file_preserves_previous_image_for_restore(self):
+        self.transfer(); self.refs(); self.e.run_one(self.good_runner)
+        pack = Path(self.c["pack_dir"])
+        previous = (pack / "900001.png").read_bytes()
+        self.source(snapshot("30", date="2027-07-03"))
+        self.e.ingest(read_source(self.c))
+        shutil.copyfile(Path(self.c["kits_dir"]) / "20.png", Path(self.c["kits_dir"]) / "30.png")
+        def red_runner(cmd, **kwargs):
+            result = self.good_runner(cmd, **kwargs)
+            folder = Path(cmd[cmd.index("--cd")+1])
+            Image.new("RGB", (512, 512), "red").save(folder / "portrait.png")
+            return result
+        self.e.run_one(red_runner)
+        self.assertNotEqual((pack / "900001.png").read_bytes(), previous)
+        backup = next((pack / "backups").glob("config-before-2-*.xml"))
+        self.e.restore(backup)
+        self.assertEqual((pack / "900001.png").read_bytes(), previous)
+
+    def test_english_name_uses_game_pool_before_localised_display_name(self):
+        person = SimpleNamespace(name="제드 스펜스", common_name="제드 스펜스", full_name="Djed Spence")
+        self.assertEqual(game_english_name(person), "Djed Spence")
+        row = snapshot()["players"][0] | {"name": "제드 스펜스", "english_name": game_english_name(person)}
+        self.assertEqual(request_options(self.c, row)["display_name"], "Djed Spence")
+        self.assertTrue(latin_name("Lisandro Martínez"))
+        self.assertFalse(latin_name("제드 Spence"))
+
+    def test_missing_latin_name_is_resolved_in_same_codex_call(self):
+        self.refs(); self.transfer()
+        localised = snapshot("20", date="2027-07-02")
+        localised["players"][0]["name"] = "제드 스펜스"
+        self.source(localised)
+        def english_runner(cmd, **kwargs):
+            result = self.good_runner(cmd, **kwargs)
+            folder = Path(cmd[cmd.index("--cd")+1])
+            (folder / "reply.json").write_text(json.dumps({"status":"generated", "reason":"ok", "english_name":"Djed Spence"}))
+            return result
+        self.e.run_one(english_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        with Image.open(Path(self.c["pack_dir"]) / "900001.png") as image:
+            self.assertEqual(image.info["PlayerName"], "DJED SPENCE")
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 1)
 
     def test_transfer_during_generation_never_applied(self):
         self.transfer()

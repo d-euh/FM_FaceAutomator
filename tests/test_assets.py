@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from PIL import Image
@@ -72,6 +73,24 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(catalog.kit("680").name, "680.png")
         with self.assertRaises(AssetError):
             catalog.kit("680", "away")
+
+    def test_duplicate_kits_are_sampled_without_blocking_and_preview_lists_all(self):
+        first = self.image("packA/shirt.png")
+        second = self.image("packB/shirt.png")
+        for name in ("packA", "packB"):
+            self.xml(name, [("shirt", "graphics/pictures/team/680/kits/home")])
+        catalog = AssetCatalog(self.root)
+        with patch("assets.random.choice", return_value=second) as choose:
+            self.assertEqual(catalog.kit("680"), second)
+            self.assertEqual(set(choose.call_args.args[0]), {first, second})
+        self.assertEqual(catalog.kit_candidates("680"), [first, second])
+
+    def test_generated_pack_is_not_discovered_as_source(self):
+        self.image("output/680.png")
+        self.xml("output", [("680", "graphics/pictures/person/680/portrait")])
+        (self.root / "output" / ".fm-face-owner").write_text("managed")
+        catalog = AssetCatalog(self.root)
+        self.assertEqual(catalog.suggestions(), [])
 
     def test_conflicting_packs_are_not_chosen_arbitrarily(self):
         for name in ("packA", "packB"):

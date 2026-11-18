@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import queue
-import shutil
 import sys
 import threading
 import time
@@ -17,8 +16,9 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from engine import DEFAULTS, Engine, file_stamp, load_config, process_lock, read_source, write_atomic
-from assets import AssetCatalog, AssetError, discover_roots, reference_png
+from engine import DEFAULTS, Engine, load_config, process_lock, read_source, write_atomic
+from assets import AssetCatalog, AssetError, reference_png
+from discovery import discover_defaults
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
@@ -32,6 +32,11 @@ class App:
         self.thread = None
         self.photo = None
         self.vars = {}
+        self.path_scan = 0
+        self.path_scanning = False
+        self.last_discovery_inputs = None
+        self.start_after_discovery = False
+        self.discovery_stop = threading.Event()
         window.title("FM Face Automator · 350×350 건조폼")
         window.geometry("1120x800")
         window.minsize(920, 680)
@@ -99,6 +104,7 @@ class App:
         self.log = tk.Text(window, height=5, font=("Consolas", 10), state="disabled")
         self.log.pack(side="bottom", fill="x", padx=18, pady=12, before=self.tabs)
         self.load()
+        self.window.after(100, self.auto_paths)
         self.window.after(500, self.drain)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -108,7 +114,7 @@ class App:
                 ("pack_dir", "전용 페이스팩 폴더", "dir"), ("codex", "Codex 실행 파일", "exe"),
                 ("club_ids", "추가 구단 ID (쉼표)", None), ("player_ids", "추가 선수 ID (쉼표)", None),
                 ("exclude_player_ids", "제외 선수 ID (쉼표)", None),
-                ("regen_player_ids", "생성선수 r- 매핑 ID", None)]
+                ("regen_player_ids", "생성선수 r- 매핑 ID", None), ("graphics_root", "FM 자료 상위 폴더 (선택)", "dir")]
         for index, (key, label, chooser) in enumerate(rows):
             ttk.Label(parent, text=label).grid(row=index, column=0, sticky="w", padx=(0, 15), pady=4)
             self.vars[key] = tk.StringVar()
@@ -116,7 +122,7 @@ class App:
             if chooser:
                 ttk.Button(parent, text="선택", command=lambda k=key, c=chooser: self.choose(k, c)).grid(row=index, column=2, padx=(8, 0))
         flags = ttk.Frame(parent)
-        flags.grid(row=10, column=0, columnspan=3, sticky="w", pady=10)
+        flags.grid(row=11, column=0, columnspan=3, sticky="w", pady=10)
         for key, title in [("my_club_only", "내가 맡은 구단 포함"), ("all_players", "모든 구단 포함"), ("initial_generation", "처음 발견한 선수도 생성")]:
             self.vars[key] = tk.BooleanVar()
             ttk.Checkbutton(flags, text=title, variable=self.vars[key]).pack(side="left", padx=(0, 14))
@@ -124,17 +130,18 @@ class App:
         self.vars["kit_variant"] = tk.StringVar()
         ttk.Combobox(flags, textvariable=self.vars["kit_variant"], values=("home", "away", "third"), state="readonly", width=8).pack(side="left")
         numbers = ttk.Frame(parent)
-        numbers.grid(row=11, column=0, columnspan=3, sticky="w", pady=5)
+        numbers.grid(row=12, column=0, columnspan=3, sticky="w", pady=5)
         for key, title in [("daily_limit", "24시간 호출 상한"), ("max_age", "최대 나이(0=전체)"), ("cooldown_hours", "재생성 간격(시간)"), ("settle_seconds", "변경 대기(초)"), ("poll_seconds", "감시 간격(초)")]:
             group = ttk.Frame(numbers)
             group.pack(side="left", padx=(0, 14))
             ttk.Label(group, text=title).pack(anchor="w")
             self.vars[key] = tk.StringVar()
             ttk.Entry(group, textvariable=self.vars[key], width=12).pack(anchor="w", pady=4)
-        ttk.Label(parent, text="완료 결과는 350×350 PNG · 하단 선수 이름 · FM config.xml 갱신까지 자동 저장합니다.\n구단·선수·내 구단 선택은 합집합이며 나이·제외 ID를 추가 적용합니다. 최초 읽기는 기본적으로 기준점만 만듭니다.\n.fm은 저장 시점 기준으로 감지합니다. 원본 얼굴과 유니폼은 사용자가 준비하며 자동 다운로드하지 않습니다.\n생성선수 판별은 추측하지 않습니다. r- 매핑이 필요한 선수 ID를 지정하세요. 실제 FM27 호환성 검증은 필요합니다.", foreground="#536070", wraplength=980).grid(row=12, column=0, columnspan=3, sticky="w", pady=12)
-        ttk.Button(parent, text="설정 저장", command=self.save).grid(row=13, column=0, sticky="w")
-        ttk.Button(parent, text="Codex 찾기", command=self.find_codex).grid(row=13, column=1, sticky="w")
-        ttk.Button(parent, text="자료 폴더 자동 찾기", command=self.find_folders).grid(row=13, column=2, sticky="w")
+        self.path_status = tk.StringVar(value="경로를 자동으로 확인합니다. 표시된 경로가 다르면 직접 바꾸세요.")
+        ttk.Label(parent, textvariable=self.path_status, foreground="#536070", wraplength=980).grid(row=13, column=0, columnspan=3, sticky="w", pady=8)
+        ttk.Label(parent, text="범위를 지정하고 감시를 시작하면 세이브 저장 후 이적 감지 → 합성 → ID.png·350×350·영문 이름·config.xml 저장까지 자동 진행합니다.\n첫 읽기는 기준만 기록합니다. 유니폼 후보가 겹치면 무작위 하나를 사용합니다.\n24시간 상한·재생성 간격에 걸린 작업은 대기하다가 자동으로 이어갑니다.", foreground="#536070", wraplength=980).grid(row=14, column=0, columnspan=3, sticky="w", pady=8)
+        ttk.Button(parent, text="설정 저장", command=self.save).grid(row=15, column=0, sticky="w")
+        ttk.Button(parent, text="설정 저장 · 감시 시작", command=self.start).grid(row=15, column=1, sticky="w")
 
     def prompt_fields(self, parent):
         ttk.Label(parent, text="전체 선수 공통 추가 지시", style="Title.TLabel").pack(anchor="w")
@@ -160,156 +167,56 @@ class App:
         value = filedialog.askdirectory() if kind == "dir" else filedialog.askopenfilename(filetypes=[("FM27 / JSON", "*.fm *.json"), ("모든 파일", "*")]) if kind == "file" else filedialog.askopenfilename()
         if value:
             self.vars[key].set(value)
+            if key in ("source", "graphics_root"):
+                self.auto_paths()
 
-    def find_codex(self):
-        exe = shutil.which("codex")
-        if exe and Path(exe).suffix.lower() not in (".cmd", ".bat"):
-            self.vars["codex"].set(exe)
-            return
-        npm = Path(os.environ.get("APPDATA", "")) / "npm" / "node_modules" / "@openai"
-        matches = list(npm.rglob("codex.exe")) if npm.is_dir() else []
-        if matches:
-            self.vars["codex"].set(str(matches[0]))
-        else:
-            messagebox.showinfo("Codex", "Codex CLI 설치와 로그인을 먼저 완료하고 실제 codex.exe를 선택하세요.")
-
-    def confirm_asset_folder(self, key, candidate, parent):
-        label = "원본 얼굴" if key == "portraits_dir" else "유니폼 키트"
-        answer = messagebox.askyesnocancel(
-            f"{label} 폴더 확인",
-            f"자동 검색으로 찾은 {label} 폴더입니다.\n\n{candidate}\n\n이 경로가 맞나요?\n\n예: 이 경로 사용\n아니요: 폴더 직접 지정\n취소: 기존 경로 유지",
-            parent=parent,
-        )
-        if answer is None:
-            return None
-        folder = candidate
-        if answer is False:
-            folder = filedialog.askdirectory(
-                parent=parent, title=f"{label} 폴더 직접 지정",
-                initialdir=str(candidate), mustexist=True,
-            )
-        if not folder:
-            return None
-        if not Path(folder).is_dir():
-            messagebox.showerror("폴더 확인", "해당 폴더가 없습니다. 폴더를 다시 지정하세요.", parent=parent)
-            return None
-        return str(Path(folder).resolve())
-
-    def find_folders(self):
+    def auto_paths(self):
         if self.active():
-            messagebox.showinfo("자료 폴더", "현재 작업 후 정지한 다음 자료 폴더를 변경하세요.")
             return
-        dialog = tk.Toplevel(self.window)
-        dialog.title("FM 자료 폴더 찾기 · 페이스팩 / 2D 키트")
-        dialog.geometry("1000x490")
-        dialog.transient(self.window)
-        dialog.grab_set()
-        frame = ttk.Frame(dialog, padding=16)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="문서·OneDrive·세이브 인접 그래픽 폴더와 입력한 자료 폴더만 검색합니다.").pack(anchor="w")
-        root_var = tk.StringVar(value=self.config.get("graphics_root", ""))
-        row = ttk.Frame(frame)
-        row.pack(fill="x", pady=10)
-        ttk.Label(row, text="추가 검색 위치").pack(side="left", padx=(0, 8))
-        ttk.Entry(row, textvariable=root_var).pack(side="left", fill="x", expand=True)
-        def choose_root():
-            folder = filedialog.askdirectory(parent=dialog)
-            if folder:
-                root_var.set(folder)
-        ttk.Button(row, text="폴더 선택", command=choose_root).pack(side="left", padx=6)
-        listing = ttk.Treeview(frame, columns=("path", "faces", "kits", "basis"), show="headings", height=9)
-        for key, text, width in [("path", "폴더", 480), ("faces", "얼굴 매핑", 75), ("kits", "키트 매핑", 75), ("basis", "검색 근거", 240)]:
-            listing.heading(key, text=text)
-            listing.column(key, width=width)
-        listing.pack(fill="both", expand=True)
-        status = tk.StringVar(value="검색을 시작하면 파일을 변경하지 않고 폴더와 config.xml을 확인합니다.")
-        ttk.Label(frame, textvariable=status, wraplength=950).pack(anchor="w", pady=10)
-        selected = tk.StringVar(value="후보가 하나면 경로를 확인합니다. ‘아니요’를 누르면 직접 지정으로 넘어갑니다. 후보가 여러 개면 먼저 행을 선택하세요.")
-        ttk.Label(frame, textvariable=selected, wraplength=950).pack(anchor="w")
-        controls = ttk.Frame(frame)
-        controls.pack(fill="x", pady=(10, 0))
-        messages = queue.Queue()
-        stop = threading.Event()
-        running = [False]
-        def search():
-            if running[0]:
-                return
-            config = dict(self.config)
-            for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir"):
-                value = self.vars[key].get().strip()
-                config[key] = str((self.path.parent / value).resolve()) if value else ""
-            config["graphics_root"] = str((self.path.parent / root_var.get()).resolve()) if root_var.get().strip() else ""
-            listing.delete(*listing.get_children())
-            roots = discover_roots(config)
-            if not roots:
-                status.set("기본 위치에서 찾지 못했습니다. 추가 검색 위치를 선택하거나 설정 화면에 자료 폴더를 직접 입력하세요.")
-                return
-            running[0] = True
-            search_button.configure(state="disabled")
-            def scan():
-                found, warnings, textures = {}, 0, 0
-                for root in roots:
-                    if stop.is_set():
-                        return
-                    messages.put(("status", f"읽는 중: {root}"))
-                    try:
-                        catalog = AssetCatalog(root, exclude=(config["state_dir"], config["pack_dir"]), stop=stop)
-                        for candidate in catalog.suggestions():
-                            found[candidate["path"]] = candidate
-                        warnings += len(catalog.warnings) + len(catalog.missing_faces) + len(catalog.missing_kits)
-                        textures += catalog.textures
-                    except Exception as exc:
-                        warnings += 1
-                        messages.put(("status", str(exc)))
-                messages.put(("done", (list(found.values()), warnings, textures)))
-            threading.Thread(target=scan, daemon=True).start()
-        def poll():
-            if not dialog.winfo_exists():
-                return
-            while not messages.empty():
-                kind, value = messages.get()
-                if kind == "status":
-                    status.set(value)
-                else:
-                    candidates, warnings, textures = value
-                    for item in candidates:
-                        listing.insert("", "end", values=(item["path"], item["faces"], item["kits"], item["basis"]))
-                    status.set(f"검색 완료: 후보 {len(candidates)}곳 · 누락/읽기 경고 {warnings}건 · 3D 텍스처 {textures}건 제외. 매핑 수는 파일 연결 수이며 품질 검증은 합성 전에 합니다.")
-                    running[0] = False
-                    search_button.configure(state="normal")
-                    dialog.after_idle(confirm_detected, candidates)
-            dialog.after(120, poll)
-        def use(key, candidate=None):
-            if candidate is None:
-                if not listing.selection():
-                    return False
-                candidate = listing.item(listing.selection()[0], "values")[0]
-            folder = self.confirm_asset_folder(key, candidate, dialog)
-            if folder is None:
-                selected.set("폴더 지정을 취소했습니다. 기존 경로를 유지합니다.")
-                return False
-            self.vars[key].set(folder)
-            self.config["graphics_root"] = str((self.path.parent / root_var.get()).resolve()) if root_var.get().strip() else ""
-            selected.set(f'{"원본 얼굴" if key == "portraits_dir" else "유니폼 키트"} 폴더로 선택: {folder} · 닫은 뒤 설정을 저장하세요.')
-            return True
-        def confirm_detected(candidates):
-            if not dialog.winfo_exists():
-                return
-            for key, kind in (("portraits_dir", "faces"), ("kits_dir", "kits")):
-                matches = [item for item in candidates if item[kind] > 0]
-                if len(matches) == 1 and not use(key, matches[0]["path"]):
-                    break
-        def close():
-            stop.set()
-            dialog.destroy()
-        search_button = ttk.Button(controls, text="자동 검색", command=search)
-        search_button.pack(side="left", padx=(0, 8))
-        ttk.Button(controls, text="얼굴 경로 확인", command=lambda: use("portraits_dir")).pack(side="left", padx=4)
-        ttk.Button(controls, text="키트 경로 확인", command=lambda: use("kits_dir")).pack(side="left", padx=4)
-        ttk.Button(controls, text="닫기", command=close).pack(side="right")
-        dialog.protocol("WM_DELETE_WINDOW", close)
-        dialog.after(120, poll)
-        search()
+        self.path_scan += 1
+        scan_id = self.path_scan
+        self.path_scanning = True
+        self.path_status.set("폴더·최신 세이브·Codex 경로 자동 확인 중… 확인된 경로는 기본값에 채웁니다.")
+        snapshot = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex")}
+        config = dict(self.config)
+        for key, value in snapshot.items():
+            config[key] = str((self.path.parent / value).resolve()) if value and key != "codex" else value
+        def discover():
+            try:
+                updates, notes = discover_defaults(config, self.path.parent, stop=self.discovery_stop)
+            except Exception as exc:
+                updates, notes = {}, [str(exc)]
+            self.events.put({"path_scan": scan_id, "snapshot": snapshot, "updates": updates, "notes": notes})
+        threading.Thread(target=discover, daemon=True).start()
+
+    def accept_paths(self, result):
+        if result["path_scan"] != self.path_scan:
+            return
+        self.path_scanning = False
+        changed = []
+        for key, value in result["updates"].items():
+            # Never overwrite a field the user changed while discovery ran.
+            if self.vars[key].get() == result["snapshot"][key]:
+                self.vars[key].set(value)
+                self.config[key] = value
+                changed.append(key)
+        try:
+            write_atomic(self.path, json.dumps(self.config, ensure_ascii=False, indent=2).encode("utf-8"))
+        except Exception as exc:
+            self.events.put(f"자동 경로 설정 저장 실패: {exc}")
+        missing = [label for key, label in (("source", "세이브"), ("portraits_dir", "얼굴"), ("kits_dir", "유니폼"))
+                   if not self.vars[key].get() or not Path(self.vars[key].get()).exists()]
+        text = f"자동 경로 확인 완료 · {len(changed)}개 기본값 반영. 표시된 경로가 다르면 직접 바꾸세요."
+        if missing:
+            text += " 찾지 못한 항목: " + ", ".join(missing)
+        if result["notes"]:
+            text += f' · 검색 경고 {len(result["notes"])}건'
+        self.path_status.set(text)
+        self.last_discovery_inputs = {key: self.vars[key].get() for key in result["snapshot"]}
+        self.events.put(text)
+        if self.start_after_discovery:
+            self.start_after_discovery = False
+            self.start()
 
     def load(self):
         if not self.path.exists():
@@ -395,28 +302,34 @@ class App:
         self.background(task)
 
     def start(self):
+        current = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex")}
+        if not self.active() and not self.path_scanning and current != self.last_discovery_inputs:
+            self.auto_paths()
+        if self.path_scanning:
+            self.start_after_discovery = True
+            self.status.set("경로 자동 확인이 끝나면 감시를 시작합니다.")
+            return
         def task(e):
-            stamp = None
+            converted = e.prepare_watch()
+            if converted:
+                self.events.put(f"기존 결과 {converted}개를 선수 ID 파일명으로 갱신했습니다. 재합성하지 않습니다.")
             self.events.put("감시·합성 실행 중 · Codex 사용량이 발생할 수 있습니다.")
             while not self.stop.is_set():
                 try:
-                    observed = file_stamp(e.c["source"])
-                    # Avoid parsing while the game is likely still writing its save.
-                    if time.time() - Path(e.c["source"]).stat().st_mtime < 3:
-                        self.stop.wait(e.c["poll_seconds"])
-                        continue
-                    if observed != stamp:
-                        added = e.ingest(read_source(e.c))
-                        stamp = observed
-                        self.events.put(f"세이브 변경 점검 · 신규 작업 {added}개")
-                    if e.run_one():
+                    result = e.watch_step()
+                    if result.get("changed"):
+                        self.events.put(f'세이브 변경 점검 · 신규 작업 {result["added"]}개')
+                    if result["processed"]:
                         self.events.put("합성 작업 1개 처리 · 대기열에서 상태를 확인하세요.")
+                    elif result.get("waiting"):
+                        self.events.put(f'자동 감시 중 · 대기 {result["waiting"]}개 · 변경 대기/호출 상한/재생성 간격 후 자동 진행')
                 except Exception as exc:
                     self.events.put(f"점검 보류: {exc}")
                 self.stop.wait(e.c["poll_seconds"])
         self.background(task)
 
     def pause(self):
+        self.start_after_discovery = False
         self.stop.set()
         self.status.set("정지 요청 · 진행 중인 Codex 작업이 끝나면 멈춥니다.")
 
@@ -565,8 +478,8 @@ class App:
             try:
                 catalog = AssetCatalog(config["kits_dir"], exclude=(config["state_dir"], config["pack_dir"]))
                 try:
-                    found = [catalog.kit(player["club_id"], config["kit_variant"])]
-                    note = "검색된 후보를 확인하고 선택하세요."
+                    found = catalog.kit_candidates(player["club_id"], config["kit_variant"])
+                    note = "지정하지 않으면 매 작업에서 무작위 후보를 사용합니다."
                 except AssetError as exc:
                     found, note = list(exc.candidates), str(exc)
                 results.put((found, note))
@@ -623,7 +536,7 @@ class App:
         editor.grab_set()
         frame = ttk.Frame(editor, padding=18)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="하단에 표시할 선수 이름 (비워두면 세이브 이름)").pack(anchor="w")
+        ttk.Label(frame, text="하단 영문 선수 이름 (비워두면 세이브의 라틴 문자 이름 우선)").pack(anchor="w")
         name = tk.StringVar(value=options.get("display_name", ""))
         ttk.Entry(frame, textvariable=name).pack(fill="x", pady=(6, 14))
         ttk.Label(frame, text="이 선수의 추가 지시").pack(anchor="w")
@@ -673,7 +586,7 @@ class App:
             label = ttk.Label(win, image=image)
             label.image = image
             label.pack(padx=15, pady=15)
-            ttk.Label(win, text="얼굴 동일성·소속팀 유니폼·왜곡을 확인한 뒤 적용하세요.").pack(pady=(0, 15))
+            ttk.Label(win, text="완료 결과는 자동 저장됩니다. 얼굴·유니폼을 확인하고 필요하면 재생성하세요.").pack(pady=(0, 15))
         except Exception as exc:
             messagebox.showerror("미리보기", str(exc))
         finally:
@@ -682,6 +595,9 @@ class App:
     def drain(self):
         while not self.events.empty():
             text = self.events.get()
+            if isinstance(text, dict) and "path_scan" in text:
+                self.accept_paths(text)
+                continue
             self.status.set(text)
             self.log.configure(state="normal")
             self.log.insert("end", time.strftime("%H:%M:%S ") + text + "\n")
@@ -708,6 +624,7 @@ class App:
         self.window.after(1500, self.drain)
 
     def close(self):
+        self.discovery_stop.set()
         if self.active():
             self.pause()
             self.status.set("종료 대기 · 현재 작업이 끝나면 창이 닫힙니다.")

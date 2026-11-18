@@ -6,6 +6,7 @@ from io import BytesIO
 import os
 from pathlib import Path
 import re
+import random
 import xml.etree.ElementTree as ET
 
 
@@ -24,8 +25,7 @@ def _under(path, root):
     return path == root or path.is_relative_to(root)
 
 
-def discover_roots(config, home=None, environ=None):
-    """Candidate content directories only; never scan a whole drive or home."""
+def document_folders(home=None, environ=None):
     home = Path.home() if home is None else Path(home)
     environ = os.environ if environ is None else environ
     documents = [home / "Documents"]
@@ -40,6 +40,12 @@ def discover_roots(config, home=None, environ=None):
     for key in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
         if environ.get(key):
             documents.append(Path(environ[key]) / "Documents")
+    return documents
+
+
+def discover_roots(config, home=None, environ=None):
+    """Candidate content directories only; never scan a whole drive or home."""
+    documents = document_folders(home, environ)
     candidates = []
     for key in ("graphics_root", "portraits_dir", "kits_dir"):
         if config.get(key):
@@ -85,6 +91,9 @@ class AssetCatalog:
             if directories > 20000:
                 raise AssetError("검색 폴더가 너무 큽니다. 개별 페이스팩/키트 폴더를 선택하세요.")
             base = Path(folder)
+            if (base / ".fm-face-owner").is_file():
+                dirs[:] = []
+                continue
             dirs[:] = sorted(d for d in dirs if not (base / d).is_symlink()
                              and not getattr(base / d, "is_junction", lambda: False)()
                              and not any(_under((base / d).resolve(), e) for e in self.exclude))
@@ -199,13 +208,33 @@ class AssetCatalog:
             raise AssetError("유니폼 유형은 home/away/third 중 하나여야 합니다.")
         key = (str(club_id), variant)
         if key in self.kits:
-            return self._choose(self.kits[key], f"구단 {club_id} {variant}")
+            return self._choose_kit(self.kits[key], f"구단 {club_id} {variant}")
         if key in self.missing_kits:
             raise AssetError(f"구단 {club_id} {variant}: config.xml은 있지만 키트 이미지가 없습니다.")
         paths = self.direct.get(f"{club_id}_{variant}", set())
         if not paths and variant == "home":
             paths = self.direct.get(str(club_id), set())
-        return self._choose(paths, f"구단 {club_id} {variant} 2D 키트")
+        return self._choose_kit(paths, f"구단 {club_id} {variant} 2D 키트")
+
+    @staticmethod
+    def _choose_kit(paths, description):
+        available = sorted({p for p in paths if p.is_file()})
+        if not available:
+            raise AssetError(f"{description}: 연결된 이미지 파일이 없습니다.")
+        return random.choice(available)
+
+    def kit_candidates(self, club_id, variant="home"):
+        """List all references for the optional manual preview, without choosing."""
+        key = (str(club_id), variant)
+        if key in self.kits:
+            paths = self.kits[key]
+        elif key in self.missing_kits:
+            paths = ()
+        else:
+            paths = self.direct.get(f"{club_id}_{variant}", set())
+            if not paths and variant == "home":
+                paths = self.direct.get(str(club_id), set())
+        return sorted(p for p in paths if p.is_file())
 
     def suggestions(self):
         found = [{"path": c["path"], "faces": len(c["faces"]), "kits": len(c["kits"]), "basis": "config.xml"}
