@@ -20,6 +20,8 @@ import xml.etree.ElementTree as ET
 from gunzo import LAYOUT, check_options, render_gunzo
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 import facepack
+import scope_rules
+from league_catalog import read_catalog
 
 
 DEFAULTS = {
@@ -33,6 +35,7 @@ DEFAULTS = {
     "style": "Photorealistic football player portrait, natural lighting, detailed face and jersey, no text or frame.",
     "additional_instructions": "", "player_overrides": {}, "kit_overrides": {},
     "name_font_path": "", "frame_template": "", "graphics_root": "", "kit_variant": "home",
+    "scope_rules": None,
 }
 
 LEGACY_STYLE = "Photorealistic square head-and-shoulders football portrait, clean neutral background, no text or frame. Preserve the original person's identity and facial features; change only the jersey to the reference kit."
@@ -94,6 +97,7 @@ def load_config(path):
     ):
         raise ValueError("유니폼 선택 설정이 올바르지 않습니다.")
     config["kit_overrides"] = {key: str((path.parent / value).resolve()) for key, value in overrides.items()}
+    config["scope_rules"] = scope_rules.migrate_scope(config)
     return config
 
 
@@ -218,6 +222,8 @@ def resolve_membership(row, before):
 
 
 def scope_reason(row, config, managed):
+    if config.get("scope_rules") is not None:
+        return scope_rules.reason(row, config, managed)
     if row["id"] in config["exclude_player_ids"]:
         return "제외 선수 ID"
     if not row["club_id"]:
@@ -244,6 +250,9 @@ def detection_messages(summary):
                         f' / 계약구단 {item.get("contract_club_id") or "미확인"} · {item["result"]}')
     if summary["missing_player_ids"]:
         messages.append("지정 선수 ID를 세이브에서 찾지 못함: " + ", ".join(summary["missing_player_ids"][:20]))
+    league_status = summary.get("league_status", {})
+    if league_status.get("error"):
+        messages.append(league_status["error"])
     return messages
 
 
@@ -265,6 +274,7 @@ def read_source(config):
                 if save.info.game != "FM27" or (not save.info.known_build and save.info.build not in COMPATIBLE_FM27_BUILDS):
                     raise ValueError(f"검증 대상 외 게임 빌드: {save.info.game} {save.info.build}")
                 clubs = {c.uid: c for c in save.clubs()}
+                catalog, league_status = read_catalog(save, clubs, save.info.game_date, scope_rules.needs_leagues(config))
                 managed = []
                 for m in save.managed_clubs():
                     club = clubs.get(m.club_uid)
@@ -295,6 +305,8 @@ def read_source(config):
                                     "on_loan": getattr(p, "on_loan", None),
                                     "registered_team_id": getattr(p, "team_id", None)})
                 result = normalise({"players": players, "managed_club_ids": managed,
+                                    "clubs": catalog, "league_status": league_status,
+                                    "catalog_key": "leagues" if scope_rules.needs_leagues(config) else "clubs",
                                     "game_date": str(save.info.game_date or ""),
                                     "build": save.info.build,
                                     "reader_mode": "registered" if save.info.known_build else "compatible"})
@@ -306,6 +318,8 @@ def read_source(config):
 
 
 def in_scope(row, config, managed):
+    if config.get("scope_rules") is not None:
+        return scope_rules.reason(row, config, managed) == "대상"
     pid, cid = row["id"], row["club_id"]
     if pid in config["exclude_player_ids"] or not cid:
         return False
@@ -462,23 +476,48 @@ class Engine:
                    "players": len(snapshot["players"]), "club_changes": 0, "filtered": 0,
                    "queued": 0, "tracked": [], "changes": [], "missing_player_ids": [],
                    "managed_club_ids": snapshot.get("managed_club_ids", [])}
+        summary["league_status"] = snapshot.get("league_status", {})
         requested = set(self.c["player_ids"])
         with self.db:
             self.setmeta("managed", json.dumps(snapshot.get("managed_club_ids", [])))
+            catalog = snapshot.get("clubs")
+            if catalog is None:
+                clubs = {c["id"]: c for c in json.loads(self.meta("club_catalog") or "[]")}
+                for p in snapshot["players"]:
+                    if p["club_id"]:
+                        clubs.setdefault(p["club_id"], {"id": p["club_id"], "name": p["club_name"], "league_ids": p.get("league_ids", [])})
+                catalog = list(clubs.values())
+            clubs = {str(c["id"]): c for c in catalog}
+            self.setmeta("club_catalog", json.dumps(catalog, ensure_ascii=False))
+            self.setmeta("catalog_updated", time.time_ns())
+            self.setmeta("league_status", json.dumps(snapshot.get("league_status", {}), ensure_ascii=False))
+            self.setmeta("catalog_key", snapshot.get("catalog_key", "clubs"))
             for row in snapshot["players"]:
                 old = self.db.execute("SELECT data FROM people WHERE id=?", (row["id"],)).fetchone()
                 before = json.loads(old[0]) if old else None
                 row = resolve_membership(row, before)
+                row["league_ids"] = clubs.get(row["club_id"], {}).get("league_ids", row.get("league_ids", []))
+                for field in ("from_club_id", "from_club_name", "from_league_ids"):
+                    row.pop(field, None)
+                old_club = before["club_id"] if before and before["identity"] == row["identity"] else ""
+                if not old_club and before and before["identity"] == row["identity"]:
+                    old_club = before.get("last_club_id", "")
+                event = dict(row, from_club_id=old_club,
+                             from_club_name=clubs.get(old_club, {}).get("name", before["club_name"] if before else ""),
+                             from_league_ids=(before.get("league_ids") or before.get("last_league_ids", []) or clubs.get(old_club, {}).get("league_ids", [])) if before else [])
+                if not row["club_id"] and old_club:
+                    row["last_club_id"] = old_club
+                    row["last_league_ids"] = event["from_league_ids"]
                 changed = before is not None and (before["club_id"], before["identity"]) != (row["club_id"], row["identity"])
                 club_changed = before is not None and before["club_id"] != row["club_id"]
                 summary["club_changes"] += int(club_changed)
                 added = before is None and self.c["initial_generation"]
-                reason = scope_reason(row, self.c, snapshot.get("managed_club_ids", []))
+                reason = scope_reason(event, self.c, snapshot.get("managed_club_ids", []))
                 outcome = "소속 변화 없음" if before else "최초 기준 기록"
                 if changed or added:
                     self.db.execute("UPDATE jobs SET status='superseded', note='새 소속팀/인물 정보 감지' WHERE player_id=? AND status IN ('pending','blocked','generated','running','apply_failed')", (row["id"],))
-                    if self.scope(row):
-                        self.db.execute("INSERT INTO jobs(player_id,data,status,created) VALUES (?,?,'pending',?)", (row["id"], json.dumps(row, ensure_ascii=False), now))
+                    if self.scope(event):
+                        self.db.execute("INSERT INTO jobs(player_id,data,status,created) VALUES (?,?,'pending',?)", (row["id"], json.dumps(event, ensure_ascii=False), now))
                         count += 1
                         outcome = "생성 대기열 추가"
                     else:
@@ -518,7 +557,8 @@ class Engine:
 
     def refresh(self):
         stamp = list(file_stamp(self.c["source"]))
-        if json.loads(self.meta("source_stamp") or "null") != stamp:
+        need_catalog = self.meta("club_catalog") is None or (scope_rules.needs_leagues(self.c) and self.meta("catalog_key") != "leagues")
+        if json.loads(self.meta("source_stamp") or "null") != stamp or need_catalog:
             return self.ingest(read_source(self.c))
         return 0
 
@@ -538,7 +578,8 @@ class Engine:
         if not latest:
             return False
         current = json.loads(latest[0])
-        return (current["identity"], current["club_id"]) == (row["identity"], row["club_id"]) and self.scope(current)
+        scoped = dict(row, age=current.get("age"), league_ids=current.get("league_ids", row.get("league_ids", [])))
+        return (current["identity"], current["club_id"]) == (row["identity"], row["club_id"]) and self.scope(scoped)
 
     def jobs(self):
         return [dict(r) for r in self.db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 300")]
@@ -660,6 +701,9 @@ class Engine:
                 write_atomic(folder / "result.png", final)
                 validate_png(folder / "result.png")
                 self.update(jid, "generated", "350×350 건조폼·하단 이름 완성. PNG와 config.xml 저장 중.", str(folder / "result.png"))
+                with self.db:
+                    self.setmeta("latest_result", json.dumps({"id": jid, "artifact": str(folder / "result.png"),
+                        "name": options["display_name"], "club_name": row["club_name"], "created": time.time()}, ensure_ascii=False))
                 try:
                     self.apply(jid)
                 except Exception as exc:

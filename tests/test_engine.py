@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 from PIL import Image
 from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, detection_messages, game_english_name, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
 from gunzo import LAYOUT, render_gunzo
+from scope_rules import DEFAULT_SCOPE
 
 
 def snapshot(club="10", player="900001", identity=100, date="2027-07-01"):
@@ -72,6 +73,29 @@ class EngineTests(unittest.TestCase):
     def test_first_read_is_baseline(self):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
+
+    def test_departure_scope_survives_refresh_generation_and_application(self):
+        self.c["scope_rules"] = copy.deepcopy(DEFAULT_SCOPE) | {"preset": "custom", "clubs": {"680": "outgoing"}}
+        self.refs()
+        shutil.copyfile(Path(self.c["kits_dir"]) / "20.png", Path(self.c["kits_dir"]) / "602.png")
+        self.e.ingest(snapshot("680"))
+        after = snapshot("602", date="2027-07-02")
+        self.source(after)
+        self.assertEqual(self.e.ingest(read_source(self.c)), 1)
+        job = self.e.jobs()[0]
+        self.assertEqual(json.loads(job["data"])["from_club_id"], "680")
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        latest = json.loads(self.e.meta("latest_result"))
+        self.assertEqual(latest["id"], job["id"])
+        self.assertTrue(Path(latest["artifact"]).is_file())
+
+    def test_departure_after_free_agent_gap_remembers_selected_source(self):
+        self.c["scope_rules"] = copy.deepcopy(DEFAULT_SCOPE) | {"preset": "custom", "clubs": {"680": "outgoing"}}
+        self.e.ingest(snapshot("680"))
+        self.assertEqual(self.e.ingest(snapshot(None, date="2027-07-02")), 0)
+        self.assertEqual(self.e.ingest(snapshot("602", date="2027-07-03")), 1)
+        self.assertEqual(json.loads(self.e.jobs()[0]["data"])["from_club_id"], "680")
 
     def test_editor_contract_only_transfer_is_detected_and_completes(self):
         self.refs()
