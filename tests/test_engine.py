@@ -64,6 +64,61 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
 
+    def test_saved_kit_choice_resolves_conflict_and_is_staged(self):
+        self.refs()
+        duplicate = Path(self.c["kits_dir"]) / "another" / "20.png"
+        duplicate.parent.mkdir()
+        Image.new("RGB", (256, 256), "red").save(duplicate)
+        jid = self.transfer()
+        with patch.object(self, "good_runner", wraps=self.good_runner) as runner:
+            self.e.run_one(runner)
+            self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+            runner.assert_not_called()
+            self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+            self.c["kit_overrides"] = {"20:home": str(duplicate)}
+            self.e.retry(jid)
+            self.e.run_one(runner)
+            runner.assert_called_once()
+            self.assertEqual(self.e.jobs()[0]["status"], "applied")
+            folder = Path(runner.call_args.args[0][runner.call_args.args[0].index("--cd") + 1])
+            with Image.open(folder / "kit.png") as image:
+                self.assertEqual(image.getpixel((0, 0))[:3], (255, 0, 0))
+
+    def test_missing_saved_kit_choice_blocks_without_fallback_or_charge(self):
+        self.refs()
+        self.transfer()
+        self.c["kit_overrides"] = {"20:home": str(self.root / "missing.png")}
+        with patch.object(self, "good_runner") as runner:
+            self.e.run_one(runner)
+            runner.assert_not_called()
+        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+        self.assertIn("선택했던 유니폼 파일이 없습니다", self.e.jobs()[0]["note"])
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+
+    def test_saved_kit_choice_is_scoped_to_club_and_variant(self):
+        self.refs()
+        selected = self.root / "away.png"
+        Image.new("RGB", (256, 256), "blue").save(selected)
+        self.c["kit_overrides"] = {"20:away": str(selected), "30:home": str(selected)}
+        self.assertEqual(self.e.kit_reference("20"), Path(self.c["kits_dir"]) / "20.png")
+        self.c["kit_variant"] = "away"
+        self.assertEqual(self.e.kit_reference("20"), selected)
+
+    def test_kit_choices_persist_and_resolve_relative_to_config(self):
+        path = self.root / "config.json"
+        write_atomic(path, json.dumps({"kit_overrides": {"20:home": "custom/kit.png"}}).encode())
+        self.assertEqual(load_config(path)["kit_overrides"], {"20:home": str(self.root / "custom/kit.png")})
+        write_atomic(path, b'{}')
+        self.assertEqual(load_config(path)["kit_overrides"], {})
+
+    def test_invalid_kit_choices_are_rejected(self):
+        path = self.root / "config.json"
+        for choices in ([], {"20": "kit.png"}, {"20:home": ""}, {"20:home": 1}):
+            with self.subTest(choices=choices):
+                write_atomic(path, json.dumps({"kit_overrides": choices}).encode())
+                with self.assertRaisesRegex(ValueError, "유니폼 선택 설정"):
+                    load_config(path)
+
     def test_transfer_is_deduplicated(self):
         self.transfer()
         self.e.ingest(snapshot("20", date="2027-07-02"))

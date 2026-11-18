@@ -15,7 +15,9 @@ KIT = re.compile(r"graphics/pictures/team/(\d+)/kits/(home|away|third)", re.I)
 
 
 class AssetError(ValueError):
-    pass
+    def __init__(self, message, candidates=()):
+        super().__init__(message)
+        self.candidates = tuple(candidates)
 
 
 def _under(path, root):
@@ -173,7 +175,8 @@ class AssetCatalog:
     def _choose(paths, description):
         paths = sorted({p for p in paths if p.is_file()})
         if len(paths) > 1:
-            raise AssetError(f"{description}: 후보 {len(paths)}개가 겹칩니다. 사용할 개별 팩 폴더를 선택하세요.")
+            action = "‘유니폼 이미지 선택’에서 사용할 이미지를 선택하세요." if description.startswith("구단 ") else "사용할 개별 팩 폴더를 선택하세요."
+            raise AssetError(f"{description}: 후보 {len(paths)}개가 겹칩니다. {action}", paths)
         if not paths:
             raise AssetError(f"{description}: 연결된 이미지 파일이 없습니다.")
         return paths[0]

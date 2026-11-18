@@ -29,7 +29,7 @@ DEFAULTS = {
     "poll_seconds": 10, "timeout_seconds": 600,
     "initial_generation": False,
     "style": "Photorealistic football player portrait, natural lighting, detailed face and jersey, no text or frame.",
-    "additional_instructions": "", "player_overrides": {},
+    "additional_instructions": "", "player_overrides": {}, "kit_overrides": {},
     "name_font_path": "", "frame_template": "", "graphics_root": "", "kit_variant": "home",
 }
 
@@ -85,6 +85,13 @@ def load_config(path):
             raise ValueError(f"{field}: 음수는 사용할 수 없습니다.")
     if config["kit_variant"] not in ("home", "away", "third"):
         raise ValueError("유니폼 유형은 home/away/third여야 합니다.")
+    overrides = config["kit_overrides"]
+    if not isinstance(overrides, dict) or any(
+        not re.fullmatch(r"\d+:(home|away|third)", key) or not isinstance(value, str) or not value.strip()
+        for key, value in overrides.items()
+    ):
+        raise ValueError("유니폼 선택 설정이 올바르지 않습니다.")
+    config["kit_overrides"] = {key: str((path.parent / value).resolve()) for key, value in overrides.items()}
     return config
 
 
@@ -292,6 +299,16 @@ class Engine:
             # Newly installed faces/kits can appear while the watcher is running.
             return getattr(self.asset_catalog(folder, refresh=True), method)(*args)
 
+    def kit_reference(self, club_id):
+        key = f'{club_id}:{self.c["kit_variant"]}'
+        chosen = self.c.get("kit_overrides", {}).get(key)
+        if chosen:
+            path = Path(chosen)
+            if not path.is_file():
+                raise AssetError(f"구단 {key}: 선택했던 유니폼 파일이 없습니다. ‘유니폼 이미지 선택’에서 다시 지정하세요.")
+            return path
+        return self.lookup_asset(self.c["kits_dir"], "kit", club_id, self.c["kit_variant"])
+
     def meta(self, key):
         found = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return found[0] if found else None
@@ -418,7 +435,7 @@ class Engine:
             return True
         try:
             portrait, face_target = self.lookup_asset(self.c["portraits_dir"], "face", row["id"], row["id"] in self.c["regen_player_ids"])
-            kit = self.lookup_asset(self.c["kits_dir"], "kit", row["club_id"], self.c["kit_variant"])
+            kit = self.kit_reference(row["club_id"])
             options = request_options(self.c, row)
             check_options(options["display_name"], self.c["name_font_path"], self.c["frame_template"])
             self.check_pack()

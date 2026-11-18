@@ -77,8 +77,9 @@ class AssetTests(unittest.TestCase):
         for name in ("packA", "packB"):
             self.image(f"{name}/photo.png")
             self.xml(name, [("photo", "graphics/pictures/person/123/portrait")])
-        with self.assertRaisesRegex(AssetError, "후보 2개"):
+        with self.assertRaisesRegex(AssetError, "후보 2개") as error:
             AssetCatalog(self.root).face("123")
+        self.assertEqual(set(error.exception.candidates), {self.root / name / "photo.png" for name in ("packA", "packB")})
         self.assertEqual(len(AssetCatalog(self.root).suggestions()), 2)
         self.assertEqual(AssetCatalog(self.root / "packA").face("123")[0].parent.name, "packA")
 

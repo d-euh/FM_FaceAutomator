@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -14,8 +15,10 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
+from PIL import Image, ImageTk
+
 from engine import DEFAULTS, Engine, file_stamp, load_config, process_lock, read_source, write_atomic
-from assets import AssetCatalog, discover_roots
+from assets import AssetCatalog, AssetError, discover_roots, reference_png
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
@@ -90,6 +93,7 @@ class App:
         actions.pack(fill="x", pady=10)
         for title, callback in [("이미지 미리보기", self.preview), ("저장 재시도", self.apply), ("합성 재시도", self.retry), ("선수 ID 목록 저장", self.export), ("적용 백업 복구", self.restore), ("선수별 이름·지시", self.edit_player)]:
             ttk.Button(actions, text=title, command=callback).pack(side="left", padx=(0, 6))
+        ttk.Button(jobs, text="유니폼 이미지 선택", command=self.choose_kit).pack(anchor="w", pady=(0, 8))
         self.detail = tk.StringVar(value="원본·키트는 기존 팩의 config.xml에서 ID로 찾습니다. 매핑이 없으면 ID 파일명을 사용합니다.")
         ttk.Label(jobs, textvariable=self.detail, wraplength=1000).pack(fill="x", pady=(0, 8))
         self.log = tk.Text(window, height=5, font=("Consolas", 10), state="disabled")
@@ -435,6 +439,163 @@ class App:
         jid = self.selected()
         if jid:
             self.background(lambda e: (e.retry(jid), self.events.put("재시도 대기열에 반영했습니다. 감시·생성 시작으로 실행하세요.")))
+
+    def choose_kit(self):
+        if self.active():
+            messagebox.showinfo("유니폼 선택", "현재 작업 후 정지한 다음 선택하세요.")
+            return
+        jid = self.selected()
+        if not jid:
+            messagebox.showinfo("유니폼 선택", "대기열에서 선수를 선택하세요.")
+            return
+        if not self.save():
+            return
+        e = Engine(self.config)
+        try:
+            job = e.db.execute("SELECT data,status FROM jobs WHERE id=?", (jid,)).fetchone()
+            if not job:
+                return
+            player = json.loads(job["data"])
+            if job["status"] not in ("pending", "blocked", "failed", "interrupted"):
+                messagebox.showinfo("유니폼 선택", "대기·보류·실패·중단 작업에서 선택하세요. 완성된 이미지는 이 선택으로 바뀌지 않습니다.")
+                return
+        finally:
+            e.close()
+        config = dict(self.config)
+        key = f'{player["club_id"]}:{config["kit_variant"]}'
+        chosen = config.get("kit_overrides", {}).get(key)
+        editor = tk.Toplevel(self.window)
+        editor.title(f'유니폼 선택 · {player["club_name"]} · {config["kit_variant"]}')
+        editor.geometry("960x620")
+        editor.minsize(800, 540)
+        editor.transient(self.window)
+        editor.grab_set()
+        frame = ttk.Frame(editor, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=f'구단 {player["club_id"]} · {config["kit_variant"]} — 같은 구단·유형의 이후 작업에도 적용합니다.').pack(anchor="w")
+        status = tk.StringVar(value="설정된 유니폼 폴더에서 후보를 검색하고 있습니다…")
+        ttk.Label(frame, textvariable=status, wraplength=900).pack(fill="x", pady=8)
+        body = ttk.Frame(frame)
+        body.pack(fill="both", expand=True)
+        listing = ttk.Frame(body)
+        listing.pack(side="left", fill="both", expand=True, padx=(0, 12))
+        candidates = tk.Listbox(listing, exportselection=False, width=45, font="TkTextFont")
+        vertical = ttk.Scrollbar(listing, orient="vertical", command=candidates.yview)
+        horizontal = ttk.Scrollbar(listing, orient="horizontal", command=candidates.xview)
+        candidates.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        vertical.pack(side="right", fill="y")
+        horizontal.pack(side="bottom", fill="x")
+        candidates.pack(fill="both", expand=True)
+        preview = ttk.Label(body, text="이미지를 선택하면 미리보기가 표시됩니다.", anchor="center", width=38)
+        preview.pack(side="right", fill="both")
+        selected_path = tk.StringVar()
+        ttk.Label(frame, textvariable=selected_path, wraplength=900).pack(fill="x", pady=10)
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+        paths = []
+        selection = {"path": None}
+
+        def show(event=None):
+            selection["path"] = None
+            use.configure(state="disabled")
+            indexes = candidates.curselection()
+            if not indexes:
+                return
+            path = paths[indexes[0]]
+            selected_path.set(str(path))
+            try:
+                with Image.open(BytesIO(reference_png(path))) as image:
+                    image.thumbnail((350, 350), Image.Resampling.LANCZOS)
+                    editor.photo = ImageTk.PhotoImage(image, master=editor)
+                preview.configure(image=editor.photo, text="")
+                selection["path"] = path
+                use.configure(state="normal")
+            except Exception as exc:
+                preview.configure(image="", text="미리보기를 열 수 없습니다.")
+                status.set(str(exc))
+
+        def add(path):
+            path = Path(path).resolve()
+            if path not in paths:
+                paths.append(path)
+                candidates.insert("end", str(path))
+            index = paths.index(path)
+            candidates.selection_clear(0, "end")
+            candidates.selection_set(index)
+            candidates.see(index)
+            show()
+
+        def browse():
+            path = filedialog.askopenfilename(parent=editor, title="사용할 유니폼 이미지", filetypes=[("이미지", "*.png *.jpg *.jpeg *.webp *.bmp"), ("모든 파일", "*.*")])
+            if path:
+                add(path)
+
+        def commit(automatic=False):
+            path = selection["path"]
+            if not automatic and path is None:
+                return
+            try:
+                if not automatic:
+                    reference_png(path)
+            except Exception as exc:
+                messagebox.showerror("유니폼 선택", str(exc), parent=editor)
+                return
+            previous = self.config.get("kit_overrides", {})
+            updated = dict(previous)
+            if automatic:
+                updated.pop(key, None)
+            else:
+                updated[key] = str(path)
+            self.config["kit_overrides"] = updated
+            if not self.save():
+                self.config["kit_overrides"] = previous
+                return
+            editor.destroy()
+            self.background(lambda engine: (engine.retry(jid), self.events.put(f"구단 {key} 유니폼 선택 반영. 감시·생성 시작으로 실행하세요.")))
+
+        use = ttk.Button(buttons, text="이 이미지 사용", command=commit, state="disabled")
+        use.pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="파일 직접 선택", command=browse).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="자동 검색으로 되돌리기", command=lambda: commit(True)).pack(side="left")
+        ttk.Button(buttons, text="취소", command=editor.destroy).pack(side="right")
+        candidates.bind("<<ListboxSelect>>", show)
+        results = queue.Queue()
+
+        def scan():
+            try:
+                catalog = AssetCatalog(config["kits_dir"], exclude=(config["state_dir"], config["pack_dir"]))
+                try:
+                    found = [catalog.kit(player["club_id"], config["kit_variant"])]
+                    note = "검색된 후보를 확인하고 선택하세요."
+                except AssetError as exc:
+                    found, note = list(exc.candidates), str(exc)
+                results.put((found, note))
+            except Exception as exc:
+                results.put(([], str(exc)))
+
+        def poll():
+            if not editor.winfo_exists():
+                return
+            try:
+                found, note = results.get_nowait()
+            except queue.Empty:
+                editor.after(100, poll)
+                return
+            current = selection["path"]
+            for path in found:
+                add(path)
+            if current:
+                add(current)
+            elif paths:
+                candidates.selection_clear(0, "end")
+                candidates.selection_set(0)
+                show()
+            status.set(f"{len(paths)}개 이미지. {note} 직접 파일을 지정할 수도 있습니다.")
+
+        if chosen:
+            add(chosen)
+        threading.Thread(target=scan, daemon=True).start()
+        editor.after(100, poll)
 
     def edit_player(self):
         if self.active():
