@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 
 from engine import DEFAULTS, Engine, load_config, process_lock, read_source, write_atomic
-from assets import AssetCatalog, AssetError, reference_png
+from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
 
 
@@ -111,7 +111,7 @@ class App:
     def fields(self, parent):
         rows = [("source", "FM27 세이브 / JSON", "file"), ("state_dir", "작업 폴더 (세이브별)", "dir"),
                 ("portraits_dir", "원본 얼굴 폴더", "dir"), ("kits_dir", "유니폼 참조 폴더", "dir"),
-                ("pack_dir", "전용 페이스팩 폴더", "dir"), ("codex", "Codex 실행 파일", "exe"),
+                ("pack_dir", "페이스팩 저장 폴더", "dir"), ("codex", "Codex 실행 파일", "exe"),
                 ("club_ids", "추가 구단 ID (쉼표)", None), ("player_ids", "추가 선수 ID (쉼표)", None),
                 ("exclude_player_ids", "제외 선수 ID (쉼표)", None),
                 ("regen_player_ids", "생성선수 r- 매핑 ID", None), ("graphics_root", "FM 자료 상위 폴더 (선택)", "dir")]
@@ -139,7 +139,7 @@ class App:
             ttk.Entry(group, textvariable=self.vars[key], width=12).pack(anchor="w", pady=4)
         self.path_status = tk.StringVar(value="경로를 자동으로 확인합니다. 표시된 경로가 다르면 직접 바꾸세요.")
         ttk.Label(parent, textvariable=self.path_status, foreground="#536070", wraplength=980).grid(row=13, column=0, columnspan=3, sticky="w", pady=8)
-        ttk.Label(parent, text="범위를 지정하고 감시를 시작하면 세이브 저장 후 이적 감지 → 합성 → ID.png·350×350·영문 이름·config.xml 저장까지 자동 진행합니다.\n첫 읽기는 기준만 기록합니다. 유니폼 후보가 겹치면 무작위 하나를 사용합니다.\n24시간 상한·재생성 간격에 걸린 작업은 대기하다가 자동으로 이어갑니다.", foreground="#536070", wraplength=980).grid(row=14, column=0, columnspan=3, sticky="w", pady=8)
+        ttk.Label(parent, text="범위를 지정하고 감시를 시작하면 세이브 저장 후 이적 감지 → 합성 → ID.png·350×350·영문 이름·config.xml 저장까지 자동 진행합니다.\n기존 파일이 있는 페이스팩에도 저장합니다. 해당 선수의 파일·매핑은 백업 후 갱신합니다.\n첫 읽기는 기준만 기록합니다. 중복 유니폼은 무작위 선택하며 호출 상한·재생성 간격 후 자동으로 이어갑니다.", foreground="#536070", wraplength=980).grid(row=14, column=0, columnspan=3, sticky="w", pady=8)
         ttk.Button(parent, text="설정 저장", command=self.save).grid(row=15, column=0, sticky="w")
         ttk.Button(parent, text="설정 저장 · 감시 시작", command=self.start).grid(row=15, column=1, sticky="w")
 
@@ -476,7 +476,8 @@ class App:
 
         def scan():
             try:
-                catalog = AssetCatalog(config["kits_dir"], exclude=(config["state_dir"], config["pack_dir"]))
+                catalog = AssetCatalog(config["kits_dir"], exclude=source_exclusions(config, config["kits_dir"]),
+                                       allow_managed=Path(config["kits_dir"]).resolve() == Path(config["pack_dir"]).resolve())
                 try:
                     found = catalog.kit_candidates(player["club_id"], config["kit_variant"])
                     note = "지정하지 않으면 매 작업에서 무작위 후보를 사용합니다."

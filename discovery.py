@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import shutil
 
-from assets import AssetCatalog, discover_roots, document_folders
+from assets import AssetCatalog, discover_roots, document_folders, source_exclusions
 
 
 def find_codex(environ=None):
@@ -66,7 +66,8 @@ def discover_defaults(config, base, home=None, environ=None, stop=None):
         if stop is not None and stop.is_set():
             return {}, []
         try:
-            catalog = AssetCatalog(root, exclude=(config.get("state_dir", ""), config.get("pack_dir", "")), stop=stop)
+            catalog = AssetCatalog(root, exclude=source_exclusions(config, root), stop=stop,
+                                   allow_managed=Path(root).resolve() == Path(config["pack_dir"]).resolve())
             for candidate in catalog.suggestions():
                 candidates[candidate["path"]] = candidate
         except (OSError, ValueError) as exc:

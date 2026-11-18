@@ -25,6 +25,14 @@ def _under(path, root):
     return path == root or path.is_relative_to(root)
 
 
+def source_exclusions(config, folder):
+    pack = Path(config["pack_dir"]).resolve()
+    excluded = [config["state_dir"]]
+    if not Path(folder).resolve().is_relative_to(pack) and (pack / ".fm-face-owner").exists() and not (pack / ".fm-face-shared").exists():
+        excluded.append(str(pack))
+    return excluded
+
+
 def document_folders(home=None, environ=None):
     home = Path.home() if home is None else Path(home)
     environ = os.environ if environ is None else environ
@@ -66,7 +74,7 @@ def discover_roots(config, home=None, environ=None):
 
 
 class AssetCatalog:
-    def __init__(self, root, exclude=(), stop=None):
+    def __init__(self, root, exclude=(), stop=None, allow_managed=False):
         self.root = Path(root).expanduser().resolve()
         if not self.root.is_dir():
             raise AssetError(f"자료 폴더가 없습니다: {self.root}")
@@ -91,11 +99,14 @@ class AssetCatalog:
             if directories > 20000:
                 raise AssetError("검색 폴더가 너무 큽니다. 개별 페이스팩/키트 폴더를 선택하세요.")
             base = Path(folder)
-            if (base / ".fm-face-owner").is_file():
+            managed = (base / ".fm-face-owner").is_file()
+            shared = (base / ".fm-face-shared").is_file()
+            if managed and not shared and not (allow_managed and base == self.root):
                 dirs[:] = []
                 continue
             dirs[:] = sorted(d for d in dirs if not (base / d).is_symlink()
                              and not getattr(base / d, "is_junction", lambda: False)()
+                             and not (d == ".fm-face-lock" or (d == "backups" and (managed or shared)))
                              and not any(_under((base / d).resolve(), e) for e in self.exclude))
             for name in sorted(names):
                 files += 1

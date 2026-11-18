@@ -18,7 +18,8 @@ import unicodedata
 import xml.etree.ElementTree as ET
 
 from gunzo import LAYOUT, check_options, render_gunzo
-from assets import AssetCatalog, AssetError, reference_png
+from assets import AssetCatalog, AssetError, reference_png, source_exclusions
+import facepack
 
 
 DEFAULTS = {
@@ -309,7 +310,8 @@ class Engine:
     def asset_catalog(self, folder, refresh=False):
         cached = self._asset_catalogs.get(folder)
         if refresh or cached is None or time.monotonic() - cached[0] > 60:
-            catalog = AssetCatalog(folder, exclude=(self.c["state_dir"], self.c["pack_dir"]))
+            catalog = AssetCatalog(folder, exclude=source_exclusions(self.c, folder),
+                                   allow_managed=Path(folder).resolve() == Path(self.c["pack_dir"]).resolve())
             cached = (time.monotonic(), catalog)
             self._asset_catalogs[folder] = cached
         return cached[1]
@@ -503,7 +505,7 @@ class Engine:
             kit = self.kit_reference(row["club_id"])
             options = request_options(self.c, row)
             check_options(options["display_name"] or "PLAYER", self.c["name_font_path"], self.c["frame_template"])
-            self.check_pack()
+            self.check_pack(row["id"])
             face_png, kit_png = reference_png(portrait), reference_png(kit)
         except Exception as exc:
             self.block_preflight(jid, row, str(exc))
@@ -574,16 +576,15 @@ class Engine:
             self.db.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(row, ensure_ascii=False), jid))
             self.update(jid, "blocked", note)
 
-    def check_pack(self):
+    def check_pack(self, player_id=None):
         pack = Path(self.c["pack_dir"])
         if not pack.exists():
             return
-        marker = pack / ".fm-face-owner"
-        if marker.exists():
-            if marker.read_text() != self.meta("owner"):
-                raise ValueError("다른 작업 폴더가 관리하는 페이스팩입니다.")
-        elif any(pack.iterdir()):
-            raise ValueError("기존 파일이 있는 폴더입니다. 비어 있는 전용 페이스팩 폴더를 선택하세요.")
+        if not pack.is_dir():
+            raise ValueError("페이스팩 경로는 폴더여야 합니다.")
+        _, _, maps = facepack.load(pack)
+        if player_id:
+            facepack.check_destination(pack, maps, player_id)
 
     @staticmethod
     def pack_mapping(data):
@@ -630,10 +631,23 @@ class Engine:
 
     def migrate_pack_filenames(self):
         pack = Path(self.c["pack_dir"])
+        if not pack.is_dir():
+            return 0
+        with process_lock(pack / ".fm-face-lock"):
+            return self._migrate_pack_filenames()
+
+    def _migrate_pack_filenames(self):
+        pack = Path(self.c["pack_dir"])
         if not (pack / ".fm-face-owner").exists() or not (pack / "config.xml").exists():
             return 0
+        if (pack / ".fm-face-shared").exists() or (pack / ".fm-face-owner").read_text() != self.meta("owner"):
+            return 0
         self.check_pack()
-        mapping = self.pack_mapping((pack / "config.xml").read_bytes())
+        try:
+            mapping = self.pack_mapping((pack / "config.xml").read_bytes())
+        except ValueError:
+            # User-expanded/third-party packs are updated per player, not migrated.
+            return 0
         changes = {pid: stem for pid, stem in mapping.items() if stem != pid.removeprefix("r-")}
         if not changes:
             return 0
@@ -665,40 +679,39 @@ class Engine:
             self.update(job_id, "superseded", "적용 전 소속/범위 변경")
             raise ValueError("현재 소속/범위와 맞지 않는 결과입니다.")
         validate_png(job["artifact"])
-        self.check_pack()
+        self.check_pack(row["id"])
         pack = Path(self.c["pack_dir"])
         pack.mkdir(parents=True, exist_ok=True)
-        marker = pack / ".fm-face-owner"
-        if marker.exists():
-            if marker.read_text() != self.meta("owner"):
-                raise ValueError("다른 작업 폴더가 관리하는 페이스팩입니다.")
-        elif any(pack.iterdir()):
-            raise ValueError("기존 파일이 있는 폴더입니다. 비어 있는 전용 페이스팩 폴더를 선택하세요.")
-        else:
-            write_atomic(marker, self.meta("owner").encode())
         filename = row["id"]
-        config = pack / "config.xml"
-        # The atomically replaced XML is the source of truth even after a crash
-        # between a filesystem write and the SQLite commit.
-        mapping = self.pack_mapping(config.read_bytes()) if config.exists() else {}
-        self.backup_pack(f"config-before-{job_id}")
-        write_atomic(pack / (filename + ".png"), Path(job["artifact"]).read_bytes())
         target_id = row.get("face_target") or (("r-" if row["id"] in self.c["regen_player_ids"] else "") + row["id"])
-        mapping.pop(row["id"], None)
-        mapping.pop("r-" + row["id"], None)
-        mapping[target_id] = filename
-        write_atomic(config, self.mapping_xml(mapping))
+        with process_lock(pack / ".fm-face-lock"):
+            marker = pack / ".fm-face-owner"
+            if marker.exists():
+                shared = marker.read_text() != self.meta("owner")
+            else:
+                shared = any(p.name != ".fm-face-lock" for p in pack.iterdir())
+                if not shared:
+                    write_atomic(marker, self.meta("owner").encode())
+            if shared:
+                write_atomic(pack / ".fm-face-shared", b"Existing files and unrelated mappings are preserved.\n")
+            facepack.apply(pack, filename, target_id, job["artifact"], f"config-before-{job_id}", write_atomic)
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO applied VALUES (?,?,?)", (row["id"], job_id, filename))
             self.db.execute("UPDATE jobs SET status='applied',note='350×350 PNG·하단 이름·config.xml 갱신 완료. 게임 새로고침이 필요할 수 있습니다.' WHERE id=?", (job_id,))
 
     def restore(self, backup):
+        with process_lock(Path(self.c["pack_dir"]) / ".fm-face-lock"):
+            return self._restore(backup)
+
+    def _restore(self, backup):
         pack = Path(self.c["pack_dir"])
         backup = Path(backup).resolve()
         if backup.parent != (pack / "backups").resolve():
             raise ValueError("이 페이스팩의 backups 폴더에서 파일을 선택하세요.")
-        if (pack / ".fm-face-owner").read_text() != self.meta("owner"):
-            raise ValueError("이 작업 폴더가 관리하는 페이스팩이 아닙니다.")
+        if backup.with_suffix(".json").exists():
+            return facepack.restore(pack, backup, write_atomic)
+        if not (pack / ".fm-face-owner").exists() or (pack / ".fm-face-owner").read_text() != self.meta("owner"):
+            raise ValueError("이 작업 폴더의 이전 버전 백업이 아닙니다.")
         data = backup.read_bytes()
         mapping = self.pack_mapping(data)
         images = backup.with_suffix(".images")

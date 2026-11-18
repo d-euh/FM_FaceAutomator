@@ -360,7 +360,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.e.jobs()[0]["status"], "failed")
         self.assertFalse(self.e.run_one(timeout))
 
-    def test_existing_pack_is_not_overwritten(self):
+    def test_malformed_existing_pack_is_not_overwritten(self):
         jid = self.transfer()
         self.refs()
         pack = Path(self.c["pack_dir"])
@@ -371,6 +371,127 @@ class EngineTests(unittest.TestCase):
         self.e.run_one(forbidden)
         self.assertEqual(self.e.jobs()[0]["status"], "blocked")
         self.assertEqual((pack / "config.xml").read_text(), "user file")
+
+    def test_existing_mixed_pack_keeps_arbitrary_names_and_unrelated_xml(self):
+        self.transfer(); self.refs()
+        pack = Path(self.c["pack_dir"]); pack.mkdir()
+        (pack / "photos").mkdir()
+        Image.new("RGB", (120, 120), "blue").save(pack / "photos/old portrait.jpg")
+        Image.new("RGB", (120, 120), "green").save(pack / "unrelated.png")
+        original = (pack / "photos/old portrait.jpg").read_bytes()
+        unrelated = (pack / "unrelated.png").read_bytes()
+        xml = b'''<record custom="preserve"><!--keep comment--><boolean id="custom" value="true"/><list id="maps" custom="list"><record from="photos/old portrait.jpg" to="graphics/pictures/person/900001/portrait" custom="old"/><record from="unrelated" to="graphics/pictures/person/700/portrait"/><record from="shirt_home" to="graphics/pictures/team/680/kits/home"/></list></record>'''
+        write_atomic(pack / "config.xml", xml)
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        root = ET.parse(pack / "config.xml").getroot()
+        self.assertEqual(root.get("custom"), "preserve")
+        self.assertEqual(root.find("./boolean").get("id"), "custom")
+        self.assertEqual(root.find("./list").get("custom"), "list")
+        records = root.findall("./list/record")
+        self.assertEqual([r.get("from") for r in records], ["unrelated", "shirt_home", "900001"])
+        self.assertIn(b"keep comment", (pack / "config.xml").read_bytes())
+        self.assertEqual((pack / "photos/old portrait.jpg").read_bytes(), original)
+        self.assertEqual((pack / "unrelated.png").read_bytes(), unrelated)
+        backup = next((pack / "backups").glob("config-before-*.xml"))
+        self.assertEqual(backup.read_bytes(), xml)
+        self.e.restore(backup)
+        self.assertFalse((pack / "900001.png").exists())
+        restored = ET.parse(pack / "config.xml").findall("./list/record")
+        self.assertEqual(restored[0].get("from"), "photos/old portrait.jpg")
+        self.assertEqual(restored[0].get("custom"), "old")
+
+    def test_existing_numeric_image_without_xml_is_backed_up_and_restored(self):
+        self.transfer(); self.refs()
+        pack = Path(self.c["pack_dir"]); pack.mkdir()
+        Image.new("RGB", (128, 160), "orange").save(pack / "900001.png")
+        before = (pack / "900001.png").read_bytes()
+        (pack / "readme.txt").write_text("existing pack")
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.assertNotEqual((pack / "900001.png").read_bytes(), before)
+        self.e.restore(next((pack / "backups").glob("config-before-*.xml")))
+        self.assertEqual((pack / "900001.png").read_bytes(), before)
+        self.assertEqual((pack / "readme.txt").read_text(), "existing pack")
+
+    def test_source_and_output_can_be_the_same_existing_pack(self):
+        self.transfer(); self.refs()
+        self.c["pack_dir"] = self.c["portraits_dir"]
+        pack = Path(self.c["pack_dir"])
+        before = (pack / "900001.png").read_bytes()
+        write_atomic(pack / "config.xml", self.e.mapping_xml({"900001": "900001"}))
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.assertTrue((pack / ".fm-face-shared").exists())
+        self.assertEqual(self.e.asset_catalog(str(pack), refresh=True).face("900001")[0], pack / "900001.png")
+        backup = next((pack / "backups").glob("config-before-*.xml"))
+        self.e.restore(backup)
+        self.assertEqual((pack / "900001.png").read_bytes(), before)
+
+    def test_existing_pack_can_be_reused_from_another_state(self):
+        self.transfer(); self.refs(); self.e.run_one(self.good_runner)
+        second = Engine(self.c | {"state_dir": str(self.root / "second-state")})
+        try:
+            second.ingest(read_source(self.c)); second.enqueue_current()
+            self.assertEqual(second.prepare_watch(), 0)
+            second.run_one(self.good_runner)
+            self.assertEqual(second.jobs()[0]["status"], "applied")
+        finally:
+            second.close()
+
+    def test_unrelated_alias_of_destination_blocks_before_ai(self):
+        self.transfer(); self.refs()
+        pack = Path(self.c["pack_dir"]); pack.mkdir()
+        write_atomic(pack / "config.xml", self.e.mapping_xml({"700": "900001"}))
+        with patch.object(self, "good_runner") as runner:
+            self.e.run_one(runner)
+            runner.assert_not_called()
+        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+        self.assertIn("다른 매핑", self.e.jobs()[0]["note"])
+
+    def test_xml_failure_rolls_back_existing_image(self):
+        self.transfer(); self.refs()
+        pack = Path(self.c["pack_dir"]); pack.mkdir()
+        Image.new("RGB", (128, 128), "blue").save(pack / "900001.png")
+        before = (pack / "900001.png").read_bytes()
+        xml = self.e.mapping_xml({"900001": "900001"}); write_atomic(pack / "config.xml", xml)
+        def fail_xml(path, data):
+            if Path(path) == pack / "config.xml":
+                raise OSError("disk failure")
+            return write_atomic(path, data)
+        with patch("engine.write_atomic", side_effect=fail_xml):
+            self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "apply_failed")
+        self.assertEqual((pack / "900001.png").read_bytes(), before)
+        self.assertEqual((pack / "config.xml").read_bytes(), xml)
+        self.e.apply(self.e.jobs()[0]["id"])
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+
+    def test_restore_one_player_keeps_later_unrelated_player_and_xml(self):
+        self.transfer(); self.refs(); self.e.run_one(self.good_runner)
+        pack = Path(self.c["pack_dir"])
+        backup = next((pack / "backups").glob("config-before-*.xml"))
+        xml = ET.parse(pack / "config.xml").getroot()
+        ET.SubElement(xml.find("./list"), "record", {"from": "second-photo", "to": "graphics/pictures/person/700/portrait"})
+        write_atomic(pack / "config.xml", ET.tostring(xml))
+        (pack / "second-photo.png").write_bytes(b"unrelated bytes")
+        self.e.restore(backup)
+        records = ET.parse(pack / "config.xml").findall("./list/record")
+        self.assertEqual([r.get("from") for r in records], ["second-photo"])
+        self.assertEqual((pack / "second-photo.png").read_bytes(), b"unrelated bytes")
+
+    def test_shared_pack_lock_blocks_mutation_without_new_ai_call(self):
+        self.transfer(); self.refs()
+        self.e.run_one(self.good_runner)
+        jid = self.e.jobs()[0]["id"]
+        self.e.update(jid, "generated")
+        pack = Path(self.c["pack_dir"])
+        before = (pack / "config.xml").read_bytes()
+        with process_lock(pack / ".fm-face-lock"):
+            self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "apply_failed")
+        self.assertEqual((pack / "config.xml").read_bytes(), before)
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 1)
 
     def test_explicit_regen_mapping(self):
         jid = self.transfer()
