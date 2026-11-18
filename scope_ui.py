@@ -119,7 +119,8 @@ class ScopePanel:
         rules = self.value()
         self.summary.set("현재 범위: " + describe({"scope_rules": rules}))
         for key, button in self.buttons.items():
-            button.configure(style="Primary.TButton" if key == rules["preset"] else "TButton")
+            selected = key == rules["preset"]
+            button.configure(style="Primary.TButton" if selected else "TButton", text=("✓ " if selected else "") + PRESETS[key])
         self.refresh_note()
         self.changed()
 

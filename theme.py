@@ -37,13 +37,13 @@ def apply_theme(window, family):
                     troughcolor=BACKGROUND, focuscolor=PURPLE)
     style.configure("TFrame", background=BACKGROUND)
     style.configure("TLabel", background=BACKGROUND, foreground=TEXT)
-    style.configure("TButton", padding=(13, 9), background=SURFACE, foreground=TEXT, bordercolor=BORDER, relief="flat")
-    style.map("TButton", background=[("disabled", BACKGROUND), ("pressed", SELECTED), ("active", HOVER)],
-              foreground=[("disabled", DISABLED)], bordercolor=[("focus", PURPLE), ("active", BORDER)])
-    style.configure("Primary.TButton", background=PURPLE, foreground=INPUT, bordercolor=PURPLE, borderwidth=1, relief="flat")
-    style.map("Primary.TButton", background=[("disabled", DISABLED), ("pressed", PURPLE_HOVER), ("active", PURPLE_HOVER)],
-              foreground=[("disabled", SURFACE), ("!disabled", INPUT)],
-              bordercolor=[("disabled", DISABLED), ("!disabled", PURPLE)])
+    style.configure("TButton", padding=(13, 9), background=PURPLE, foreground=INPUT, bordercolor=PURPLE, relief="flat")
+    style.map("TButton", background=[("disabled", PURPLE), ("pressed", PURPLE_HOVER), ("active", PURPLE_HOVER)],
+              foreground=[("disabled", INPUT), ("!disabled", INPUT)], bordercolor=[("focus", PURPLE_HOVER), ("active", PURPLE_HOVER)])
+    style.configure("Primary.TButton", background=PURPLE, foreground=INPUT, bordercolor=PURPLE_HOVER, borderwidth=2, relief="solid")
+    style.map("Primary.TButton", background=[("disabled", PURPLE), ("pressed", PURPLE_HOVER), ("active", PURPLE_HOVER)],
+              foreground=[("disabled", INPUT), ("!disabled", INPUT)],
+              bordercolor=[("disabled", PURPLE_HOVER), ("!disabled", PURPLE_HOVER)])
     style.configure("Title.TLabel", font=(family, 20, "bold"))
     style.configure("Muted.TLabel", foreground=MUTED)
     style.configure("Card.TFrame", background=SURFACE, borderwidth=0, relief="flat")
