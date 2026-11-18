@@ -21,7 +21,7 @@ from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
 import scope_rules
 from scope_ui import ScopePanel
-from theme import BLACK, PURPLE, apply_theme
+from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, apply_theme
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
@@ -68,7 +68,7 @@ class App:
             self.tabs.add(host, text=label)
         ttk.Button(header, text="홈", command=lambda: self.tabs.select(self.home_tab)).pack(side="right")
         ttk.Button(header, text="생성 범위 설정", command=lambda: self.tabs.select(self.scope_tab)).pack(side="right", padx=8)
-        ttk.Label(header, text="v0.5.1", style="Muted.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.5.2", style="Muted.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan,
                                       lambda: self.tabs.select(self.home_tab), self.update_scope_summary)
@@ -98,7 +98,7 @@ class App:
         ttk.Label(jobs, textvariable=self.detail, wraplength=1100, style="Muted.TLabel").pack(fill="x", pady=(0, 6))
         log_host = ttk.Frame(window, padding=(20, 10, 20, 16))
         log_host.pack(side="bottom", fill="x", before=self.tabs)
-        self.log = tk.Text(log_host, height=4, font=(family, 9), state="disabled", background=BLACK, foreground=PURPLE, relief="flat", padx=10, pady=8)
+        self.log = tk.Text(log_host, height=4, font=(family, 9), state="disabled", background=LOG_BACKGROUND, foreground=MUTED, relief="flat", padx=10, pady=8)
         self.log.pack(fill="x")
         self.load()
         self.window.after(100, self.auto_paths)
@@ -111,7 +111,7 @@ class App:
             content = ttk.Frame(host, padding=20)
             content.pack(fill="both", expand=True)
             return host, content
-        canvas = tk.Canvas(host, highlightthickness=0, background=BLACK)
+        canvas = tk.Canvas(host, highlightthickness=0, background=BACKGROUND)
         bar = ttk.Scrollbar(host, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=bar.set)
         bar.pack(side="right", fill="y")
@@ -162,9 +162,9 @@ class App:
         recent = ttk.Frame(parent, style="Card.TFrame", padding=20)
         recent.grid(row=0, column=1, sticky="nsew")
         ttk.Label(recent, text="최근 생성된 페이스온", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 14))
-        self.recent_canvas = tk.Canvas(recent, width=350, height=350, background=BLACK, highlightthickness=0)
+        self.recent_canvas = tk.Canvas(recent, width=350, height=350, background=PREVIEW_BACKGROUND, highlightthickness=0)
         self.recent_canvas.pack()
-        self.recent_canvas.create_text(175, 175, text="첫 페이스온을 기다리고 있습니다\n생성이 끝나면 여기에 표시됩니다", fill=PURPLE, font="TkDefaultFont", justify="center")
+        self.recent_canvas.create_text(175, 175, text="첫 페이스온을 기다리고 있습니다\n생성이 끝나면 여기에 표시됩니다", fill=MUTED, font="TkDefaultFont", justify="center")
         self.recent_name = tk.StringVar(value="350 × 350 · 영문 이름 · ID 파일명")
         ttk.Label(recent, textvariable=self.recent_name, style="CardText.TLabel", wraplength=350).pack(anchor="w", pady=(14, 0))
 
@@ -208,7 +208,7 @@ class App:
     def clear_preview(self):
         self.dashboard_key = None
         self.recent_canvas.delete("all")
-        self.recent_canvas.create_text(175, 175, text="아직 생성된 페이스온이 없습니다", fill=PURPLE, font="TkDefaultFont")
+        self.recent_canvas.create_text(175, 175, text="아직 생성된 페이스온이 없습니다", fill=MUTED, font="TkDefaultFont")
         self.recent_name.set("350 × 350 · 영문 이름 · ID 파일명")
 
     def fields(self, parent):
@@ -236,7 +236,7 @@ class App:
         ttk.Label(parent, text="예: 비 오는 경기장에서 골을 넣고 활짝 웃는 모습. 앞머리는 뒤로 넘기고 한 손을 들어주세요.", wraplength=980).pack(anchor="w", pady=(8, 6))
         self.additional_text = tk.Text(parent, height=5, wrap="word", font="TkTextFont")
         self.additional_text.pack(fill="x")
-        ttk.Label(parent, text="추가 지시가 있으면 머리카락·표정·자세 유지 문구를 넣지 않습니다. 얼굴 동일성은 기본 유지합니다.\n선수별 입력은 대기열에서 ‘선수별 이름·지시’를 선택하세요. 공통 지시와 충돌하면 선수별 지시를 우선합니다.", foreground=PURPLE, wraplength=980).pack(anchor="w", pady=10)
+        ttk.Label(parent, text="추가 지시가 있으면 머리카락·표정·자세 유지 문구를 넣지 않습니다. 얼굴 동일성은 기본 유지합니다.\n선수별 입력은 대기열에서 ‘선수별 이름·지시’를 선택하세요. 공통 지시와 충돌하면 선수별 지시를 우선합니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
         ttk.Label(parent, text="기본 사진 스타일").pack(anchor="w")
         self.style_text = tk.Text(parent, height=3, wrap="word", font="TkTextFont")
         self.style_text.pack(fill="x", pady=(6, 12))
@@ -248,7 +248,7 @@ class App:
             self.vars[key] = tk.StringVar()
             ttk.Entry(row, textvariable=self.vars[key]).pack(side="left", fill="x", expand=True)
             ttk.Button(row, text="선택", command=lambda k=key: self.choose(k, "asset")).pack(side="left", padx=(8, 0))
-        ttk.Label(parent, text="이름은 AI가 그리지 않고 프로그램이 정확한 문자열로 넣습니다. 이름 수정은 다음 합성부터 반영됩니다.\nPNG와 config.xml을 모두 저장해야 완료 처리합니다. 저장 실패 시 이미지를 보관하고 추가 합성 없이 저장만 재시도합니다.", foreground=PURPLE, wraplength=980).pack(anchor="w", pady=10)
+        ttk.Label(parent, text="이름은 AI가 그리지 않고 프로그램이 정확한 문자열로 넣습니다. 이름 수정은 다음 합성부터 반영됩니다.\nPNG와 config.xml을 모두 저장해야 완료 처리합니다. 저장 실패 시 이미지를 보관하고 추가 합성 없이 저장만 재시도합니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
         ttk.Button(parent, text="설정 저장", command=self.save).pack(anchor="w")
 
     def choose(self, key, kind):

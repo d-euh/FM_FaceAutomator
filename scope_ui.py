@@ -78,7 +78,7 @@ class ScopePanel:
         row = ttk.Frame(right, style="Card.TFrame")
         row.pack(fill="x", pady=(8, 0))
         ttk.Button(row, text="선택 구단 삭제", command=self.remove_club).pack(side="left")
-        ttk.Checkbutton(row, text="내가 맡은 구단도 함께 포함", variable=self.include_managed, command=self.render_summary).pack(side="right")
+        ttk.Checkbutton(row, style="Card.TCheckbutton", text="내가 맡은 구단도 함께 포함", variable=self.include_managed, command=self.render_summary).pack(side="right")
         advanced = ttk.Frame(parent, style="Card.TFrame", padding=20)
         advanced.pack(fill="x", pady=(18, 0))
         ttk.Label(advanced, text="추가 조건 · 호출량", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
@@ -95,7 +95,7 @@ class ScopePanel:
             variables[key] = tk.StringVar()
             ttk.Entry(group, textvariable=variables[key], width=12).pack(fill="x", pady=6)
         variables["initial_generation"] = tk.BooleanVar()
-        ttk.Checkbutton(advanced, text="처음 발견한 선수도 생성 · 기본값은 기준만 기록", variable=variables["initial_generation"]).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ttk.Checkbutton(advanced, style="Card.TCheckbutton", text="처음 발견한 선수도 생성 · 기본값은 기준만 기록", variable=variables["initial_generation"]).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
         advanced.columnconfigure(1, weight=1)
 
     def value(self):
