@@ -1,18 +1,19 @@
-"""Silver-grey surfaces, neutral text, and RGB(113, 10, 158) accents."""
+"""Muted silver-grey surfaces, neutral text, and plum accents."""
 from tkinter import ttk
 
-BACKGROUND = "#D6D7DB"
-SURFACE = "#F5F5F7"
-INPUT = "#FFFFFF"
+BACKGROUND = "#C8C9CF"
+SURFACE = "#E7E8EC"
+INPUT = "#F3F3F5"
+BUTTON_TEXT = "#FFFFFF"
 TEXT = "#28252F"
-MUTED = "#6B6773"
-PURPLE = "#710A9E"
-PURPLE_HOVER = "#58077B"
-BORDER = "#BEC0C8"
-SELECTED = "#EBDFF1"
-HOVER = "#E5E5EB"
-LOG_BACKGROUND = "#CED0D6"
-PREVIEW_BACKGROUND = "#E3E4E9"
+MUTED = "#625F6A"
+PURPLE = "#633078"
+PURPLE_HOVER = "#512563"
+BORDER = "#ADB0BA"
+SELECTED = "#DED2E5"
+HOVER = "#D7D8DF"
+LOG_BACKGROUND = "#BFC1C8"
+PREVIEW_BACKGROUND = "#D4D6DD"
 DISABLED = "#A6A4AD"
 
 
@@ -37,14 +38,14 @@ def apply_theme(window, family):
                     troughcolor=BACKGROUND, focuscolor=PURPLE)
     style.configure("TFrame", background=BACKGROUND)
     style.configure("TLabel", background=BACKGROUND, foreground=TEXT)
-    style.configure("TButton", padding=(13, 9), background=PURPLE, foreground=INPUT, bordercolor=PURPLE, relief="flat")
+    style.configure("TButton", padding=(13, 9), background=PURPLE, foreground=BUTTON_TEXT, bordercolor=PURPLE, relief="flat")
     style.configure("Compact.TButton", padding=(11, 5))
     style.configure("Badge.TLabel", background=SELECTED, foreground=PURPLE, padding=(12, 7), font=(family, 10, "bold"))
     style.map("TButton", background=[("disabled", PURPLE), ("pressed", PURPLE_HOVER), ("active", PURPLE_HOVER)],
-              foreground=[("disabled", INPUT), ("!disabled", INPUT)], bordercolor=[("focus", PURPLE_HOVER), ("active", PURPLE_HOVER)])
-    style.configure("Primary.TButton", background=PURPLE, foreground=INPUT, bordercolor=PURPLE_HOVER, borderwidth=2, relief="solid")
+              foreground=[("disabled", BUTTON_TEXT), ("!disabled", BUTTON_TEXT)], bordercolor=[("focus", PURPLE_HOVER), ("active", PURPLE_HOVER)])
+    style.configure("Primary.TButton", background=PURPLE, foreground=BUTTON_TEXT, bordercolor=PURPLE_HOVER, borderwidth=2, relief="solid")
     style.map("Primary.TButton", background=[("disabled", PURPLE), ("pressed", PURPLE_HOVER), ("active", PURPLE_HOVER)],
-              foreground=[("disabled", INPUT), ("!disabled", INPUT)],
+              foreground=[("disabled", BUTTON_TEXT), ("!disabled", BUTTON_TEXT)],
               bordercolor=[("disabled", PURPLE_HOVER), ("!disabled", PURPLE_HOVER)])
     style.configure("Title.TLabel", font=(family, 22, "bold"))
     style.configure("Section.TLabel", font=(family, 13, "bold"), foreground=TEXT, background=BACKGROUND)

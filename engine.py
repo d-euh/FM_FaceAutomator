@@ -1028,7 +1028,7 @@ class Engine:
             facepack.apply(pack, filename, target_id, job["artifact"], f"config-before-{job_id}", write_atomic)
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO applied VALUES (?,?,?)", (row["id"], job_id, filename))
-            self.db.execute("UPDATE jobs SET status='applied',note='350×350 PNG·하단 이름·config.xml 갱신 완료. 게임 새로고침이 필요할 수 있습니다.' WHERE id=?", (job_id,))
+            self.db.execute("UPDATE jobs SET status='applied',note='생성 완료' WHERE id=?", (job_id,))
 
     def restore(self, backup):
         with process_lock(Path(self.c["pack_dir"]) / ".fm-face-lock"):

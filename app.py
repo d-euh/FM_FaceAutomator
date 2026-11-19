@@ -24,7 +24,7 @@ from discovery import discover_defaults
 import scope_rules
 from scope_ui import AdvancedPanel, ScopePanel
 from gunzo import BUNDLED_FONTS, bundled_font_path, default_font_path, name_font
-from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, apply_theme
+from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, PURPLE, apply_theme
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
@@ -61,7 +61,7 @@ class App:
         for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont"):
             tkfont.nametofont(name).configure(family=family, size=10)
         apply_theme(window, family)
-        tk.Frame(window, height=4, background="#710A9E").pack(fill="x")
+        tk.Frame(window, height=4, background=PURPLE).pack(fill="x")
         header = ttk.Frame(window, padding=(24, 20, 24, 16))
         header.pack(fill="x")
         title = ttk.Frame(header)
@@ -77,7 +77,7 @@ class App:
         self.prompts_tab, prompts = self.page(scroll=True)
         for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
-        ttk.Label(header, text="v0.9.0", style="Badge.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.9.1", style="Badge.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan, self.update_scope_summary,
                                       self.open_advanced)
@@ -311,7 +311,7 @@ class App:
         parent.columnconfigure(0, weight=1)
         parent = form
         parent.columnconfigure(1, weight=1)
-        rows = [("source", "감시할 세이브 파일", "file"),
+        rows = [("source", "연결할 세이브 파일", "file"),
                 ("portraits_dir", "기존 페이스팩 폴더", "dir"), ("kits_dir", "유니폼 키트 폴더", "dir"),
                 ("pack_dir", "생성 페이스팩 저장 위치", "dir"), ("codex", "Codex 실행 파일", "exe"),
                 ("graphics_root", "자료 검색 위치 · 선택", "dir"),
@@ -947,7 +947,9 @@ class App:
                     if job["status"] in ("pending", "blocked", "failed", "interrupted"):
                         choices[f'{row["name"]} · {row["club_name"]} · 작업 {job["id"]}'] = job["id"]
                     status = "지시 편집 중" if job["editing"] else labels.get(job["status"], job["status"])
-                    note = ("개별 지시 · " if job["has_custom"] else "") + ("골키퍼 · " if row.get("is_goalkeeper") is True else "") + job["note"]
+                    note = "생성 완료" if job["status"] == "applied" else (
+                        ("개별 지시 · " if job["has_custom"] else "") +
+                        ("골키퍼 · " if row.get("is_goalkeeper") is True else "") + job["note"])
                     self.tree.insert("", "end", iid=str(job["id"]), values=(job["id"], row["name"], movement, status, note))
                 self.job_choices = choices
                 self.personal_selector.configure(values=list(choices))
