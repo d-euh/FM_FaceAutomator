@@ -22,6 +22,29 @@ from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 import facepack
 import scope_rules
 from league_catalog import read_catalog
+from workspaces import select_workspace, source_key
+
+
+class PastSaveError(ValueError):
+    pass
+
+
+def goalkeeper_role(player):
+    """Use explicit save position data; never infer a role from player names."""
+    natural = tuple(getattr(player, "natural_positions", ()) or ())
+    if natural:
+        return str(natural[0]).strip().upper() == "GK"
+    positions = getattr(player, "positions", None)
+    rating = getattr(positions, "gk", None)
+    if rating is None:
+        return None
+    outfield = max((getattr(positions, key, 0) or 0 for key in
+                    ("sw", "dl", "dc", "dr", "dm", "ml", "mc", "mr", "aml", "amc", "amr", "stc", "wbl", "wbr")), default=0)
+    return rating >= 15 and rating >= outfield
+
+
+def player_kit_variant(config, row):
+    return ("gk_" if row.get("is_goalkeeper") is True else "") + config["kit_variant"]
 
 
 DEFAULTS = {
@@ -117,21 +140,24 @@ def load_config(path):
         raise ValueError("유니폼 유형은 home/away/third여야 합니다.")
     overrides = config["kit_overrides"]
     if not isinstance(overrides, dict) or any(
-        not re.fullmatch(r"\d+:(home|away|third)", key) or not isinstance(value, str) or not value.strip()
+        not re.fullmatch(r"\d+:(?:gk_)?(home|away|third)", key) or not isinstance(value, str) or not value.strip()
         for key, value in overrides.items()
     ):
         raise ValueError("유니폼 선택 설정이 올바르지 않습니다.")
     config["kit_overrides"] = {key: str((path.parent / value).resolve()) for key, value in overrides.items()}
     config["scope_rules"] = scope_rules.migrate_scope(config)
-    return config
+    return select_workspace(config, path.parent) if config.get("automatic_workspaces") else config
 
 
-def request_options(config, row):
+def request_options(config, row, job_options=None):
     specific = config.get("player_overrides", {}).get(row["id"], {})
     if specific.get("identity") and specific["identity"] != row["identity"]:
         specific = {}
     general = config.get("additional_instructions", "").strip()
     personal = specific.get("additional_instructions", "").strip()
+    if job_options is not None:
+        specific = dict(specific, display_name=job_options.get("display_name", ""))
+        personal = job_options.get("additional_instructions", "").strip()
     original = specific.get("display_name", "").strip() or str(row.get("name") or "").strip()
     if not original or original == row["id"]:
         raise ValueError("선수 이름을 읽지 못했습니다. 선수별 표시 이름을 지정하세요.")
@@ -172,6 +198,8 @@ def build_prompt(config, row, options=None):
         "The output/workflow rules above are fixed. Appearance directions below apply to image content only.",
         "Default visual style (lower priority than user appearance directions):\n" + config["style"],
     ]
+    if row.get("is_goalkeeper") is True:
+        instructions.append("This player is a GOALKEEPER. kit.png is the goalkeeper kit reference. Match that goalkeeper jersey, not the outfield jersey.")
     if directed:
         instructions.append("Follow the user's appearance directions. The per-player directions take priority over the common directions and default visual style when they conflict.")
         if options["general"]:
@@ -214,6 +242,11 @@ def normalise(raw):
         row.setdefault("uid", row["id"])
         row.setdefault("club_name", row["club_id"])
         row.setdefault("age", None)
+        if "is_goalkeeper" not in row:
+            position = row.get("position")
+            row["is_goalkeeper"] = str(position).upper() in ("GK", "GOALKEEPER") if position else None
+        elif row["is_goalkeeper"] is not None and not isinstance(row["is_goalkeeper"], bool):
+            raise ValueError("골키퍼 여부는 true/false/null이어야 합니다.")
         # Guard against FM reusing a deleted person's database ID.
         row["identity"] = f'{row["uid"]}:{row["id"]}:{row["birth_date"]}'
         result.append(row)
@@ -331,6 +364,7 @@ def read_source(config):
                                     "contract_club_id": contract_id,
                                     "contract_club_name": getattr(contract_club, "name", None) or getattr(contract, "club_name", "") or "",
                                     "on_loan": getattr(p, "on_loan", None),
+                                    "is_goalkeeper": goalkeeper_role(p),
                                     "registered_team_id": getattr(p, "team_id", None)})
                 result = normalise({"players": players, "managed_club_ids": managed,
                                     "clubs": catalog, "league_status": league_status,
@@ -386,6 +420,7 @@ def process_lock(folder):
 class Engine:
     def __init__(self, config):
         self.c = config
+        self._editing_locks = {}
         self._asset_catalogs = {}
         self._last_preflight_retry = 0
         self._last_apply_retry = 0
@@ -402,9 +437,10 @@ class Engine:
           CREATE TABLE IF NOT EXISTS attempts(started REAL NOT NULL, job_id INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS applied(player_id TEXT PRIMARY KEY, job_id INTEGER NOT NULL,
             filename TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS job_custom(job_id INTEGER PRIMARY KEY, options TEXT NOT NULL DEFAULT '{}', editing INTEGER NOT NULL DEFAULT 0);
         """)
         original = self.meta("source")
-        if original and original != config["source"]:
+        if original and source_key(original) != source_key(config["source"]):
             self.db.close()
             raise ValueError("다른 입력 파일에는 새 작업 폴더(state_dir)를 사용하세요.")
         with self.db:
@@ -416,6 +452,9 @@ class Engine:
                 self.setmeta("save_updates_pending", 0)
 
     def close(self):
+        for lock in self._editing_locks.values():
+            lock.__exit__(None, None, None)
+        self._editing_locks.clear()
         self.db.close()
 
     def asset_catalog(self, folder, refresh=False):
@@ -437,15 +476,21 @@ class Engine:
             # Newly installed faces/kits can appear while the watcher is running.
             return getattr(self.asset_catalog(folder, refresh=True), method)(*args)
 
-    def kit_reference(self, club_id):
-        key = f'{club_id}:{self.c["kit_variant"]}'
+    def kit_reference(self, club_id, row=None):
+        variant = player_kit_variant(self.c, row or {})
+        key = f'{club_id}:{variant}'
         chosen = self.c.get("kit_overrides", {}).get(key)
         if chosen:
             path = Path(chosen)
             if not path.is_file():
-                raise AssetError(f"구단 {key}: 선택했던 유니폼 파일이 없습니다. ‘유니폼 이미지 선택’에서 다시 지정하세요.")
+                raise AssetError(f"구단 {key}: 선택했던 유니폼 파일이 없습니다. ‘유니폼 변경’에서 다시 지정하세요.")
             return path
-        return self.lookup_asset(self.c["kits_dir"], "kit", club_id, self.c["kit_variant"])
+        try:
+            return self.lookup_asset(self.c["kits_dir"], "kit", club_id, variant)
+        except AssetError as exc:
+            if variant.startswith("gk_"):
+                raise AssetError(f"골키퍼 유니폼 필요 · {key}. 명시적인 골키퍼 키트를 추가하거나 ‘유니폼 변경’에서 선택하세요. " + str(exc)) from exc
+            raise
 
     def prepare_watch(self):
         converted = self.migrate_pack_filenames()
@@ -502,7 +547,7 @@ class Engine:
         date = snapshot.get("game_date", "")
         previous = self.meta("game_date") or ""
         if date and previous and date < previous:
-            raise ValueError("과거 세이브로 돌아갔습니다. 새 작업 폴더로 시작하세요.")
+            raise PastSaveError("과거 세이브로 돌아갔습니다. 새 기록에서 기준을 설정합니다.")
         count = 0
         summary = {"baseline": not bool(self.meta("baseline")), "source": self.c["source"],
                    "game_date": date, "read_at": now, "source_stamp": snapshot.get("source_stamp"),
@@ -567,7 +612,7 @@ class Engine:
                         outcome = "생성 제외: " + reason
                 elif reason != "대상":
                     outcome += " · 생성 범위: " + reason
-                item = {key: row[key] for key in ("id", "name", "club_id", "club_name", "registered_club_id", "contract_club_id", "on_loan", "club_basis", "registered_team_id") if key in row}
+                item = {key: row[key] for key in ("id", "name", "club_id", "club_name", "registered_club_id", "contract_club_id", "on_loan", "club_basis", "registered_team_id", "is_goalkeeper") if key in row}
                 item.update(previous_club_id=before["club_id"] if before else None,
                             previous_registered_club_id=before.get("registered_club_id", before["club_id"]) if before else None,
                             previous_contract_club_id=before.get("contract_club_id") if before else None, result=outcome)
@@ -624,7 +669,9 @@ class Engine:
         return (current["identity"], current["club_id"]) == (row["identity"], row["club_id"]) and self.scope(scoped)
 
     def jobs(self):
-        return [dict(r) for r in self.db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 300")]
+        return [dict(r) for r in self.db.execute("SELECT jobs.*,COALESCE(job_custom.editing,0) AS editing, "
+                    "CASE WHEN job_custom.options IS NOT NULL AND job_custom.options<>'{}' THEN 1 ELSE 0 END AS has_custom "
+                    "FROM jobs LEFT JOIN job_custom ON job_custom.job_id=jobs.id ORDER BY jobs.id DESC LIMIT 300")]
 
     def recent_results(self):
         """The five most recently generated, readable cards in this workspace."""
@@ -667,18 +714,74 @@ class Engine:
         job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if job and job["status"] in ("failed", "blocked", "interrupted"):
             self.update(job_id, "pending")
+        elif job and job["status"] == "apply_failed":
+            self.update(job_id, "generated")
 
     def recover(self):
         # Call only while holding the OS worker lock. Don't silently re-bill interrupted work.
         with self.db:
             self.db.execute("UPDATE jobs SET status='interrupted',note='이전 실행 중단. 확인 후 재시도하세요.' WHERE status='running'")
+            for row in self.db.execute("SELECT job_id FROM job_custom WHERE editing=1").fetchall():
+                try:
+                    with process_lock(Path(self.c["state_dir"]) / ".editing" / str(row[0])):
+                        self.db.execute("UPDATE job_custom SET editing=0 WHERE job_id=?", (row[0],))
+                except OSError:
+                    pass  # Another app still owns this editor; leave it protected.
+
+    def job_options(self, job_id):
+        record = self.db.execute("SELECT options FROM job_custom WHERE job_id=?", (job_id,)).fetchone()
+        return (json.loads(record[0]) or None) if record else None
+
+    def begin_job_edit(self, job_id):
+        lock = process_lock(Path(self.c["state_dir"]) / ".editing" / str(job_id))
+        try:
+            lock.__enter__()
+        except OSError as exc:
+            raise ValueError("다른 창에서 이 작업을 편집하고 있습니다.") from exc
+        try:
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+                if not job or job["status"] not in ("pending", "blocked", "failed", "interrupted"):
+                    raise ValueError("대기·보류·실패 작업에서 개별 지시를 편집하세요. 이미 합성 중인 요청은 변경할 수 없습니다.")
+                self.db.execute("INSERT OR IGNORE INTO job_custom(job_id) VALUES (?)", (job_id,))
+                self.db.execute("UPDATE job_custom SET editing=1 WHERE job_id=?", (job_id,))
+            self._editing_locks[job_id] = lock
+        except Exception:
+            lock.__exit__(None, None, None)
+            raise
+        player = json.loads(job["data"])
+        options = self.job_options(job_id)
+        if not options:
+            personal = self.c.get("player_overrides", {}).get(player["id"], {})
+            options = personal if not personal.get("identity") or personal["identity"] == player["identity"] else {}
+        return player, options
+
+    def finish_job_edit(self, job_id, options=None):
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            job = self.db.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if options is not None:
+                if not job or job[0] not in ("pending", "blocked", "failed", "interrupted"):
+                    raise ValueError("편집 중 선수의 소속 또는 작업 상태가 바뀌었습니다. 최신 작업을 선택하세요.")
+                display_name = options.get("display_name", "").strip()
+                if display_name and not latin_name(display_name):
+                    raise ValueError("표시 이름은 영문/라틴 문자로 입력하세요.")
+                self.db.execute("UPDATE job_custom SET options=?,editing=0 WHERE job_id=?",
+                                (json.dumps(options, ensure_ascii=False), job_id))
+            else:
+                self.db.execute("UPDATE job_custom SET editing=0 WHERE job_id=?", (job_id,))
+        lock = self._editing_locks.pop(job_id, None)
+        if lock:
+            lock.__exit__(None, None, None)
 
     def next_job(self, now, save_gated=False):
         if save_gated and int(self.meta("save_updates_pending") or 0):
             return None
         if self.c["daily_limit"] and self.db.execute("SELECT count(*) FROM attempts WHERE started>?", (now - 86400,)).fetchone()[0] >= self.c["daily_limit"]:
             return None
-        for job in self.db.execute("SELECT * FROM jobs WHERE status='pending' AND created<=? ORDER BY id", (now - self.c["settle_seconds"],)).fetchall():
+        for job in self.db.execute("SELECT * FROM jobs WHERE status='pending' AND created<=? AND NOT EXISTS "
+                                   "(SELECT 1 FROM job_custom WHERE job_id=jobs.id AND editing=1) ORDER BY id", (now - self.c["settle_seconds"],)).fetchall():
             row = json.loads(job["data"])
             if not self.latest(row):
                 self.update(job["id"], "superseded", "현재 범위/소속과 불일치")
@@ -720,8 +823,9 @@ class Engine:
             return True
         try:
             portrait, face_target = self.lookup_asset(self.c["portraits_dir"], "face", row["id"], row["id"] in self.c["regen_player_ids"])
-            kit = self.kit_reference(row["club_id"])
-            options = request_options(self.c, row)
+            kit = self.kit_reference(row["club_id"], row)
+            job_options = self.job_options(jid)
+            options = request_options(self.c, row, job_options)
             check_options(options["display_name"] or "PLAYER", self.c["name_font_path"], self.c["frame_template"])
             self.check_pack(row["id"])
             face_png, kit_png = reference_png(portrait), reference_png(kit)
@@ -750,7 +854,13 @@ class Engine:
                "--image", str(folder / "original.png"), "--image", str(folder / "kit.png"), "-"]
         started = time.time()
         with self.db:
-            self.db.execute("UPDATE jobs SET status='running',started=? WHERE id=?", (started, jid))
+            self.db.execute("BEGIN IMMEDIATE")
+            custom = self.db.execute("SELECT editing FROM job_custom WHERE job_id=?", (jid,)).fetchone()
+            if (custom and custom[0]) or self.job_options(jid) != job_options:
+                return False
+            claimed = self.db.execute("UPDATE jobs SET status='running',started=? WHERE id=? AND status='pending'", (started, jid))
+            if not claimed.rowcount:
+                return False
             self.db.execute("INSERT INTO attempts VALUES (?,?)", (started, jid))
         try:
             with open(folder / "events.jsonl", "w", encoding="utf-8") as out, open(folder / "stderr.log", "w", encoding="utf-8") as err:
@@ -766,7 +876,7 @@ class Engine:
             if not latin_name(display_name):
                 raise ValueError("영문 선수 이름을 확인하지 못했습니다. 선수별 영문 표시 이름을 지정하세요.")
             options["display_name"] = display_name
-            options["name_source"] = "game_or_user" if request_options(self.c, row)["display_name"] else "codex_romanized"
+            options["name_source"] = "game_or_user" if request_options(self.c, row, job_options)["display_name"] else "codex_romanized"
             write_atomic(folder / "request.json", json.dumps(options, ensure_ascii=False, indent=2).encode("utf-8"))
             validate_png(folder / "portrait.png", final=False)
             # Refresh after a potentially long image request before even offering application.

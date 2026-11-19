@@ -74,6 +74,33 @@ class AssetTests(unittest.TestCase):
         with self.assertRaises(AssetError):
             catalog.kit("680", "away")
 
+    def test_goalkeeper_mappings_and_files_do_not_mix_with_outfield_kits(self):
+        field = self.image("kits/field.png")
+        keeper = self.image("kits/keeper.png")
+        away = self.image("kits/680_gk_away.png")
+        self.xml("kits", [("field", "graphics/pictures/team/680/kits/home"),
+                          ("keeper", "graphics/pictures/team/680/kits/goalkeeper")])
+        catalog = AssetCatalog(self.root)
+        self.assertEqual(catalog.kit("680"), field)
+        self.assertEqual(catalog.kit("680", "gk_home"), keeper)
+        self.assertEqual(catalog.kit("680", "gk_away"), away)
+        self.assertEqual(catalog.kit_candidates("680", "gk_home"), [keeper])
+
+    def test_goalkeeper_file_aliases_are_normalized(self):
+        home = self.image("680_gk1.png")
+        away = self.image("680_away_gk.png")
+        third = self.image("680_goalkeeper_third.png")
+        catalog = AssetCatalog(self.root)
+        self.assertEqual(catalog.kit("680", "gk_home"), home)
+        self.assertEqual(catalog.kit("680", "gk_away"), away)
+        self.assertEqual(catalog.kit("680", "gk_third"), third)
+
+    def test_missing_goalkeeper_never_falls_back_to_regular_jersey(self):
+        self.image("680.png")
+        self.image("680_home.png")
+        with self.assertRaises(AssetError):
+            AssetCatalog(self.root).kit("680", "gk_home")
+
     def test_duplicate_kits_are_sampled_without_blocking_and_preview_lists_all(self):
         first = self.image("packA/shirt.png")
         second = self.image("packB/shirt.png")

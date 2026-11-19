@@ -13,7 +13,7 @@ from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from PIL import Image, ImageChops, ImageFont
-from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, detection_messages, game_english_name, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
+from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, detection_messages, game_english_name, goalkeeper_role, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
 from gunzo import BUNDLED_FONTS, LAYOUT, bundled_font_path, default_font_path, name_font, render_gunzo
 from scope_rules import DEFAULT_SCOPE
 
@@ -90,6 +90,130 @@ class EngineTests(unittest.TestCase):
     def test_first_read_is_baseline(self):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
+
+    def test_goalkeeper_is_read_from_position_ratings_without_name_guessing(self):
+        self.assertTrue(goalkeeper_role(SimpleNamespace(positions=SimpleNamespace(gk=20, stc=1))))
+        self.assertFalse(goalkeeper_role(SimpleNamespace(positions=SimpleNamespace(gk=1, stc=20))))
+        self.assertFalse(goalkeeper_role(SimpleNamespace(positions=SimpleNamespace(gk=16, stc=20))))
+        self.assertTrue(goalkeeper_role(SimpleNamespace(natural_positions=("GK",))))
+        self.assertIsNone(goalkeeper_role(SimpleNamespace(name="Famous Goalkeeper")))
+
+    def test_goalkeeper_transfer_stages_goalkeeper_kit_and_completes(self):
+        self.transfer()
+        self.refs()
+        after = read_source(self.c)
+        after["players"][0]["is_goalkeeper"] = True
+        self.source(after)
+        self.e.ingest(read_source(self.c))
+        Image.new("RGB", (256, 256), "green").save(Path(self.c["kits_dir"]) / "20_gk_home.png")
+        def runner(cmd, **kwargs):
+            with Image.open(Path(cmd[cmd.index("--cd") + 1]) / "kit.png") as kit:
+                self.assertEqual(kit.getpixel((0, 0))[:3], (0, 128, 0))
+            self.assertIn("GOALKEEPER", kwargs["input"])
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+
+    def test_goalkeeper_with_only_outfield_kit_blocks_before_ai(self):
+        self.transfer()
+        self.refs()
+        after = read_source(self.c)
+        after["players"][0]["is_goalkeeper"] = True
+        self.source(after)
+        self.e.ingest(read_source(self.c))
+        def forbidden(*args, **kwargs):
+            self.fail("Must not synthesize a goalkeeper in an outfield kit")
+        self.e.run_one(forbidden)
+        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+        self.assertIn("골키퍼 유니폼 필요", self.e.jobs()[0]["note"])
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+
+    def test_job_edit_lease_stops_other_connection_and_saved_directives_are_used(self):
+        jid = self.transfer()
+        self.refs()
+        self.c["additional_instructions"] = "Rainy stadium"
+        self.e.begin_job_edit(jid)
+        other = Engine(self.c)
+        try:
+            self.assertFalse(other.run_one(self.good_runner))
+        finally:
+            other.close()
+        self.e.finish_job_edit(jid, {"display_name": "Djed Spence", "additional_instructions": "Laughing with arms raised"})
+        def runner(cmd, **kwargs):
+            self.assertIn("Rainy stadium", kwargs["input"])
+            self.assertIn("Laughing with arms raised", kwargs["input"])
+            self.assertNotIn("Preserve the original hair, expression and pose", kwargs["input"])
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(runner)
+        with Image.open(Path(self.c["pack_dir"]) / "900001.png") as card:
+            self.assertEqual(card.info["PlayerName"], "DJED SPENCE")
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 1)
+
+    def test_edit_committed_during_preflight_cannot_submit_stale_prompt(self):
+        jid = self.transfer()
+        self.refs()
+        def edit_during_preflight(*args):
+            other = Engine(self.c)
+            try:
+                other.begin_job_edit(jid)
+                other.finish_job_edit(jid, {"display_name": "New Name", "additional_instructions": "New hairstyle"})
+            finally:
+                other.close()
+        with patch.object(self.e, "check_pack", side_effect=edit_during_preflight):
+            self.assertFalse(self.e.run_one(self.good_runner))
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+        self.e.run_one(self.good_runner)
+        with Image.open(Path(self.c["pack_dir"]) / "900001.png") as card:
+            self.assertEqual(card.info["PlayerName"], "NEW NAME")
+
+    def test_cancelled_edit_keeps_player_defaults_and_recover_releases_stale_lease(self):
+        jid = self.transfer()
+        self.refs()
+        self.c["player_overrides"] = {"900001": {"additional_instructions": "Legacy personal direction"}}
+        self.e.begin_job_edit(jid)
+        self.e.finish_job_edit(jid)
+        self.assertIsNone(self.e.job_options(jid))
+        self.e.begin_job_edit(jid)
+        self.e.close()
+        self.e = Engine(self.c)
+        self.e.recover()
+        def runner(cmd, **kwargs):
+            self.assertIn("Legacy personal direction", kwargs["input"])
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        with self.assertRaises(ValueError):
+            self.e.begin_job_edit(jid)
+
+    def test_recovery_in_other_app_preserves_an_active_job_editor(self):
+        jid = self.transfer()
+        self.refs()
+        self.e.begin_job_edit(jid)
+        other = Engine(self.c)
+        try:
+            other.recover()
+            self.assertFalse(other.run_one(self.good_runner))
+            with self.assertRaises(ValueError):
+                other.begin_job_edit(jid)
+        finally:
+            other.close()
+        self.e.finish_job_edit(jid)
+        self.assertTrue(self.e.run_one(self.good_runner))
+
+    def test_job_directives_do_not_leak_into_next_transfer(self):
+        jid = self.transfer()
+        self.refs()
+        self.e.begin_job_edit(jid)
+        self.e.finish_job_edit(jid, {"display_name": "", "additional_instructions": "Special first transfer pose"})
+        self.e.run_one(self.good_runner)
+        self.source(snapshot("30", date="2027-07-03"))
+        self.e.ingest(read_source(self.c))
+        shutil.copyfile(Path(self.c["kits_dir"]) / "20.png", Path(self.c["kits_dir"]) / "30.png")
+        def runner(cmd, **kwargs):
+            self.assertNotIn("Special first transfer pose", kwargs["input"])
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
 
     def test_departure_scope_survives_refresh_generation_and_application(self):
         self.c["scope_rules"] = copy.deepcopy(DEFAULT_SCOPE) | {"preset": "custom", "clubs": {"680": "outgoing"}}
@@ -736,11 +860,12 @@ class EngineTests(unittest.TestCase):
             info=SimpleNamespace(game="FM27", known_build=True, build="27.0.0+2486695", game_date="2027-01-01"),
             clubs=lambda: [SimpleNamespace(uid=0, unique_id=20)],
             managed_clubs=lambda: [SimpleNamespace(club_uid=0)],
-            players=lambda: [SimpleNamespace(unique_id=900001, uid=100, name="Player", birth_date="2006-01-01", age=21, club_uid=0, club_name="Club")])
+            players=lambda: [SimpleNamespace(unique_id=900001, uid=100, name="Player", birth_date="2006-01-01", age=21, club_uid=0, club_name="Club", positions=SimpleNamespace(gk=20, stc=1))])
         with patch("fmsave.open") as opened:
             opened.return_value.__enter__.return_value = fake
             data = read_source(self.c)
             self.assertEqual(data["players"][0]["club_id"], "20")
+            self.assertTrue(data["players"][0]["is_goalkeeper"])
             self.assertEqual(data["managed_club_ids"], ["20"])
             self.assertNotEqual(Path(opened.call_args.args[0]), Path(self.c["source"]))
             self.assertTrue(opened.call_args.kwargs["strict"])

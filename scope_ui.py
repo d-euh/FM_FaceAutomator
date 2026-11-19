@@ -8,7 +8,7 @@ from scope_rules import DIRECTIONS, LEAGUES, PRESETS, describe, migrate_scope
 
 
 class ScopePanel:
-    def __init__(self, parent, variables, save, read, home, changed, advanced):
+    def __init__(self, parent, variables, save, read, changed, advanced):
         self.variables, self.changed = variables, changed
         self.catalog, self.rules, self.managed = {}, {}, []
         self.league_status = {}
@@ -23,7 +23,6 @@ class ScopePanel:
         top = ttk.Frame(parent)
         top.pack(fill="x", pady=(0, 18))
         ttk.Label(top, text="생성 범위", style="Title.TLabel").pack(side="left")
-        ttk.Button(top, text="홈으로", command=home).pack(side="right")
         ttk.Label(parent, text="어느 구단의 어떤 이동을 만들지 선택하세요. 변경한 범위는 저장 후 감시를 다시 시작하면 적용됩니다.", style="Muted.TLabel").pack(anchor="w", pady=(0, 16))
         columns = ttk.Frame(parent)
         columns.pack(fill="both", expand=True)
@@ -55,7 +54,7 @@ class ScopePanel:
         search = ttk.Frame(right, style="Card.TFrame")
         search.pack(fill="x")
         ttk.Entry(search, textvariable=self.search).pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(search, text="세이브 구단 읽기", command=read).pack(side="right")
+        ttk.Button(search, text="구단 목록 불러오기", command=read).pack(side="right")
         ttk.Label(right, textvariable=self.note, style="CardMuted.TLabel", wraplength=600).pack(anchor="w", pady=8)
         self.available = ttk.Treeview(right, columns=("id", "name", "league"), show="headings", height=6, selectmode="browse")
         for key, title, width in (("id", "구단 ID", 85), ("name", "구단 이름", 245), ("league", "리그", 130)):
@@ -184,7 +183,7 @@ class AdvancedPanel:
         advanced = ttk.Frame(parent, style="Card.TFrame", padding=20)
         advanced.pack(fill="x")
         ttk.Label(advanced, text="추가 조건 · 호출량", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
-        for index, (key, label) in enumerate((("player_ids", "추가 선수 ID (쉼표)"), ("exclude_player_ids", "제외 선수 ID (쉼표)"), ("regen_player_ids", "생성선수 r- 매핑 ID (쉼표)"))):
+        for index, (key, label) in enumerate((("player_ids", "지정 선수 ID (쉼표)"), ("exclude_player_ids", "생성 제외 선수 ID (쉼표)"), ("regen_player_ids", "생성선수 ID · r- 초상화 매핑"))):
             variables[key] = tk.StringVar()
             ttk.Label(advanced, text=label, style="CardText.TLabel").grid(row=index + 1, column=0, sticky="w", padx=(0, 16), pady=5)
             ttk.Entry(advanced, textvariable=variables[key]).grid(row=index + 1, column=1, sticky="ew", pady=5)

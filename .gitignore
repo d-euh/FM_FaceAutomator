@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 config.json
 state/
+workspaces/
 facepack/
 portraits/
 kits/

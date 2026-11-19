@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from io import BytesIO
 import json
 import os
@@ -16,7 +17,8 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from engine import DEFAULTS, WATCH_POLL_SECONDS, Engine, detection_messages, load_config, process_lock, read_source, write_atomic
+from engine import DEFAULTS, WATCH_POLL_SECONDS, Engine, PastSaveError, detection_messages, load_config, player_kit_variant, process_lock, read_source, write_atomic
+from workspaces import select_workspace
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
 import scope_rules
@@ -26,6 +28,7 @@ from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, apply_t
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
+KIT_LABELS = {"home": "홈", "away": "원정", "third": "서드"}
 
 
 class App:
@@ -46,6 +49,9 @@ class App:
         self.recent_index = 0
         self.recent_state = None
         self.catalog_key = None
+        self.job_choices = {}
+        self.job_records = {}
+        self.queue_buttons = {}
         self.status = tk.StringVar(value="경로와 범위를 확인하고 감시를 시작하세요.")
         self.scope_summary = tk.StringVar(value="내가 맡은 구단만 · 방출·영입 모두")
         window.title("FM Face Automator")
@@ -55,6 +61,7 @@ class App:
         for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont"):
             tkfont.nametofont(name).configure(family=family, size=10)
         apply_theme(window, family)
+        tk.Frame(window, height=4, background="#710A9E").pack(fill="x")
         header = ttk.Frame(window, padding=(24, 20, 24, 16))
         header.pack(fill="x")
         title = ttk.Frame(header)
@@ -70,12 +77,9 @@ class App:
         self.prompts_tab, prompts = self.page(scroll=True)
         for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
-        ttk.Button(header, text="홈", command=lambda: self.tabs.select(self.home_tab)).pack(side="right")
-        ttk.Button(header, text="생성 범위 설정", command=lambda: self.tabs.select(self.scope_tab)).pack(side="right", padx=8)
-        ttk.Label(header, text="v0.8.0", style="Muted.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.9.0", style="Badge.TLabel").pack(side="right", padx=12)
         self.build_home(home)
-        self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan,
-                                      lambda: self.tabs.select(self.home_tab), self.update_scope_summary,
+        self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan, self.update_scope_summary,
                                       self.open_advanced)
         self.advanced_window = tk.Toplevel(window)
         self.advanced_window.withdraw()
@@ -95,8 +99,9 @@ class App:
         jobs.rowconfigure(2, weight=1)
         toolbar = ttk.Frame(jobs)
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        for title, callback in [("선수·이적 읽기", self.scan), ("현재 범위도 생성 대기", self.enqueue), ("감시·생성 시작", self.start), ("현재 작업 후 정지", self.pause), ("감지 진단 저장", self.export_detection)]:
+        for title, callback in [("자동 생성 시작", self.start), ("작업 종료 후 멈춤", self.pause)]:
             ttk.Button(toolbar, text=title, command=callback, style="Primary.TButton" if callback == self.start else "TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(toolbar, text="관리 도구", command=self.tools_popup).pack(side="right")
         ttk.Label(jobs, textvariable=self.status, wraplength=1000, style="Muted.TLabel").grid(row=1, column=0, sticky="ew", pady=(0, 12))
         table = ttk.Frame(jobs)
         table.grid(row=2, column=0, sticky="nsew")
@@ -111,19 +116,24 @@ class App:
         queue_scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=queue_scroll.set)
         self.tree.bind("<<TreeviewSelect>>", self.select)
+        self.tree.bind("<Double-1>", lambda event: self.open_job())
         actions = ttk.Frame(jobs)
         actions.grid(row=3, column=0, sticky="ew", pady=12)
-        for title, callback in [("이미지 미리보기", self.preview), ("저장 재시도", self.apply), ("합성 재시도", self.retry), ("선수 ID 목록 저장", self.export), ("적용 백업 복구", self.restore), ("선수별 이름·지시", self.edit_player)]:
-            ttk.Button(actions, text=title, command=callback).pack(side="left", padx=(0, 6))
-        optional = ttk.Frame(jobs)
-        optional.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-        ttk.Button(optional, text="유니폼 이미지 선택", command=self.choose_kit).pack(side="left", padx=(0, 6))
-        self.detail = tk.StringVar(value="이전·새 구단을 비교해 선택한 영입·방출 방향의 선수만 생성합니다.")
+        for title, callback in [("개별 지시", self.edit_player), ("결과 보기", self.preview), ("다시 시도", self.retry), ("유니폼 변경", self.choose_kit)]:
+            button = ttk.Button(actions, text=title, command=callback, state="disabled")
+            button.pack(side="left", padx=(0, 6))
+            self.queue_buttons[title] = button
+        self.detail = tk.StringVar(value="작업을 선택해 개별 지시를 편집하세요. 편집 중인 작업은 합성을 기다립니다.")
         ttk.Label(jobs, textvariable=self.detail, wraplength=1000, style="Muted.TLabel").grid(row=5, column=0, sticky="ew", pady=(0, 6))
         log_host = ttk.Frame(window, padding=(20, 10, 20, 16))
         log_host.pack(side="bottom", fill="x", before=self.tabs)
+        log_bar = ttk.Frame(log_host)
+        log_bar.pack(fill="x")
+        ttk.Label(log_bar, text="최근 활동", style="Muted.TLabel").pack(side="left", padx=(0, 12))
+        ttk.Label(log_bar, textvariable=self.status, style="Muted.TLabel", wraplength=820).pack(side="left", fill="x", expand=True)
+        self.log_toggle = ttk.Button(log_bar, text="활동 기록 펼치기", style="Compact.TButton", command=self.toggle_log)
+        self.log_toggle.pack(side="right")
         self.log = tk.Text(log_host, height=4, font=(family, 9), state="disabled", background=LOG_BACKGROUND, foreground=MUTED, relief="flat", padx=10, pady=8)
-        self.log.pack(fill="x")
         self.load()
         self.window.after(100, self.auto_paths)
         self.window.after(500, self.drain)
@@ -133,6 +143,29 @@ class App:
         self.advanced_window.deiconify()
         self.advanced_window.lift()
         self.advanced_window.focus_set()
+
+    def toggle_log(self):
+        if self.log.winfo_manager():
+            self.log.pack_forget()
+            self.log_toggle.configure(text="활동 기록 펼치기")
+        else:
+            self.log.pack(fill="x", pady=(8, 0))
+            self.log_toggle.configure(text="활동 기록 접기")
+
+    def tools_popup(self):
+        win = tk.Toplevel(self.window)
+        win.title("관리 도구")
+        win.transient(self.window)
+        frame = ttk.Frame(win, padding=24)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="필요할 때만 사용하는 도구", style="Section.TLabel").pack(anchor="w", pady=(0, 16))
+        for label, callback in (("세이브 분석 · 기준 확인", self.scan), ("현재 선수도 생성 대기", self.enqueue),
+                                ("감지 진단 내보내기", self.export_detection), ("선수 목록 내보내기", self.export), ("변경 전 페이스팩 복원", self.restore)):
+            def run(action=callback):
+                win.destroy()
+                action()
+            ttk.Button(frame, text=label, command=run, state="disabled" if self.active() and callback != self.export_detection else "normal").pack(fill="x", pady=4)
+        ttk.Label(frame, text="이미지 저장과 config.xml 갱신, 저장 실패 재시도는 자동으로 처리합니다.\nAI 호출 실패는 ‘다시 시도’를 선택해야 재요청합니다.", style="Muted.TLabel", wraplength=420).pack(anchor="w", pady=(16, 0))
 
     def page(self, scroll=False, parent=None):
         host = ttk.Frame(self.tabs if parent is None else parent)
@@ -168,28 +201,28 @@ class App:
         parent.rowconfigure(0, weight=1)
         left = ttk.Frame(parent)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
-        hero = ttk.Frame(left, style="Card.TFrame", padding=20)
+        hero = ttk.Frame(left, style="Panel.Card.TFrame", padding=24)
         hero.pack(fill="both", expand=True)
         ttk.Label(hero, text="저장 후 자동으로 완성되는 페이스온", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(hero, text="이적 감지 → 선택한 범위 확인 → Codex 합성 → 이미지·매핑 저장", style="CardMuted.TLabel", wraplength=560).pack(anchor="w", pady=(8, 16))
         ttk.Label(hero, text="선택한 생성 범위", style="CardMuted.TLabel").pack(anchor="w")
         ttk.Label(hero, textvariable=self.scope_summary, style="CardTitle.TLabel", wraplength=540).pack(anchor="w", pady=(6, 14))
-        ttk.Button(hero, text="생성 범위 설정 →", command=lambda: self.tabs.select(self.scope_tab)).pack(anchor="w", pady=(0, 16))
+        ttk.Label(hero, text="01 세이브 연결     02 생성 범위 선택     03 자동 생성", style="CardMuted.TLabel").pack(anchor="w", pady=(0, 16))
         ttk.Label(hero, textvariable=self.status, style="CardMuted.TLabel", wraplength=540).pack(anchor="w", pady=(0, 12))
         controls = ttk.Frame(hero, style="Card.TFrame")
         controls.pack(fill="x")
-        ttk.Button(controls, text="감시·생성 시작", style="Primary.TButton", command=self.start).pack(side="left", padx=(0, 8))
-        ttk.Button(controls, text="현재 작업 후 정지", command=self.pause).pack(side="left")
+        ttk.Button(controls, text="자동 생성 시작", style="Primary.TButton", command=self.start).pack(side="left", padx=(0, 8))
+        ttk.Button(controls, text="작업 종료 후 멈춤", command=self.pause).pack(side="left")
         stats = ttk.Frame(left)
         stats.pack(side="bottom", fill="x", pady=(16, 0), before=hero)
         self.metric_vars = {}
         for key, label in (("pending", "대기 중"), ("running", "생성 중"), ("applied", "저장 완료")):
-            card = ttk.Frame(stats, style="Card.TFrame", padding=16)
+            card = ttk.Frame(stats, style="Panel.Card.TFrame", padding=16)
             card.pack(side="left", fill="both", expand=True, padx=(0, 10) if key != "applied" else 0)
             ttk.Label(card, text=label, style="CardMuted.TLabel").pack(anchor="w")
             self.metric_vars[key] = tk.StringVar(value="0")
             ttk.Label(card, textvariable=self.metric_vars[key], style="Metric.TLabel").pack(anchor="w", pady=(4, 0))
-        recent = ttk.Frame(parent, style="Card.TFrame", padding=(20, 12))
+        recent = ttk.Frame(parent, style="Panel.Card.TFrame", padding=(20, 12))
         recent.grid(row=0, column=1, sticky="nsew")
         ttk.Label(recent, text="최근 생성된 페이스온", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 14))
         self.recent_canvas = tk.Canvas(recent, width=350, height=350, background=PREVIEW_BACKGROUND, highlightthickness=0)
@@ -273,13 +306,18 @@ class App:
 
     def fields(self, parent):
         ttk.Label(parent, text="폴더 · Codex · 글꼴 연결", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 18))
-        rows = [("source", "FM27 세이브 / JSON", "file"), ("state_dir", "작업 폴더 · 세이브별", "dir"),
-                ("portraits_dir", "원본 얼굴 폴더", "dir"), ("kits_dir", "유니폼 참조 폴더", "dir"),
-                ("pack_dir", "페이스팩 저장 폴더", "dir"), ("codex", "Codex 실행 파일", "exe"),
-                ("graphics_root", "FM 자료 상위 폴더 · 선택", "dir"),
+        form = ttk.Frame(parent, style="Panel.Card.TFrame", padding=22)
+        form.grid(row=1, column=0, columnspan=3, sticky="ew")
+        parent.columnconfigure(0, weight=1)
+        parent = form
+        parent.columnconfigure(1, weight=1)
+        rows = [("source", "감시할 세이브 파일", "file"),
+                ("portraits_dir", "기존 페이스팩 폴더", "dir"), ("kits_dir", "유니폼 키트 폴더", "dir"),
+                ("pack_dir", "생성 페이스팩 저장 위치", "dir"), ("codex", "Codex 실행 파일", "exe"),
+                ("graphics_root", "자료 검색 위치 · 선택", "dir"),
                 ("name_font_path", "이름 글꼴 · TTF/OTF/TTC", "font")]
         for index, (key, label, chooser) in enumerate(rows, 1):
-            ttk.Label(parent, text=label).grid(row=index, column=0, sticky="w", padx=(0, 18), pady=10)
+            ttk.Label(parent, text=label, style="CardText.TLabel").grid(row=index, column=0, sticky="w", padx=(0, 18), pady=10)
             self.vars[key] = tk.StringVar()
             if chooser == "font":
                 entry = ttk.Combobox(parent, textvariable=self.vars[key], values=[str(bundled_font_path(font)) for font in BUNDLED_FONTS])
@@ -287,31 +325,46 @@ class App:
             else:
                 entry = ttk.Entry(parent, textvariable=self.vars[key])
             entry.grid(row=index, column=1, sticky="ew", pady=10)
-            buttons = ttk.Frame(parent)
+            buttons = ttk.Frame(parent, style="Card.TFrame")
             buttons.grid(row=index, column=2, padx=(10, 0))
             ttk.Button(buttons, text="폰트 불러오기" if chooser == "font" else "선택", command=lambda k=key, c=chooser: self.choose(k, c)).pack(side="left")
             if chooser == "font":
                 ttk.Button(buttons, text="기본 글꼴", command=self.default_font).pack(side="left", padx=(8, 0))
-        ttk.Label(parent, text="합성에 사용할 유니폼").grid(row=9, column=0, sticky="w", pady=12)
+        self.workspace_note = tk.StringVar(value="세이브별 이적 기준과 작업 기록은 자동으로 분리·관리합니다.")
+        ttk.Label(parent, textvariable=self.workspace_note, style="CardMuted.TLabel", wraplength=1000).grid(row=8, column=0, columnspan=3, sticky="w", pady=8)
+        ttk.Label(parent, text="합성에 사용할 유니폼", style="CardText.TLabel").grid(row=9, column=0, sticky="w", pady=12)
         self.vars["kit_variant"] = tk.StringVar()
-        ttk.Combobox(parent, textvariable=self.vars["kit_variant"], values=("home", "away", "third"), state="readonly", width=14).grid(row=9, column=1, sticky="w")
+        ttk.Combobox(parent, textvariable=self.vars["kit_variant"], values=list(KIT_LABELS.values()), state="readonly", width=14).grid(row=9, column=1, sticky="w")
         self.path_status = tk.StringVar(value="폴더와 Codex 경로를 자동 확인합니다. 다른 항목만 직접 바꾸세요.")
-        ttk.Label(parent, textvariable=self.path_status, style="Muted.TLabel", wraplength=1050).grid(row=10, column=0, columnspan=3, sticky="w", pady=20)
-        ttk.Label(parent, text="기본 제공 폰트: Koverwatch(기본값) · Bebas Neue · Venus Rising. 이름 글꼴의 드롭다운에서 선택하세요.\n세 파일은 fonts 폴더에 포함되어 있습니다. 다른 TTF·OTF·TTC를 직접 선택할 수도 있습니다. 변경 후 설정을 저장하세요.", style="Muted.TLabel", wraplength=1050).grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 16))
-        ttk.Label(parent, text="기존 파일이 있는 페이스팩에도 저장합니다. 같은 선수 ID의 이미지와 매핑은 백업 후 갱신합니다.", style="Muted.TLabel", wraplength=1050).grid(row=12, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        ttk.Label(parent, textvariable=self.path_status, style="CardMuted.TLabel", wraplength=1000).grid(row=10, column=0, columnspan=3, sticky="w", pady=20)
+        ttk.Label(parent, text="기본 제공 폰트: Koverwatch(기본값) · Bebas Neue · Venus Rising. 이름 글꼴의 드롭다운에서 선택하세요.\n다른 폰트를 직접 선택할 수도 있습니다. 변경 후 설정을 저장하세요.", style="CardMuted.TLabel", wraplength=1000).grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        ttk.Label(parent, text="기존 파일이 있는 페이스팩에도 저장할 수 있습니다. 교체 전 이미지는 자동 백업합니다.\n골키퍼는 골키퍼 키트를 자동 선택합니다. 해당 자료가 없으면 작업을 보류하고 유니폼 변경을 안내합니다.", style="CardMuted.TLabel", wraplength=1000).grid(row=12, column=0, columnspan=3, sticky="w", pady=(0, 16))
         ttk.Button(parent, text="설정 저장", style="Primary.TButton", command=self.save).grid(row=13, column=0, sticky="w")
-        ttk.Button(parent, text="홈으로", command=lambda: self.tabs.select(self.home_tab)).grid(row=13, column=1, sticky="w")
 
     def prompt_fields(self, parent):
-        ttk.Label(parent, text="전체 선수 공통 추가 지시", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(parent, text="커스텀 지시", style="Title.TLabel").pack(anchor="w", pady=(0, 12))
+        heading = ttk.Frame(parent)
+        heading.pack(fill="x")
+        ttk.Label(heading, text="모든 선수에게 적용할 지시", style="Section.TLabel").pack(side="left")
+        ttk.Button(heading, text="공통 지시 저장", command=self.save).pack(side="right")
         ttk.Label(parent, text="예: 비 오는 경기장에서 골을 넣고 활짝 웃는 모습. 앞머리는 뒤로 넘기고 한 손을 들어주세요.", wraplength=980).pack(anchor="w", pady=(8, 6))
         self.additional_text = tk.Text(parent, height=5, wrap="word", font="TkTextFont")
         self.additional_text.pack(fill="x")
-        ttk.Label(parent, text="추가 지시가 있으면 머리카락·표정·자세 유지 문구를 넣지 않습니다. 얼굴 동일성은 기본 유지합니다.\n선수별 입력은 대기열에서 ‘선수별 이름·지시’를 선택하세요. 공통 지시와 충돌하면 선수별 지시를 우선합니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
+        ttk.Label(parent, text="지시가 있으면 머리카락·표정·자세를 고정하지 않습니다. 얼굴 동일성은 유지합니다.\n공통 지시 저장은 자동 생성을 멈춘 뒤 할 수 있습니다. 개별 대기 작업은 실행 중에도 편집할 수 있습니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
+        personal = ttk.Frame(parent, style="Card.TFrame", padding=20)
+        personal.pack(fill="x", pady=(8, 18))
+        ttk.Label(personal, text="대기 작업에만 적용할 개별 지시", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 10))
+        self.personal_job = tk.StringVar()
+        row = ttk.Frame(personal, style="Card.TFrame")
+        row.pack(fill="x")
+        self.personal_selector = ttk.Combobox(row, textvariable=self.personal_job, state="readonly")
+        self.personal_selector.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.personal_edit_button = ttk.Button(row, text="개별 지시 편집", command=self.edit_chosen_job, state="disabled")
+        self.personal_edit_button.pack(side="right")
+        ttk.Label(personal, text="선수 이름으로 작업을 선택하세요. 개별 지시는 공통 지시보다 우선하며 해당 작업에만 적용됩니다.", style="CardMuted.TLabel", wraplength=900).pack(anchor="w", pady=(10, 0))
         ttk.Label(parent, text="건조폼 출력: 350×350 고정 · 코너 반경 60px · 하단 그라데이션과 선수 이름").pack(anchor="w", pady=(0, 8))
         ttk.Label(parent, text="기본 사진 스타일과 건조폼은 자동 적용합니다. 원하는 외형·분위기는 위 커스텀 지시에 적어주세요.", style="Muted.TLabel", wraplength=980).pack(anchor="w", pady=(0, 10))
         ttk.Label(parent, text="이름은 AI가 그리지 않고 프로그램이 정확한 문자열로 넣습니다. 이름 수정은 다음 합성부터 반영됩니다.\nPNG와 config.xml을 모두 저장해야 완료 처리합니다. 저장 실패 시 이미지를 보관하고 추가 합성 없이 저장만 재시도합니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
-        ttk.Button(parent, text="설정 저장", command=self.save).pack(anchor="w")
 
     def default_font(self):
         self.vars["name_font_path"].set(str(default_font_path()))
@@ -339,7 +392,7 @@ class App:
         scan_id = self.path_scan
         self.path_scanning = True
         self.path_status.set("폴더·최신 세이브·Codex 경로 자동 확인 중… 확인된 경로는 기본값에 채웁니다.")
-        snapshot = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex")}
+        snapshot = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "graphics_root", "codex")}
         config = dict(self.config)
         for key, value in snapshot.items():
             config[key] = str((self.path.parent / value).resolve()) if value and key != "codex" else value
@@ -362,6 +415,7 @@ class App:
                 self.vars[key].set(value)
                 self.config[key] = value
                 changed.append(key)
+        self.config = select_workspace(self.config, self.path.parent)
         try:
             write_atomic(self.path, json.dumps(self.config, ensure_ascii=False, indent=2).encode("utf-8"))
         except Exception as exc:
@@ -384,8 +438,12 @@ class App:
         if not self.path.exists():
             write_atomic(self.path, json.dumps(DEFAULTS | {"scope_rules": scope_rules.DEFAULT_SCOPE}, ensure_ascii=False, indent=2).encode("utf-8"))
         c = load_config(self.path)
+        c["automatic_workspaces"] = True
+        c = select_workspace(c, self.path.parent)
         for key, var in self.vars.items():
             value = c[key]
+            if key == "kit_variant":
+                value = KIT_LABELS[value]
             if key in AdvancedPanel.UNLIMITED and value == 0:
                 value = AdvancedPanel.UNLIMITED[key]
             var.set(",".join(value) if isinstance(value, list) else value)
@@ -404,6 +462,8 @@ class App:
             c = dict(self.config)
             for key, var in self.vars.items():
                 value = var.get()
+                if key == "kit_variant":
+                    value = {label: variant for variant, label in KIT_LABELS.items()}[value]
                 if key in AdvancedPanel.UNLIMITED and str(value).strip() in ("", AdvancedPanel.UNLIMITED[key]):
                     value = 0
                 if key in ("club_ids", "player_ids", "exclude_player_ids", "regen_player_ids"):
@@ -419,6 +479,7 @@ class App:
             c["frame_template"] = ""
             c["additional_instructions"] = self.additional_text.get("1.0", "end").strip()
             c["scope_rules"] = self.scope_panel.value()
+            c["automatic_workspaces"] = True
             if not c["source"]:
                 raise ValueError("세이브 파일을 선택하세요.")
             # Validate before replacing a working configuration.
@@ -431,7 +492,7 @@ class App:
                     name_font(checked["name_font_path"])
             finally:
                 temp.unlink(missing_ok=True)
-            write_atomic(self.path, json.dumps(c, ensure_ascii=False, indent=2).encode("utf-8"))
+            write_atomic(self.path, json.dumps(checked, ensure_ascii=False, indent=2).encode("utf-8"))
             self.config = checked
             self.update_scope_summary()
             self.events.put("설정 저장 완료")
@@ -448,10 +509,22 @@ class App:
         def run():
             engine = None
             try:
-                with process_lock(config["state_dir"]):
+                with ExitStack() as locks:
+                    locks.enter_context(process_lock(config["state_dir"]))
                     engine = Engine(config)
                     engine.recover()
-                    task(engine)
+                    while True:
+                        try:
+                            task(engine)
+                            break
+                        except PastSaveError:
+                            replacement = select_workspace(engine.c, self.path.parent, fresh=True)
+                            locks.enter_context(process_lock(replacement["state_dir"]))
+                            engine.close()
+                            engine = Engine(replacement)
+                            engine.recover()
+                            self.events.put({"workspace": replacement})
+                            self.events.put("이전 시점의 세이브 감지 · 기존 기록을 보존하고 새 기준을 자동으로 만듭니다.")
             except Exception as exc:
                 self.events.put(f"오류: {exc}")
             finally:
@@ -476,7 +549,7 @@ class App:
         self.background(task)
 
     def start(self):
-        current = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex")}
+        current = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "graphics_root", "codex")}
         if not self.active() and not self.path_scanning and current != self.last_discovery_inputs:
             self.auto_paths()
         if self.path_scanning:
@@ -511,6 +584,8 @@ class App:
                             last_wait_message = message
                     else:
                         last_wait_message = None
+                except PastSaveError:
+                    raise
                 except Exception as exc:
                     self.events.put(f"점검 보류: {exc}")
                 self.stop.wait(WATCH_POLL_SECONDS)
@@ -544,6 +619,21 @@ class App:
         if jid:
             values = self.tree.item(str(jid), "values")
             self.detail.set(values[-1])
+        self.update_job_actions()
+
+    def update_job_actions(self):
+        job = self.job_records.get(self.selected())
+        editable = job and not job["editing"] and job["status"] in ("pending", "blocked", "failed", "interrupted")
+        available = {"개별 지시": editable, "유니폼 변경": editable and not self.active(),
+                     "결과 보기": job and bool(job["artifact"]),
+                     "다시 시도": job and not job["editing"] and job["status"] in ("failed", "blocked", "interrupted", "apply_failed")}
+        for label, button in self.queue_buttons.items():
+            button.configure(state="normal" if available[label] else "disabled")
+
+    def open_job(self):
+        job = self.job_records.get(self.selected())
+        if job:
+            self.edit_player() if job["status"] in ("pending", "blocked", "failed", "interrupted") else self.preview()
 
     def apply(self):
         jid = self.selected()
@@ -553,7 +643,12 @@ class App:
     def retry(self):
         jid = self.selected()
         if jid:
-            self.background(lambda e: (e.retry(jid), self.events.put("재시도 대기열에 반영했습니다. 감시·생성 시작으로 실행하세요.")))
+            engine = Engine(self.config)
+            try:
+                engine.retry(jid)
+                self.events.put("재시도 요청을 반영했습니다. 자동 생성 중이면 이어 처리합니다. 저장 실패는 추가 AI 호출 없이 복구합니다.")
+            finally:
+                engine.close()
 
     def choose_kit(self):
         if self.active():
@@ -577,17 +672,18 @@ class App:
         finally:
             e.close()
         config = dict(self.config)
-        key = f'{player["club_id"]}:{config["kit_variant"]}'
+        variant = player_kit_variant(config, player)
+        key = f'{player["club_id"]}:{variant}'
         chosen = config.get("kit_overrides", {}).get(key)
         editor = tk.Toplevel(self.window)
-        editor.title(f'유니폼 선택 · {player["club_name"]} · {config["kit_variant"]}')
+        editor.title(f'유니폼 변경 · {player["club_name"]} · {variant}')
         editor.geometry("960x620")
         editor.minsize(800, 540)
         editor.transient(self.window)
         editor.grab_set()
         frame = ttk.Frame(editor, padding=16)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text=f'구단 {player["club_id"]} · {config["kit_variant"]} — 같은 구단·유형의 이후 작업에도 적용합니다.').pack(anchor="w")
+        ttk.Label(frame, text=f'구단 {player["club_id"]} · {variant} — 같은 구단·유형의 이후 작업에도 적용합니다.').pack(anchor="w")
         status = tk.StringVar(value="설정된 유니폼 폴더에서 후보를 검색하고 있습니다…")
         ttk.Label(frame, textvariable=status, wraplength=900).pack(fill="x", pady=8)
         body = ttk.Frame(frame)
@@ -681,7 +777,7 @@ class App:
                 catalog = AssetCatalog(config["kits_dir"], exclude=source_exclusions(config, config["kits_dir"]),
                                        allow_managed=Path(config["kits_dir"]).resolve() == Path(config["pack_dir"]).resolve())
                 try:
-                    found = catalog.kit_candidates(player["club_id"], config["kit_variant"])
+                    found = catalog.kit_candidates(player["club_id"], variant)
                     note = "지정하지 않으면 매 작업에서 무작위 후보를 사용합니다."
                 except AssetError as exc:
                     found, note = list(exc.candidates), str(exc)
@@ -713,51 +809,69 @@ class App:
         threading.Thread(target=scan, daemon=True).start()
         editor.after(100, poll)
 
-    def edit_player(self):
-        if self.active():
-            messagebox.showinfo("선수별 지시", "현재 작업 후 정지한 다음 수정하세요.")
-            return
-        jid = self.selected()
+    def edit_chosen_job(self):
+        jid = self.job_choices.get(self.personal_job.get())
+        if jid:
+            self.edit_player(jid)
+        else:
+            messagebox.showinfo("개별 지시", "편집할 대기 작업을 먼저 선택하세요.")
+
+    def edit_player(self, job_id=None):
+        jid = job_id or self.selected()
         if not jid:
-            messagebox.showinfo("선수별 지시", "대기열에서 선수를 선택하세요.")
+            messagebox.showinfo("개별 지시", "대기열에서 편집할 작업을 선택하세요.")
             return
         e = Engine(self.config)
         try:
-            record = e.db.execute("SELECT data FROM jobs WHERE id=?", (jid,)).fetchone()
-            if not record:
-                return
-            player = json.loads(record[0])
-        finally:
+            player, options = e.begin_job_edit(jid)
+        except Exception as exc:
             e.close()
-        options = self.config.get("player_overrides", {}).get(player["id"], {})
-        if options.get("identity") and options["identity"] != player["identity"]:
-            options = {}
+            messagebox.showinfo("개별 지시", str(exc))
+            return
         editor = tk.Toplevel(self.window)
-        editor.title(f'선수별 이름·추가 지시 · {player["name"]} ({player["id"]})')
-        editor.geometry("680x430")
+        editor.title(f'개별 지시 · {player["name"]} · 작업 {jid}')
+        editor.geometry("720x500")
         editor.transient(self.window)
         editor.grab_set()
         frame = ttk.Frame(editor, padding=18)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="하단 영문 선수 이름 (비워두면 세이브의 라틴 문자 이름 우선)").pack(anchor="w")
+        ttk.Label(frame, text=f'{player["name"]} · {player["club_name"]}', style="Section.TLabel").pack(anchor="w", pady=(0, 14))
+        ttk.Label(frame, text="하단 영문 이름 · 비워두면 자동").pack(anchor="w")
         name = tk.StringVar(value=options.get("display_name", ""))
         ttk.Entry(frame, textvariable=name).pack(fill="x", pady=(6, 14))
-        ttk.Label(frame, text="이 선수의 추가 지시").pack(anchor="w")
+        ttk.Label(frame, text="이 작업에만 적용할 지시").pack(anchor="w")
         directions = tk.Text(frame, height=7, wrap="word", font="TkTextFont")
         directions.pack(fill="both", expand=True, pady=6)
         directions.insert("1.0", options.get("additional_instructions", ""))
-        ttk.Label(frame, text="전체 공통 지시에 더해 적용합니다. 이름·지시는 이 선수의 다음 합성부터 반영됩니다.", wraplength=620).pack(anchor="w", pady=10)
-        def commit():
-            previous = dict(self.config.get("player_overrides", {}))
-            updated = dict(previous)
-            updated[player["id"]] = {"identity": player["identity"], "display_name": name.get().strip(), "additional_instructions": directions.get("1.0", "end").strip()}
-            self.config["player_overrides"] = updated
-            if self.save():
-                self.events.put(f'{player["name"]}: 선수별 이름·추가 지시 저장 완료')
+        ttk.Label(frame, text="편집 중에는 이 작업의 합성을 잠시 보류합니다. 저장하거나 닫으면 처리를 재개합니다.\n개별 지시는 공통 지시보다 우선하며 다음 이적 작업에 자동으로 복사하지 않습니다.", style="Muted.TLabel", wraplength=670).pack(anchor="w", pady=10)
+        released = False
+        def cancel():
+            nonlocal released
+            if not released:
+                e.finish_job_edit(jid)
+                e.close()
+                released = True
+            if editor.winfo_exists():
                 editor.destroy()
-            else:
-                self.config["player_overrides"] = previous
-        ttk.Button(frame, text="선수별 설정 저장", command=commit).pack(anchor="w")
+        def commit():
+            nonlocal released
+            try:
+                if self.config["state_dir"] != e.c["state_dir"]:
+                    raise ValueError("감시 세이브가 바뀌었습니다. 최신 작업을 다시 선택하세요.")
+                e.finish_job_edit(jid, {"display_name": name.get().strip(), "additional_instructions": directions.get("1.0", "end").strip()})
+                e.close()
+                released = True
+                self.events.put(f'{player["name"]}: 작업 {jid}의 개별 지시 저장 완료')
+                editor.destroy()
+            except Exception as exc:
+                messagebox.showerror("개별 지시", str(exc), parent=editor)
+        editor.protocol("WM_DELETE_WINDOW", cancel)
+        editor.bind("<Escape>", lambda event: cancel())
+        editor.bind("<Destroy>", lambda event: cancel() if event.widget == editor and not released else None)
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="이 작업에 저장", command=commit).pack(side="left")
+        ttk.Button(buttons, text="취소", command=cancel).pack(side="right")
 
     def export(self):
         if self.active():
@@ -801,6 +915,11 @@ class App:
             if isinstance(text, dict) and "path_scan" in text:
                 self.accept_paths(text)
                 continue
+            if isinstance(text, dict) and "workspace" in text:
+                self.config.update(state_dir=text["workspace"]["state_dir"], workspaces=text["workspace"]["workspaces"])
+                write_atomic(self.path, json.dumps(self.config, ensure_ascii=False, indent=2).encode("utf-8"))
+                self.catalog_key = None
+                continue
             self.status.set(text)
             self.log.configure(state="normal")
             self.log.insert("end", time.strftime("%H:%M:%S ") + text + "\n")
@@ -815,22 +934,41 @@ class App:
                 selected = self.tree.selection()
                 self.tree.delete(*self.tree.get_children())
                 labels = {"pending": "대기", "running": "합성 중", "generated": "자동 저장 대기", "apply_failed": "저장 실패", "applied": "완료", "blocked": "보류", "failed": "실패", "superseded": "이전 상태", "interrupted": "중단됨"}
+                choices = {}
+                self.job_records = {}
                 for job in engine.jobs():
+                    self.job_records[job["id"]] = job
                     row = json.loads(job["data"])
                     movement = row["club_name"]
                     if row.get("from_club_id") and row["from_club_id"] != row["club_id"]:
                         source = self.scope_panel.catalog.get(row["from_club_id"], {})
                         destination = self.scope_panel.catalog.get(row["club_id"], {})
                         movement = (source.get("short_name") or row.get("from_club_name") or row["from_club_id"]) + " → " + (destination.get("short_name") or row["club_name"])
-                    self.tree.insert("", "end", iid=str(job["id"]), values=(job["id"], row["name"], movement, labels.get(job["status"], job["status"]), job["note"]))
+                    if job["status"] in ("pending", "blocked", "failed", "interrupted"):
+                        choices[f'{row["name"]} · {row["club_name"]} · 작업 {job["id"]}'] = job["id"]
+                    status = "지시 편집 중" if job["editing"] else labels.get(job["status"], job["status"])
+                    note = ("개별 지시 · " if job["has_custom"] else "") + ("골키퍼 · " if row.get("is_goalkeeper") is True else "") + job["note"]
+                    self.tree.insert("", "end", iid=str(job["id"]), values=(job["id"], row["name"], movement, status, note))
+                self.job_choices = choices
+                self.personal_selector.configure(values=list(choices))
+                self.personal_edit_button.configure(state="normal" if choices else "disabled")
+                if self.personal_job.get() not in choices:
+                    self.personal_job.set(next(iter(choices), "편집할 대기 작업이 없습니다"))
                 if selected and self.tree.exists(selected[0]):
                     self.tree.selection_set(selected)
+                self.update_job_actions()
             except Exception as exc:
                 self.status.set(str(exc))
             finally:
                 if engine:
                     engine.close()
         else:
+            self.job_choices = {}
+            self.job_records = {}
+            self.update_job_actions()
+            self.personal_selector.configure(values=[])
+            self.personal_job.set("편집할 대기 작업이 없습니다")
+            self.personal_edit_button.configure(state="disabled")
             if self.dashboard_key is not None:
                 self.clear_preview()
             for variable in self.metric_vars.values():

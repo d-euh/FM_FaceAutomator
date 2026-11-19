@@ -12,7 +12,22 @@ import xml.etree.ElementTree as ET
 
 EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 FACE = re.compile(r"graphics/pictures/person/(r-\d+|\d+)/portrait", re.I)
-KIT = re.compile(r"graphics/pictures/team/(\d+)/kits/(home|away|third)", re.I)
+KIT = re.compile(r"graphics/pictures/team/(\d+)/kits/(home|away|third|goalkeeper(?:_(?:home|away|third))?|gk(?:_?(?:home|away|third|[123]))?|(?:home|away|third)_gk)", re.I)
+
+
+def kit_variant(value):
+    value = value.lower()
+    if value in ("gk", "goalkeeper"):
+        return "gk_home"
+    if value.startswith("goalkeeper_"):
+        return "gk_" + value.removeprefix("goalkeeper_")
+    if value.endswith("_gk"):
+        return "gk_" + value.removesuffix("_gk")
+    if re.fullmatch(r"gk_?[123]", value):
+        return "gk_" + {"1": "home", "2": "away", "3": "third"}[value[-1]]
+    if value in ("gkhome", "gkaway", "gkthird"):
+        return "gk_" + value[2:]
+    return value
 
 
 class AssetError(ValueError):
@@ -119,8 +134,10 @@ class AssetCatalog:
                     configs.append(path)
                 elif path.suffix.lower() in EXTENSIONS:
                     stem = path.stem.lower()
-                    if re.fullmatch(r"(?:r-)?\d+(?:_(?:home|away|third))?", stem):
-                        self.direct[stem].add(path)
+                    direct = re.fullmatch(r"((?:r-)?\d+)(?:_(home|away|third|goalkeeper(?:_(?:home|away|third))?|gk(?:_?(?:home|away|third|[123]))?|(?:home|away|third)_gk))?", stem)
+                    if direct:
+                        key = direct.group(1) + ("_" + kit_variant(direct.group(2)) if direct.group(2) else "")
+                        self.direct[key].add(path)
         for path in configs:
             if stop is not None and stop.is_set():
                 raise AssetError("검색을 취소했습니다.")
@@ -176,7 +193,7 @@ class AssetCatalog:
                     if face or kit:
                         path = self._source(xml, element.get("from", ""))
                         records.append((face.group(1).lower() if face else None,
-                                        (kit.group(1), kit.group(2).lower()) if kit else None, path))
+                                        (kit.group(1), kit_variant(kit.group(2))) if kit else None, path))
                 element.clear()
             self.textures += textures
             self.texture_paths.update(texture_paths)
@@ -215,8 +232,8 @@ class AssetCatalog:
         return self._choose(paths, f"선수 {key}"), key
 
     def kit(self, club_id, variant="home"):
-        if variant not in ("home", "away", "third"):
-            raise AssetError("유니폼 유형은 home/away/third 중 하나여야 합니다.")
+        if variant not in ("home", "away", "third", "gk_home", "gk_away", "gk_third"):
+            raise AssetError("유니폼 유형을 확인하세요.")
         key = (str(club_id), variant)
         if key in self.kits:
             return self._choose_kit(self.kits[key], f"구단 {club_id} {variant}")
