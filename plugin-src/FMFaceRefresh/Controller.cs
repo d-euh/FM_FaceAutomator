@@ -19,6 +19,11 @@ public sealed class Controller
     private double deadline, stableSince = -1;
     private int completed;
     private long generation;
+    private int completionCallbacks;
+    public int ScanAttempts { get; private set; }
+    public int CompletionCallbacks => Volatile.Read(ref completionCallbacks);
+    public int CacheAndPanelAttempts { get; private set; }
+    public string LastError { get; private set; } = "";
     public string Stage { get; private set; } = "idle";
     public string Reason { get; private set; } = "";
     public bool Faulted { get; private set; }
@@ -31,6 +36,8 @@ public sealed class Controller
     {
         if (Faulted || Stage != "idle") throw new InvalidOperationException("Bridge is not idle");
         Stage = "waiting"; deadline = now + Math.Clamp(waitSeconds, 0, 180); stableSince = -1; completed = 0; generation++;
+        ScanAttempts = 0; completionCallbacks = 0; CacheAndPanelAttempts = 0;
+        LastError = "";
     }
 
     public void Tick(double now)
@@ -53,9 +60,13 @@ public sealed class Controller
                 if (stableSince < 0) stableSince = now;
                 if (now - stableSince < 2) return;
                 var token = generation;
-                Action callback = () => { if (Interlocked.Read(ref generation) == token) Interlocked.Exchange(ref completed, 1); };
+                Action callback = () => {
+                    if (Interlocked.Read(ref generation) == token && Interlocked.CompareExchange(ref completionCallbacks, 1, 0) == 0)
+                        Volatile.Write(ref completed, 1);
+                };
                 callbackRoots.Add(callback); // Keep late native callbacks alive, including after failure.
                 Stage = "scanning"; deadline = now + 60;
+                ScanAttempts++;
                 runtime.Rescan(callback);
             }
             else if (Stage == "scanning" && Volatile.Read(ref completed) != 0)
@@ -64,11 +75,18 @@ public sealed class Controller
                 if (!frame.Idle && frame.Reason == "graphics_scan_in_progress") return;
                 if (!frame.Idle) { End("failed", "game_state_changed_restart_required", true); return; }
                 Stage = "reloading";
+                CacheAndPanelAttempts++;
                 runtime.ClearAndReload();
                 End("refreshed", "rescan_callback_and_panel_reload_completed", false);
             }
         }
-        catch (Exception exception) { End("failed", "runtime_error:" + exception.GetType().Name, Guarded); }
+        catch (Exception exception)
+        {
+            var cause = exception.GetBaseException();
+            var detail = cause.GetType().Name + ": " + cause.Message;
+            LastError = detail.Length > 512 ? detail[..512] : detail;
+            End("failed", "runtime_error:" + cause.GetType().Name, Guarded);
+        }
     }
 
     private void End(string result, string reason, bool fault)

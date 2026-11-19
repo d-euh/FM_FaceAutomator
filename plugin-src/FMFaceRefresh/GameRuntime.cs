@@ -71,11 +71,8 @@ public sealed class GameRuntime : IGraphicsRuntime
         Observations["flags"] = flags.ToString(); Observations["state"] = state.ToString();
         Observations["flag_values"] = Enum.GetNames(flags.GetType()).Select(n => new { name = n, value = ((Enum)Enum.Parse(flags.GetType(), n)).ToString("D") }).ToArray();
         Observations["state_values"] = Enum.GetNames(state.GetType()).ToArray();
-        // Unknown flags/states stay blocked. No integer layout or FM26 state mask is reused.
-        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "None", "Default", "Normal", "Idle", "NeedsAction", "NeedsManager", "Loaded", "GameLoaded" };
-        if (!flags.GetType().IsEnum || !state.GetType().IsEnum
-            || flags.ToString()!.Split(',').Any(n => !allowed.Contains(n.Trim()))
-            || !allowed.Contains(state.ToString()!)) return new(false, "unrecognized_or_busy_game_state");
+        var policy = GameStatePolicy.Check(flags.ToString()!, state.ToString()!, Enum.GetNames(flags.GetType()), Enum.GetNames(state.GetType()));
+        if (!policy.Idle) return policy;
         var resources = Unique(resource);
         if (Method(resource, "get_IsInitialised").Invoke(null, null) is not true || !Bool(resources, "get_AddressablesInitialised"))
             return new(false, "graphics_not_initialised");

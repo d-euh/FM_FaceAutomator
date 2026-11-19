@@ -1066,7 +1066,7 @@ class Engine:
                 if (self.meta("live_refresh_pending") or "null") != previous:
                     return
                 self.setmeta("live_refresh_pending", json.dumps(pending))
-                terminal = (self.meta("live_refresh_status") or "").startswith(("게임 그래픽 갱신 처리 완료", "게임 갱신 실패", "게임 갱신 응답 시간 초과", "더 최신 페이스팩", "FM27이 다시 시작"))
+                terminal = (self.meta("live_refresh_status") or "").startswith(("게임 그래픽 갱신 처리 완료", "게임 갱신 실패", "게임 갱신 실행 안 됨", "게임 갱신 응답 시간 초과", "더 최신 페이스팩", "FM27이 다시 시작"))
                 if json.loads(previous) is not None or not terminal:
                     self.setmeta("live_refresh_status", message)
         except Exception as exc:

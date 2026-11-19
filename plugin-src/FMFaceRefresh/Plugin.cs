@@ -22,7 +22,7 @@ public sealed class RefreshRequest
     public double expires_at { get; set; }
 }
 
-[BepInPlugin("io.github.d_euh.fmface.refresh", "FM Face Refresh Experimental", "0.2.0")]
+[BepInPlugin("io.github.d_euh.fmface.refresh", "FM Face Refresh Experimental", "0.2.1")]
 public sealed class Plugin : BasePlugin
 {
     public const string Profile = "fm27-steam-26620374-v1";
@@ -35,7 +35,7 @@ public sealed class Plugin : BasePlugin
     private Harmony? harmony;
     private RefreshRequest? active;
     private double lastPulse = -1;
-    private bool pulsing, enabled;
+    private bool pulsing, enabled, activeStarted;
     private string problem = "initialising";
     private string SessionDir => Path.Combine(root, "sessions", Environment.ProcessId + "-" + session);
     private static double Now => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
@@ -134,15 +134,20 @@ public sealed class Plugin : BasePlugin
                 || Path.GetFileName(file) != request.id + ".json") continue;
             var response = Path.Combine(SessionDir, "responses", request.id + ".json");
             if (File.Exists(response)) { File.Delete(file); continue; }
-            if (request.protocol != 1 || request.profile != Profile || request.created_at > Now + 5 || request.expires_at > Now + 240 || request.expires_at < Now)
-            { active = request; Reply("failed", "invalid_or_expired_request"); File.Delete(file); continue; }
+            if (request.protocol != 1 || request.profile != Profile || request.created_at > Now + 5 || request.expires_at > Now + 240)
+            { active = request; Reply("failed", "invalid_request"); File.Delete(file); continue; }
+            if (request.expires_at < Now)
+            { active = request; Reply("failed", state.Idle ? "request_expired" : "idle_wait_timeout:" + state.Reason); File.Delete(file); continue; }
             if (!Current(request)) { active = request; Reply("superseded", "pack_changed"); File.Delete(file); continue; }
+            if (state.Reason == "unrecognized_game_state")
+            { active = request; Reply("failed", "unsupported_game_state"); File.Delete(file); continue; }
             if (!state.Idle) return; // Saving, processing, matches and unknown states remain queued.
             if (!runtime.ContainsRegisteredPath(request.pack_dir))
             { active = request; Reply("failed", "pack_not_under_registered_graphics_path"); File.Delete(file); continue; }
             active = request;
             File.Delete(file); // A unique request ID is never automatically replayed after claiming.
             controller!.Begin(clock.Elapsed.TotalSeconds, request.expires_at - Now);
+            activeStarted = true;
             return;
         }
     }
@@ -159,18 +164,27 @@ public sealed class Plugin : BasePlugin
         if (active is null) return;
         Write(Path.Combine(SessionDir, "responses", active.id + ".json"), new {
             protocol = 1, id = active.id, session, profile = Profile, status, reason, completed_at = Now,
-            visual_result_verified = false, observations = runtime?.Observations
+            visual_result_verified = false, observations = runtime?.Observations, execution = Execution()
         });
         Log.LogInfo("Graphics refresh " + active.id + ": " + status + " / " + reason);
         active = null;
+        activeStarted = false;
     }
+
+    private object Execution() => new {
+        accepted = activeStarted, started = activeStarted && controller?.ScanAttempts > 0,
+        rescan_attempts = activeStarted ? controller?.ScanAttempts ?? 0 : 0,
+        completion_callbacks = activeStarted ? controller?.CompletionCallbacks ?? 0 : 0,
+        cache_and_panel_attempts = activeStarted ? controller?.CacheAndPanelAttempts ?? 0 : 0,
+        error_detail = activeStarted ? controller?.LastError : null
+    };
 
     private void Status() => Write(Path.Combine(SessionDir, "status.json"), new {
         protocol = 1, profile = Profile, session, pid = Environment.ProcessId, heartbeat = Now,
-        plugin_version = "0.2.0", experimental = true, visual_result_verified = false,
+        plugin_version = "0.2.1", experimental = true, visual_result_verified = false,
         available = enabled && controller?.Faulted == false, stage = controller?.Stage ?? "unavailable",
-        request_id = active?.id, reason = controller?.Faulted == true ? controller.Reason : problem,
-        observations = runtime?.Observations
+        request_id = active?.id, reason = controller?.Faulted == true || activeStarted ? controller?.Reason : problem,
+        observations = runtime?.Observations, execution = Execution()
     });
 
     public override bool Unload()

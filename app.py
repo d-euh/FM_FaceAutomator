@@ -77,7 +77,7 @@ class App:
         self.prompts_tab, prompts = self.page(scroll=True)
         for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
-        ttk.Label(header, text="v0.10.0", style="Badge.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.10.1", style="Badge.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan, self.update_scope_summary,
                                       self.open_advanced)

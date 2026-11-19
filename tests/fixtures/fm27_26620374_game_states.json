@@ -1,0 +1,235 @@
+{
+  "source": "FM27 Steam 26620374 runtime report; public enum names only",
+  "observed_flags": "None",
+  "observed_state": "CanContinue",
+  "flag_values": [
+    {
+      "name": "None",
+      "value": "0"
+    },
+    {
+      "name": "NeedAction",
+      "value": "1"
+    },
+    {
+      "name": "NeedHumanManager",
+      "value": "2"
+    },
+    {
+      "name": "Processing",
+      "value": "4"
+    },
+    {
+      "name": "Waiting",
+      "value": "8"
+    },
+    {
+      "name": "Saving",
+      "value": "16"
+    },
+    {
+      "name": "Tactics",
+      "value": "32"
+    },
+    {
+      "name": "Match",
+      "value": "64"
+    },
+    {
+      "name": "OnHoliday",
+      "value": "256"
+    },
+    {
+      "name": "StepOntoThePitch",
+      "value": "512"
+    },
+    {
+      "name": "TeamTalk",
+      "value": "1024"
+    },
+    {
+      "name": "WarmUp",
+      "value": "2048"
+    },
+    {
+      "name": "SecondHalf",
+      "value": "4096"
+    },
+    {
+      "name": "ExtraTime",
+      "value": "8192"
+    },
+    {
+      "name": "Penalties",
+      "value": "16384"
+    },
+    {
+      "name": "TunnelInterview",
+      "value": "32768"
+    },
+    {
+      "name": "PressConference",
+      "value": "65536"
+    },
+    {
+      "name": "LatestScores",
+      "value": "131072"
+    },
+    {
+      "name": "Portal",
+      "value": "262144"
+    },
+    {
+      "name": "AddingHumanManager",
+      "value": "524288"
+    },
+    {
+      "name": "SubmitTeam",
+      "value": "1048576"
+    },
+    {
+      "name": "TeamLineup",
+      "value": "2097152"
+    },
+    {
+      "name": "LeagueTableLineup",
+      "value": "4194304"
+    },
+    {
+      "name": "Fixtures",
+      "value": "8388608"
+    },
+    {
+      "name": "Results",
+      "value": "16777216"
+    },
+    {
+      "name": "NewsAggregator",
+      "value": "33554432"
+    },
+    {
+      "name": "RunningToDate",
+      "value": "67108864"
+    },
+    {
+      "name": "FullTimeTeamTalk",
+      "value": "134217728"
+    },
+    {
+      "name": "MatchLoading",
+      "value": "268435456"
+    },
+    {
+      "name": "PostMatchReaction",
+      "value": "536870912"
+    },
+    {
+      "name": "LeaveMatch",
+      "value": "1073741824"
+    },
+    {
+      "name": "SquadNumbers",
+      "value": "2147483648"
+    },
+    {
+      "name": "Messages",
+      "value": "4294967296"
+    },
+    {
+      "name": "PenaltyTakers",
+      "value": "8589934592"
+    },
+    {
+      "name": "FullTimeMatchReport",
+      "value": "17179869184"
+    },
+    {
+      "name": "Training",
+      "value": "34359738368"
+    },
+    {
+      "name": "CompetitionHub",
+      "value": "68719476736"
+    },
+    {
+      "name": "TransferHub",
+      "value": "137438953472"
+    },
+    {
+      "name": "ManagerVacancies",
+      "value": "274877906944"
+    },
+    {
+      "name": "AroundTheWorld",
+      "value": "549755813888"
+    },
+    {
+      "name": "NewsForYou",
+      "value": "1099511627776"
+    },
+    {
+      "name": "CompetitionOverview",
+      "value": "2199023255552"
+    },
+    {
+      "name": "DataHub",
+      "value": "4398046511104"
+    },
+    {
+      "name": "YouthSetup",
+      "value": "8796093022208"
+    },
+    {
+      "name": "AttendMatch",
+      "value": "17592186044416"
+    }
+  ],
+  "state_names": [
+    "CanContinue",
+    "NeedAction",
+    "NeedHumanManager",
+    "PressConference",
+    "Tactics",
+    "TeamNews",
+    "TeamTalk",
+    "TunnelInterview",
+    "Processing",
+    "Disabled",
+    "Match",
+    "Waiting",
+    "Saving",
+    "OnHoliday",
+    "StepOntoThePitch",
+    "WarmUp",
+    "SecondHalf",
+    "ExtraTime",
+    "Penalties",
+    "LatestScores",
+    "Portal",
+    "NeedHumanManagerAndSaving",
+    "AddingHumanManager",
+    "PostMatchReaction",
+    "SubmitTeam",
+    "Fixtures",
+    "Results",
+    "NewsAggregator",
+    "FullTimeTeamTalk",
+    "MatchLoading",
+    "LeaveMatch",
+    "SquadNumbers",
+    "Messages",
+    "NextUnreadMessage",
+    "PenaltyTakers",
+    "FullTimeMatchReport",
+    "Training",
+    "CompetitionHub",
+    "TransferHub",
+    "ManagerVacancies",
+    "AroundTheWorld",
+    "NewsForYou",
+    "CompetitionOverview",
+    "DataHub",
+    "YouthSetup",
+    "AttendMatch"
+  ]
+}
