@@ -9,6 +9,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, PngImagePlugin
 
 
 SIZE = 350
+CORNER_RADIUS = 60
+NAME_WIDTH = 300
 LAYOUT = "gunzo-350-v1"
 
 
@@ -44,7 +46,7 @@ def layout_name(name, font_path=""):
         font = ImageFont.truetype(path, size)
         lines = [""]
         for char in name:
-            if probe.textlength(lines[-1] + char, font=font) > 318:
+            if probe.textlength(lines[-1] + char, font=font) > NAME_WIDTH:
                 lines.append("")
             lines[-1] += char
         lines = [line.strip() for line in lines]
@@ -100,13 +102,17 @@ def render_gunzo(source, name, font_path="", template_path=""):
         drawing.text((x, y - bounds[1]), line, font=font, fill="white",
                      stroke_width=1, stroke_fill=(20, 20, 20, 255))
         y += height + 4
-    # Rounded outer corners, like the supplied visual reference.
-    mask = Image.new("L", (SIZE, SIZE))
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, SIZE - 1, SIZE - 1), radius=15, fill=255)
+    # Render the 60px outer radius at 4x for smooth transparent edges.
+    scale = 4
+    mask = Image.new("L", (SIZE * scale, SIZE * scale))
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, SIZE * scale - 1, SIZE * scale - 1), radius=CORNER_RADIUS * scale, fill=255)
+    mask = mask.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
     card.putalpha(Image.composite(card.getchannel("A"), Image.new("L", (SIZE, SIZE)), mask))
     info = PngImagePlugin.PngInfo()
     info.add_itxt("PlayerName", name)
     info.add_text("Layout", LAYOUT)
+    info.add_text("CornerRadius", str(CORNER_RADIUS))
+    info.add_itxt("NameFont", Path(font.path).name)
     out = BytesIO()
     card.save(out, format="PNG", pnginfo=info)
     return out.getvalue()

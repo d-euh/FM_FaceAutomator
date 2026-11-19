@@ -21,6 +21,7 @@ from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
 import scope_rules
 from scope_ui import AdvancedPanel, ScopePanel
+from gunzo import name_font
 from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, apply_theme
 
 
@@ -70,7 +71,7 @@ class App:
         self.tabs.add(self.advanced_tab, text="고급설정", state="hidden")
         ttk.Button(header, text="홈", command=lambda: self.tabs.select(self.home_tab)).pack(side="right")
         ttk.Button(header, text="생성 범위 설정", command=lambda: self.tabs.select(self.scope_tab)).pack(side="right", padx=8)
-        ttk.Label(header, text="v0.6.0", style="Muted.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.6.1", style="Muted.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan,
                                       lambda: self.tabs.select(self.home_tab), self.update_scope_summary,
@@ -258,19 +259,31 @@ class App:
         ttk.Label(parent, text="기본 사진 스타일").pack(anchor="w")
         self.style_text = tk.Text(parent, height=3, wrap="word", font="TkTextFont")
         self.style_text.pack(fill="x", pady=(6, 12))
-        ttk.Label(parent, text="건조폼 출력: 350×350 고정 · 둥근 모서리 · 하단 그라데이션과 선수 이름").pack(anchor="w", pady=(0, 8))
+        ttk.Label(parent, text="건조폼 출력: 350×350 고정 · 코너 반경 60px · 하단 그라데이션과 선수 이름").pack(anchor="w", pady=(0, 8))
         for key, title in [("name_font_path", "이름 글꼴 (선택 사항: TTF/OTF/TTC)"), ("frame_template", "추가 폼 템플릿 (선택 사항: 투명 350×350 PNG)")]:
             ttk.Label(parent, text=title).pack(anchor="w")
             row = ttk.Frame(parent)
             row.pack(fill="x", pady=(4, 8))
             self.vars[key] = tk.StringVar()
             ttk.Entry(row, textvariable=self.vars[key]).pack(side="left", fill="x", expand=True)
-            ttk.Button(row, text="선택", command=lambda k=key: self.choose(k, "asset")).pack(side="left", padx=(8, 0))
+            ttk.Button(row, text="폰트 불러오기" if key == "name_font_path" else "선택", command=lambda k=key: self.choose(k, "font" if k == "name_font_path" else "asset")).pack(side="left", padx=(8, 0))
+            if key == "name_font_path":
+                ttk.Button(row, text="기본 글꼴", command=lambda: self.vars["name_font_path"].set("")).pack(side="left", padx=(8, 0))
+                ttk.Label(parent, text="TTF·OTF·TTC 파일 선택 → 설정 저장. 비워두면 기본 글꼴을 사용합니다. 선택한 파일은 원래 위치에 보관하세요.", style="Muted.TLabel", wraplength=980).pack(anchor="w", pady=(0, 8))
         ttk.Label(parent, text="이름은 AI가 그리지 않고 프로그램이 정확한 문자열로 넣습니다. 이름 수정은 다음 합성부터 반영됩니다.\nPNG와 config.xml을 모두 저장해야 완료 처리합니다. 저장 실패 시 이미지를 보관하고 추가 합성 없이 저장만 재시도합니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
         ttk.Button(parent, text="설정 저장", command=self.save).pack(anchor="w")
 
     def choose(self, key, kind):
-        value = filedialog.askdirectory() if kind == "dir" else filedialog.askopenfilename(filetypes=[("FM27 / JSON", "*.fm *.json"), ("모든 파일", "*")]) if kind == "file" else filedialog.askopenfilename()
+        if kind == "font":
+            value = filedialog.askopenfilename(title="선수 이름 폰트 불러오기", filetypes=[("글꼴 파일 (TTF / OTF / TTC)", "*.ttf *.otf *.ttc *.TTF *.OTF *.TTC"), ("모든 파일", "*")])
+            if value:
+                try:
+                    name_font(value)
+                except Exception as exc:
+                    messagebox.showerror("글꼴 오류", str(exc))
+                    return
+        else:
+            value = filedialog.askdirectory() if kind == "dir" else filedialog.askopenfilename(filetypes=[("FM27 / JSON", "*.fm *.json"), ("모든 파일", "*")]) if kind == "file" else filedialog.askopenfilename()
         if value:
             self.vars[key].set(value)
             if key in ("source", "graphics_root"):
@@ -370,6 +383,8 @@ class App:
             try:
                 write_atomic(temp, json.dumps(c, ensure_ascii=False, indent=2).encode("utf-8"))
                 checked = load_config(temp)
+                if checked["name_font_path"]:
+                    name_font(checked["name_font_path"])
             finally:
                 temp.unlink(missing_ok=True)
             write_atomic(self.path, json.dumps(c, ensure_ascii=False, indent=2).encode("utf-8"))

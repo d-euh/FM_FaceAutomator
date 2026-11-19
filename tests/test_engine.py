@@ -1,4 +1,5 @@
 import copy
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageFont
 from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, detection_messages, game_english_name, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
 from gunzo import LAYOUT, render_gunzo
 from scope_rules import DEFAULT_SCOPE
@@ -885,6 +886,57 @@ class EngineTests(unittest.TestCase):
         Image.new("RGB", (349, 349)).save(path)
         with self.assertRaisesRegex(ValueError, "350"):
             validate_png(path)
+
+    def test_rounded_output_has_smooth_60px_corners_on_all_sides(self):
+        source = self.root / "portrait.png"
+        Image.new("RGB", (512, 512), "gray").save(source)
+        with Image.open(BytesIO(render_gunzo(source, "Djed Spence"))) as card:
+            alpha = card.getchannel("A")
+            # Points on either side of the 60px arc distinguish it from 15/30px.
+            for x, y in ((5, 5), (5, 30), (30, 5)):
+                self.assertLessEqual(alpha.getpixel((x, y)), 5)
+            for x, y in ((20, 20), (10, 30), (60, 0), (175, 175)):
+                self.assertGreaterEqual(alpha.getpixel((x, y)), 250)
+            self.assertIsNone(ImageChops.difference(alpha, alpha.transpose(Image.Transpose.FLIP_LEFT_RIGHT)).getbbox())
+            self.assertIsNone(ImageChops.difference(alpha, alpha.transpose(Image.Transpose.FLIP_TOP_BOTTOM)).getbbox())
+            self.assertTrue(any(0 < v < 255 for v in alpha.tobytes()))
+
+    def test_custom_font_file_changes_actual_name_pixels_in_applied_face(self):
+        candidates = ["DejaVuSansMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                      str(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "consola.ttf")]
+        for candidate in candidates:
+            try:
+                chosen = ImageFont.truetype(candidate, 20).path
+                break
+            except OSError:
+                continue
+        else:
+            self.skipTest("A second font is needed to compare caption pixels")
+        custom = self.root / "my-player-font.ttf"
+        shutil.copyfile(chosen, custom)
+        self.c["name_font_path"] = str(custom)
+        self.transfer()
+        self.refs()
+        self.e.run_one(self.good_runner)
+        job = self.e.jobs()[0]
+        self.assertEqual(job["status"], "applied")
+        default = render_gunzo(Path(job["artifact"]).parent / "portrait.png", "Player $(no shell)")
+        with Image.open(BytesIO(default)) as standard, Image.open(Path(self.c["pack_dir"]) / "900001.png") as actual:
+            self.assertEqual(actual.info["NameFont"], custom.name)
+            self.assertIsNotNone(ImageChops.difference(standard.convert("RGB"), actual.convert("RGB")).crop((0, 290, 350, 350)).getbbox())
+            self.assertIsNone(ImageChops.difference(standard.crop((0, 0, 350, 250)), actual.crop((0, 0, 350, 250))).getbbox())
+
+    def test_invalid_font_is_blocked_before_codex_call(self):
+        bad_font = self.root / "broken.ttf"
+        bad_font.write_text("not a font")
+        self.c["name_font_path"] = str(bad_font)
+        self.transfer()
+        self.refs()
+        def forbidden(*args, **kwargs):
+            self.fail("An invalid font must not start a Codex request")
+        self.e.run_one(forbidden)
+        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
 
     def test_auto_xml_update_is_mandatory_even_for_old_false_setting(self):
         self.transfer()
