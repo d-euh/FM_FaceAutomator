@@ -25,6 +25,7 @@ import scope_rules
 from scope_ui import AdvancedPanel, ScopePanel
 from gunzo import BUNDLED_FONTS, bundled_font_path, default_font_path, name_font
 from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, PURPLE, apply_theme
+from diagnostics import APP_VERSION, export_bundle
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
@@ -77,7 +78,7 @@ class App:
         self.prompts_tab, prompts = self.page(scroll=True)
         for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
-        ttk.Label(header, text="v0.10.2", style="Badge.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v" + APP_VERSION, style="Badge.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan, self.update_scope_summary,
                                       self.open_advanced)
@@ -160,11 +161,11 @@ class App:
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="필요할 때만 사용하는 도구", style="Section.TLabel").pack(anchor="w", pady=(0, 16))
         for label, callback in (("세이브 분석 · 기준 확인", self.scan), ("현재 선수도 생성 대기", self.enqueue),
-                                ("감지 진단 내보내기", self.export_detection), ("선수 목록 내보내기", self.export), ("변경 전 페이스팩 복원", self.restore)):
+                                ("문제 진단 내보내기", self.export_diagnostics), ("감지 진단 내보내기", self.export_detection), ("선수 목록 내보내기", self.export), ("변경 전 페이스팩 복원", self.restore)):
             def run(action=callback):
                 win.destroy()
                 action()
-            ttk.Button(frame, text=label, command=run, state="disabled" if self.active() and callback != self.export_detection else "normal").pack(fill="x", pady=4)
+            ttk.Button(frame, text=label, command=run, state="disabled" if self.active() and callback not in (self.export_detection, self.export_diagnostics) else "normal").pack(fill="x", pady=4)
         ttk.Label(frame, text="이미지 저장과 config.xml 갱신, 저장 실패 재시도는 자동으로 처리합니다.\nAI 호출 실패는 ‘다시 시도’를 선택해야 재요청합니다.", style="Muted.TLabel", wraplength=420).pack(anchor="w", pady=(16, 0))
 
     def page(self, scroll=False, parent=None):
@@ -625,6 +626,17 @@ class App:
         self.start_after_discovery = False
         self.stop.set()
         self.status.set("정지 요청 · 진행 중인 Codex 작업이 끝나면 멈춥니다.")
+
+    def export_diagnostics(self):
+        path = filedialog.asksaveasfilename(title="문제 진단 내보내기", defaultextension=".json",
+                                          initialfile="live-refresh-report.json", filetypes=[("JSON", "*.json")])
+        if path:
+            try:
+                export_bundle(path, config=self.config, root=ROOT)
+                self.events.put("문제 진단 저장 완료: " + path)
+                messagebox.showinfo("문제 진단", "작업 상태와 게임 갱신 기록을 함께 저장했습니다.\n이 JSON 파일을 대화에 첨부해 주세요.\n설정 경로가 포함되며 이미지·커스텀 지시·인증 정보는 포함하지 않습니다.")
+            except Exception as exc:
+                messagebox.showerror("문제 진단", str(exc))
 
     def export_detection(self):
         source = Path(self.config["state_dir"]) / "latest_detection.json"

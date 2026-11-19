@@ -16,6 +16,7 @@ from PIL import Image, ImageChops, ImageFont
 from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, detection_messages, game_english_name, goalkeeper_role, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
 from gunzo import BUNDLED_FONTS, LAYOUT, bundled_font_path, default_font_path, name_font, render_gunzo
 from scope_rules import DEFAULT_SCOPE
+from engine import SAVE_BUSY_NOTES, SaveBusyError
 
 
 def snapshot(club="10", player="900001", identity=100, date="2027-07-01"):
@@ -90,6 +91,78 @@ class EngineTests(unittest.TestCase):
     def test_first_read_is_baseline(self):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
+
+    def test_save_race_after_custom_generation_retains_result_and_never_rebills(self):
+        jid = self.transfer()
+        self.refs()
+        with self.e.db:
+            self.e.db.execute("INSERT INTO job_custom(job_id,options) VALUES (?,?)", (jid, json.dumps({"additional_instructions": "Smile"})))
+        real_refresh = self.e.refresh
+        def runner(cmd, **kwargs):
+            self.assertIn("Smile", kwargs["input"])
+            result = self.good_runner(cmd, **kwargs)
+            self.e.refresh = lambda: (_ for _ in ()).throw(SaveBusyError(SAVE_BUSY_NOTES[0]))
+            return result
+        self.e.run_one(runner)
+        job = self.e.jobs()[0]
+        self.assertEqual(job["status"], "generated")
+        self.assertTrue(Path(job["artifact"]).is_file())
+        self.assertFalse((Path(self.c["pack_dir"]) / "config.xml").exists())
+        forbidden = lambda *a, **k: self.fail("Must reuse the paid image")
+        self.assertFalse(self.e.run_one(forbidden))
+        self.e.refresh = real_refresh
+        self.e.run_one(forbidden)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 1)
+        self.assertTrue((Path(self.c["pack_dir"]) / "900001.png").is_file())
+
+    def legacy_busy_failure(self):
+        jid = self.transfer()
+        self.refs()
+        with patch.object(self.e, "apply", side_effect=SaveBusyError(SAVE_BUSY_NOTES[0])):
+            self.e.run_one(self.good_runner)
+        Path(self.e.jobs()[0]["artifact"]).unlink()
+        with self.e.db:
+            self.e.db.execute("UPDATE jobs SET status='failed',note=?,artifact=NULL WHERE id=?", (SAVE_BUSY_NOTES[0], jid))
+        return jid
+
+    def test_legacy_busy_failure_recovers_without_ai_on_start_or_manual_retry(self):
+        jid = self.legacy_busy_failure()
+        self.e.recover()
+        self.assertEqual(self.e.jobs()[0]["status"], "generated")
+        with self.e.db:
+            self.e.db.execute("UPDATE jobs SET status='failed',note=? WHERE id=?", (SAVE_BUSY_NOTES[0], jid))
+        self.e.retry(jid)
+        self.assertEqual(self.e.jobs()[0]["status"], "generated")
+        self.e.run_one(lambda *a, **k: self.fail("Recovery must not call Codex"))
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 1)
+
+    def test_legacy_recovery_rechecks_latest_club_before_applying(self):
+        self.legacy_busy_failure()
+        self.source(snapshot("30", date="2027-07-03"))
+        self.e.recover()
+        self.e.run_one(lambda *a, **k: self.fail("Must not call Codex for stale output"))
+        self.assertIn("superseded", [j["status"] for j in self.e.jobs()])
+        self.assertFalse((Path(self.c["pack_dir"]) / "config.xml").exists())
+
+    def test_legacy_recovery_does_not_reuse_changed_directions_or_missing_output(self):
+        jid = self.legacy_busy_failure()
+        self.c["additional_instructions"] = "New hairstyle"
+        self.e.recover()
+        self.assertEqual(self.e.jobs()[0]["status"], "failed")
+        self.c["additional_instructions"] = ""
+        for path in (Path(self.c["state_dir"]) / "jobs").glob("*/portrait.png"):
+            path.unlink()
+        self.e.recover()
+        self.assertEqual(self.e.jobs()[0]["status"], "failed")
+        self.assertFalse(self.e.recover_busy_result(jid))
+
+    def test_snapshot_change_is_a_transient_save_error(self):
+        self.source(snapshot())
+        with patch("engine.file_stamp", side_effect=[[1, 2], [2, 3]]):
+            with self.assertRaises(SaveBusyError):
+                read_source(self.c)
 
     def test_live_refresh_failure_never_reclassifies_a_saved_face_or_rebills_ai(self):
         self.c["live_refresh_enabled"] = True

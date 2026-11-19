@@ -30,6 +30,13 @@ class PastSaveError(ValueError):
     pass
 
 
+SAVE_BUSY_NOTES = ("저장 중인 파일입니다. 다음 점검 때 다시 읽습니다.", "읽는 중 입력 파일이 변경되었습니다. 다시 읽습니다.")
+
+
+class SaveBusyError(ValueError):
+    """A transient snapshot race, not an AI generation failure."""
+
+
 def goalkeeper_role(player):
     """Use explicit save position data; never infer a role from player names."""
     natural = tuple(getattr(player, "natural_positions", ()) or ())
@@ -332,9 +339,14 @@ def read_source(config):
         check_save_reader()
         with tempfile.TemporaryDirectory(prefix="fm-face-save-") as temp:
             copied = Path(temp) / "career.fm"
-            shutil.copyfile(source, copied)
+            try:
+                shutil.copyfile(source, copied)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) in (32, 33):
+                    raise SaveBusyError(SAVE_BUSY_NOTES[0]) from exc
+                raise
             if before != file_stamp(source):
-                raise ValueError("저장 중인 파일입니다. 다음 점검 때 다시 읽습니다.")
+                raise SaveBusyError(SAVE_BUSY_NOTES[0])
             with fmsave.open(copied, strict=True) as save:
                 if save.info.game != "FM27" or (not save.info.known_build and save.info.build not in COMPATIBLE_FM27_BUILDS):
                     raise ValueError(f"검증 대상 외 게임 빌드: {save.info.game} {save.info.build}")
@@ -379,7 +391,7 @@ def read_source(config):
     else:
         raise ValueError("입력은 .fm 세이브 또는 정규화된 .json이어야 합니다.")
     if before != file_stamp(source):
-        raise ValueError("읽는 중 입력 파일이 변경되었습니다. 다시 읽습니다.")
+        raise SaveBusyError(SAVE_BUSY_NOTES[1])
     return dict(result, source_stamp=list(before))
 
 
@@ -527,6 +539,8 @@ class Engine:
             for job in self.db.execute("SELECT id FROM jobs WHERE status='apply_failed'").fetchall():
                 try:
                     self.apply(job["id"])
+                except SaveBusyError:
+                    self.update(job["id"], "generated", "세이브 저장 중 · 합성 결과 보관, 저장 완료 후 추가 AI 호출 없이 자동 적용")
                 except Exception as exc:
                     if self.db.execute("SELECT status FROM jobs WHERE id=?", (job["id"],)).fetchone()[0] != "superseded":
                         self.update(job["id"], "apply_failed", "자동 저장 재시도 대기: " + str(exc))
@@ -718,6 +732,8 @@ class Engine:
     def retry(self, job_id):
         job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if job and job["status"] in ("failed", "blocked", "interrupted"):
+            if self.recover_busy_result(job_id):
+                return
             self.update(job_id, "pending")
         elif job and job["status"] == "apply_failed":
             self.update(job_id, "generated")
@@ -732,6 +748,55 @@ class Engine:
                         self.db.execute("UPDATE job_custom SET editing=0 WHERE job_id=?", (row[0],))
                 except OSError:
                     pass  # Another app still owns this editor; leave it protected.
+        for job in self.db.execute("SELECT id FROM jobs WHERE status='failed' AND note IN (?,?)", SAVE_BUSY_NOTES).fetchall():
+            self.recover_busy_result(job[0])
+
+    def recover_busy_result(self, job_id):
+        """Rescue the old post-generation snapshot bug without another Codex request."""
+        job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job or job["status"] != "failed" or job["note"] not in SAVE_BUSY_NOTES or job["started"] is None:
+            return False
+        custom = self.db.execute("SELECT editing FROM job_custom WHERE job_id=?", (job_id,)).fetchone()
+        if custom and custom[0]:
+            return False
+        folders = []
+        for folder in (Path(self.c["state_dir"]) / "jobs").glob(f"{job_id}-*"):
+            reply = folder / "reply.json"
+            if folder.is_symlink() or not re.fullmatch(rf"{job_id}-[a-f0-9]{{8}}", folder.name) or not reply.is_file():
+                continue
+            try:
+                modified = reply.stat().st_mtime
+                if modified >= job["started"] - 2:
+                    folders.append((modified, folder))
+            except OSError:
+                continue
+        for _, folder in sorted(folders, reverse=True):
+            try:
+                reply = read_json(folder / "reply.json")
+                saved = read_json(folder / "request.json")
+                row = json.loads(job["data"])
+                current = request_options(self.c, row, self.job_options(job_id))
+                if reply.get("status") != "generated" or not latin_name(saved.get("display_name", "")):
+                    continue
+                if any(saved.get(key) != current.get(key) for key in ("original_name", "general", "personal")):
+                    continue  # The user edited appearance directions after the failed request.
+                if current["display_name"] and current["display_name"] != saved["display_name"]:
+                    continue
+                validate_png(folder / "portrait.png", final=False)
+                result = render_gunzo(folder / "portrait.png", saved["display_name"], self.c["name_font_path"], self.c["frame_template"])
+                write_atomic(folder / "result.png", result)
+                validate_png(folder / "result.png")
+                with self.db:
+                    self.db.execute("BEGIN IMMEDIATE")
+                    custom = self.db.execute("SELECT editing FROM job_custom WHERE job_id=?", (job_id,)).fetchone()
+                    if ((custom and custom[0]) or request_options(self.c, row, self.job_options(job_id)) != current):
+                        return False
+                    changed = self.db.execute("UPDATE jobs SET status='generated',artifact=?,note=? WHERE id=? AND status='failed' AND note IN (?,?)",
+                        (str(folder / "result.png"), "보관된 합성 결과 복구 · 추가 AI 호출 없이 세이브 확인 후 자동 저장", job_id, *SAVE_BUSY_NOTES))
+                return bool(changed.rowcount)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return False
 
     def job_options(self, job_id):
         record = self.db.execute("SELECT options FROM job_custom WHERE job_id=?", (job_id,)).fetchone()
@@ -803,6 +868,9 @@ class Engine:
         if ready:
             try:
                 self.apply(ready[0])
+            except SaveBusyError:
+                self.update(ready[0], "generated", "세이브 저장 중 · 합성 결과 보관, 저장 완료 후 추가 AI 호출 없이 자동 적용")
+                return False
             except Exception as exc:
                 current = self.db.execute("SELECT status FROM jobs WHERE id=?", (ready[0],)).fetchone()[0]
                 if current != "superseded":
@@ -884,24 +952,22 @@ class Engine:
             options["name_source"] = "game_or_user" if request_options(self.c, row, job_options)["display_name"] else "codex_romanized"
             write_atomic(folder / "request.json", json.dumps(options, ensure_ascii=False, indent=2).encode("utf-8"))
             validate_png(folder / "portrait.png", final=False)
-            # Refresh after a potentially long image request before even offering application.
-            self.refresh()
-            if not self.latest(row):
-                self.update(jid, "superseded", "합성 중 소속/범위 변경")
-            else:
-                final = render_gunzo(folder / "portrait.png", options["display_name"], self.c["name_font_path"], self.c["frame_template"])
-                write_atomic(folder / "result.png", final)
-                validate_png(folder / "result.png")
-                self.update(jid, "generated", "350×350 건조폼·하단 이름 완성. PNG와 config.xml 저장 중.", str(folder / "result.png"))
-                with self.db:
-                    self.setmeta("latest_result", json.dumps({"id": jid, "artifact": str(folder / "result.png"),
-                        "name": options["display_name"], "club_name": row["club_name"], "created": time.time()}, ensure_ascii=False))
-                try:
-                    self.apply(jid)
-                except Exception as exc:
-                    current = self.db.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()[0]
-                    if current != "superseded":
-                        self.update(jid, "apply_failed", "이미지는 보관됨. 저장 재시도 필요: " + str(exc))
+            # Preserve the paid result BEFORE the mandatory fresh-save/identity check in apply().
+            final = render_gunzo(folder / "portrait.png", options["display_name"], self.c["name_font_path"], self.c["frame_template"])
+            write_atomic(folder / "result.png", final)
+            validate_png(folder / "result.png")
+            self.update(jid, "generated", "350×350 건조폼·하단 이름 완성. 세이브 확인 후 PNG와 config.xml 저장 중.", str(folder / "result.png"))
+            with self.db:
+                self.setmeta("latest_result", json.dumps({"id": jid, "artifact": str(folder / "result.png"),
+                    "name": options["display_name"], "club_name": row["club_name"], "created": time.time()}, ensure_ascii=False))
+            try:
+                self.apply(jid)
+            except SaveBusyError:
+                self.update(jid, "generated", "세이브 저장 중 · 합성 결과 보관, 저장 완료 후 추가 AI 호출 없이 자동 적용")
+            except Exception as exc:
+                current = self.db.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()[0]
+                if current != "superseded":
+                    self.update(jid, "apply_failed", "이미지는 보관됨. 저장 재시도 필요: " + str(exc))
         except Exception as exc:
             self.update(jid, "failed", str(exc))
         return True

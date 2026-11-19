@@ -1,4 +1,4 @@
-"""Install/export the metadata-only FM27 companion; never patch or refresh FM."""
+"""Install FM27 companions or export a combined queue/live-refresh diagnostic bundle."""
 from __future__ import annotations
 
 import csv
@@ -118,24 +118,8 @@ def install_component(game, bundle, filename, folder):
 
 
 def export_live_report(destination):
-    from live_refresh import bridge_root, read_json
-    root = bridge_root()
-    if root is None:
-        raise ValueError("실시간 갱신 진단은 Windows용입니다.")
-    reports = []
-    for file in sorted((root / "sessions").glob("*/status.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]:
-        try:
-            status = read_json(file)
-            responses = [read_json(p) for p in sorted((file.parent / "responses").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:10]]
-            reports.append({"status": status, "responses": responses})
-        except (OSError, ValueError):
-            continue
-    if not reports:
-        raise ValueError("갱신 플러그인 상태가 없습니다. install_live_refresh.bat 실행 후 FM27을 다시 시작하세요. 계속 없으면 BepInEx/LogOutput.log를 확인하세요.")
-    destination = Path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps({"schema_version": 1, "sessions": reports}, ensure_ascii=False, indent=2), encoding="utf-8")
-    return destination
+    from diagnostics import export_bundle
+    return export_bundle(destination, root=ROOT)
 
 
 def export_report(game, destination):
@@ -171,9 +155,10 @@ def main():
             raise ValueError("이 설치·내보내기 도구는 Windows용입니다.")
         if not args.export and game_process_running():
             raise ValueError("진단 플러그인 설치 전 FM27을 완전히 종료하세요. 설치 후 한 번 실행하면 진단 파일을 만듭니다.")
-        if args.export and args.live:
-            target = export_live_report(ROOT / "diagnostics" / "live-refresh-report.json")
-            messagebox.showinfo("게임 갱신 진단 내보내기", f"완료: {target}\n이 JSON을 대화에 첨부해 주세요. 게임 파일이나 세이브는 포함하지 않습니다.")
+        if args.export:
+            from diagnostics import export_bundle
+            target = export_bundle(ROOT / "diagnostics" / "live-refresh-report.json", root=ROOT)
+            messagebox.showinfo("문제 진단 내보내기", f"완료: {target}\n이 JSON을 대화에 첨부해 주세요. 작업 상태와 게임 갱신 기록을 함께 담았습니다.\n설정 경로가 포함되며 이미지·커스텀 지시·인증 정보는 포함하지 않습니다.")
             os.startfile(target.parent)
             return
         if INSTALL_RECORD.is_file():
@@ -187,17 +172,12 @@ def main():
                 if not executable:
                     return
                 game = Path(executable).parent
-        if args.export:
-            target = export_report(game, ROOT / "diagnostics" / "refresh-diagnostic.json")
-            messagebox.showinfo("진단 결과 내보내기", f"완료: {target}\n\n이 JSON 파일을 대화에 첨부해 주세요. 게임·세이브 파일은 포함하지 않습니다.")
-            os.startfile(target.parent)
+        target = install_component(game, None, "FMFaceRefresh.dll", "FMFaceRefresh") if args.live else install_plugin(game)
+        INSTALL_RECORD.write_text(json.dumps({"game": str(game)}, ensure_ascii=False), encoding="utf-8")
+        if args.live:
+            messagebox.showinfo("게임 갱신 실험 플러그인 설치 완료", f"{target}\n\n1. FM27을 실행하고 세이브를 불러오세요.\n2. 앱의 폴더 · 연결에서 ‘생성 후 게임 그래픽 갱신’을 체크하고 저장하세요.\n3. ‘게임 갱신 테스트’를 누르고 실제 얼굴 표시를 확인하세요.\n\n실험 기능입니다. 실패하면 export_live_refresh_report.bat로 진단을 내보내 주세요.")
         else:
-            target = install_component(game, None, "FMFaceRefresh.dll", "FMFaceRefresh") if args.live else install_plugin(game)
-            INSTALL_RECORD.write_text(json.dumps({"game": str(game)}, ensure_ascii=False), encoding="utf-8")
-            if args.live:
-                messagebox.showinfo("게임 갱신 실험 플러그인 설치 완료", f"{target}\n\n1. FM27을 실행하고 세이브를 불러오세요.\n2. 앱의 폴더 · 연결에서 ‘생성 후 게임 그래픽 갱신’을 체크하고 저장하세요.\n3. ‘게임 갱신 테스트’를 누르고 실제 얼굴 표시를 확인하세요.\n\n실험 기능입니다. 실패하면 export_live_refresh_report.bat로 진단을 내보내 주세요.")
-            else:
-                messagebox.showinfo("진단 플러그인 설치 완료", f"{target}\n\n1. FM27을 실행해 메인 화면까지 기다리세요.\n2. export_refresh_diagnostics.bat를 실행하세요.\n3. 열린 폴더의 refresh-diagnostic.json을 대화에 첨부해 주세요.\n\n이 플러그인은 정보만 읽습니다. 아직 실시간 적용을 실행하지 않습니다.")
+            messagebox.showinfo("진단 플러그인 설치 완료", f"{target}\n\n1. FM27을 실행해 메인 화면까지 기다리세요.\n2. export_refresh_diagnostics.bat를 실행하세요.\n3. 열린 폴더의 live-refresh-report.json을 대화에 첨부해 주세요.\n\n이 플러그인은 정보만 읽습니다. 아직 실시간 적용을 실행하지 않습니다.")
     except Exception as exc:
         messagebox.showerror("FM27 실시간 적용 진단", str(exc))
     finally:
