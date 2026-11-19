@@ -322,6 +322,101 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(self.e.watch_step(self.good_runner)["saving"])
         self.assertIsNone(self.e.meta("baseline"))
 
+    def test_save_cadence_records_transfer_waits_and_survives_restart(self):
+        self.c["save_update_interval"] = 2
+        self.e.close()
+        self.e = Engine(self.c)
+        self.refs()
+        old = time.time() - 100
+
+        def save(data, tick):
+            self.source(data)
+            os.utime(self.c["source"], (old + tick, old + tick))
+            return self.e.watch_step(self.good_runner)
+
+        baseline = save(snapshot(), 0)
+        self.assertEqual(baseline["save_updates_pending"], 0)
+        self.assertEqual(self.e.jobs(), [])
+        # No movement on the second save: the first save's transfer must survive.
+        moved = snapshot("20", date="2027-07-02")
+        first = save(moved, 1)
+        self.assertEqual(first["added"], 1)
+        self.assertFalse(first["processed"])
+        self.assertEqual(first["save_updates_pending"], 1)
+        self.assertEqual(self.e.jobs()[0]["status"], "pending")
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+        for _ in range(3):
+            unchanged = self.e.watch_step(self.good_runner)
+            self.assertEqual(unchanged["save_updates_pending"], 1)
+            self.assertFalse(unchanged["processed"])
+        self.e.close()
+        self.e = Engine(self.c)
+        self.assertFalse(self.e.watch_step(self.good_runner)["processed"])
+        second = save(moved, 2)
+        self.assertEqual(second["added"], 0)
+        self.assertEqual(second["save_updates_pending"], 0)
+        self.assertTrue(second["processed"])
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+
+    def test_save_cadence_drains_multiple_jobs_without_another_save(self):
+        self.c["save_update_interval"] = 2
+        self.e.close()
+        self.e = Engine(self.c)
+        self.refs()
+        shutil.copyfile(Path(self.c["portraits_dir"]) / "900001.png", Path(self.c["portraits_dir"]) / "900002.png")
+        data = snapshot()
+        data["players"].extend(snapshot(player="900002", identity=101)["players"])
+        old = time.time() - 100
+        for tick, club in enumerate(("10", "20", "20")):
+            for player in data["players"]:
+                player.update(club_id=club, club_name="Club " + club)
+            self.source(data)
+            os.utime(self.c["source"], (old + tick, old + tick))
+            step = self.e.watch_step(self.good_runner)
+            self.assertEqual(step["processed"], tick == 2)
+        self.assertTrue(self.e.watch_step(self.good_runner)["processed"])
+        self.assertEqual([job["status"] for job in self.e.jobs()], ["applied", "applied"])
+
+    def test_zero_daily_limit_allows_more_than_old_default_budget(self):
+        self.transfer()
+        now = time.time()
+        with self.e.db:
+            self.e.db.executemany("INSERT INTO attempts VALUES (?,1)", [(now - 1,)] * 100)
+        self.assertEqual(self.c["daily_limit"], 0)
+        self.assertIsNotNone(self.e.next_job(now))
+
+    def test_save_during_generation_counts_toward_next_batch_and_stops_stale_apply(self):
+        self.c["save_update_interval"] = 2
+        self.e.close()
+        self.e = Engine(self.c)
+        self.refs()
+        shutil.copyfile(Path(self.c["kits_dir"]) / "20.png", Path(self.c["kits_dir"]) / "30.png")
+        old = time.time() - 100
+
+        def save(club, tick):
+            self.source(snapshot(club))
+            os.utime(self.c["source"], (old + tick, old + tick))
+
+        def moving_runner(cmd, **kwargs):
+            result = self.good_runner(cmd, **kwargs)
+            save("30", 3)
+            return result
+
+        save("10", 0)
+        self.e.watch_step(self.good_runner)
+        save("20", 1)
+        self.assertFalse(self.e.watch_step(self.good_runner)["processed"])
+        save("20", 2)
+        result = self.e.watch_step(moving_runner)
+        self.assertTrue(result["processed"])
+        self.assertEqual(result["save_updates_pending"], 1)
+        self.assertEqual([j["status"] for j in self.e.jobs()], ["pending", "superseded"])
+        self.assertFalse((Path(self.c["pack_dir"]) / "900001.png").exists())
+        self.assertFalse(self.e.watch_step(self.good_runner)["processed"])
+        save("30", 4)
+        self.assertTrue(self.e.watch_step(self.good_runner)["processed"])
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+
     def test_preflight_recovers_automatically_but_ai_failures_do_not(self):
         jid = self.transfer()
         self.e.run_one(self.good_runner)
@@ -737,6 +832,36 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(config["style"], DEFAULTS["style"])
         self.assertNotIn("auto_apply", config)
         self.assertEqual(config["additional_instructions"], "")
+
+    def test_advanced_defaults_and_legacy_limit_migration(self):
+        path = self.root / "config.json"
+        path.write_text("{}")
+        config = load_config(path)
+        self.assertEqual(config["save_update_interval"], 1)
+        self.assertFalse(config["initial_generation"])
+        for key in ("max_age", "daily_limit", "cooldown_hours", "settle_seconds"):
+            self.assertEqual(config[key], 0)
+        old = {"daily_limit": 20, "cooldown_hours": 24, "settle_seconds": 30, "poll_seconds": 25}
+        path.write_text(json.dumps(old))
+        migrated = load_config(path)
+        self.assertNotIn("poll_seconds", migrated)
+        self.assertEqual(migrated["save_update_interval"], 1)
+        self.assertEqual([migrated[k] for k in old if k != "poll_seconds"], [0, 0, 0])
+        # A user-customized bundle or a versioned setting is preserved.
+        for saved in (old | {"daily_limit": 7}, old | {"advanced_settings_version": 1}):
+            path.write_text(json.dumps(saved))
+            loaded = load_config(path)
+            for key in ("daily_limit", "cooldown_hours", "settle_seconds"):
+                self.assertEqual(loaded[key], saved[key])
+
+    def test_save_interval_and_limits_reject_invalid_values(self):
+        path = self.root / "config.json"
+        for key, values in (("save_update_interval", (0, -1, 1.5, True)), ("daily_limit", (-1, 0.5)), ("max_age", (-1, 0.5))):
+            for value in values:
+                with self.subTest(key=key, value=value):
+                    path.write_text(json.dumps({key: value}))
+                    with self.assertRaises(ValueError):
+                        load_config(path)
 
     def test_gunzo_renders_exact_size_unicode_name_and_visible_letters(self):
         source = self.root / "portrait.png"

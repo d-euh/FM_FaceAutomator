@@ -16,11 +16,11 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from engine import DEFAULTS, Engine, detection_messages, load_config, process_lock, read_source, write_atomic
+from engine import DEFAULTS, WATCH_POLL_SECONDS, Engine, detection_messages, load_config, process_lock, read_source, write_atomic
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
 import scope_rules
-from scope_ui import ScopePanel
+from scope_ui import AdvancedPanel, ScopePanel
 from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, apply_theme
 
 
@@ -64,14 +64,20 @@ class App:
         self.jobs_tab, jobs = self.page()
         self.settings_tab, settings = self.page(scroll=True)
         self.prompts_tab, prompts = self.page(scroll=True)
+        self.advanced_tab, advanced = self.page(scroll=True)
         for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "추가 지시 · 건조폼")):
             self.tabs.add(host, text=label)
+        self.tabs.add(self.advanced_tab, text="고급설정", state="hidden")
         ttk.Button(header, text="홈", command=lambda: self.tabs.select(self.home_tab)).pack(side="right")
         ttk.Button(header, text="생성 범위 설정", command=lambda: self.tabs.select(self.scope_tab)).pack(side="right", padx=8)
-        ttk.Label(header, text="v0.5.4", style="Muted.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.6.0", style="Muted.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan,
-                                      lambda: self.tabs.select(self.home_tab), self.update_scope_summary)
+                                      lambda: self.tabs.select(self.home_tab), self.update_scope_summary,
+                                      self.open_advanced)
+        self.advanced_panel = AdvancedPanel(advanced, self.vars, self.save,
+                                           lambda: self.tabs.select(self.scope_tab),
+                                           lambda: self.tabs.select(self.home_tab))
         settings.columnconfigure(1, weight=1)
         self.fields(settings)
         self.prompt_fields(prompts)
@@ -112,6 +118,10 @@ class App:
         self.window.after(100, self.auto_paths)
         self.window.after(500, self.drain)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+    def open_advanced(self):
+        self.tabs.add(self.advanced_tab, text="고급설정", state="normal")
+        self.tabs.select(self.advanced_tab)
 
     def page(self, scroll=False):
         host = ttk.Frame(self.tabs)
@@ -320,6 +330,8 @@ class App:
         c = load_config(self.path)
         for key, var in self.vars.items():
             value = c[key]
+            if key in AdvancedPanel.UNLIMITED and value == 0:
+                value = AdvancedPanel.UNLIMITED[key]
             var.set(",".join(value) if isinstance(value, list) else value)
         self.style_text.insert("1.0", c["style"])
         self.additional_text.insert("1.0", c["additional_instructions"])
@@ -337,11 +349,13 @@ class App:
             c = dict(self.config)
             for key, var in self.vars.items():
                 value = var.get()
+                if key in AdvancedPanel.UNLIMITED and str(value).strip() in ("", AdvancedPanel.UNLIMITED[key]):
+                    value = 0
                 if key in ("club_ids", "player_ids", "exclude_player_ids", "regen_player_ids"):
                     value = [v.strip() for v in value.split(",") if v.strip()]
                     if any(not v.isdigit() for v in value):
                         raise ValueError("ID는 숫자로 입력하세요.")
-                elif key in ("daily_limit", "max_age", "poll_seconds"):
+                elif key in ("daily_limit", "max_age", "save_update_interval"):
                     value = int(value)
                 elif key in ("cooldown_hours", "settle_seconds"):
                     value = float(value)
@@ -416,6 +430,8 @@ class App:
                 self.events.put(f"기존 결과 {converted}개를 선수 ID 파일명으로 갱신했습니다. 재합성하지 않습니다.")
             self.events.put("감시·합성 실행 중 · Codex 사용량이 발생할 수 있습니다.")
             self.events.put("감시 파일: " + e.c["source"])
+            self.events.put(f'생성 간격: 세이브 업데이트 {e.c["save_update_interval"]}회마다 · 최초 기준 읽기는 제외')
+            last_wait_message = None
             while not self.stop.is_set():
                 try:
                     result = e.watch_step()
@@ -425,11 +441,20 @@ class App:
                             self.events.put(message)
                     if result["processed"]:
                         self.events.put("합성 작업 1개 처리 · 대기열에서 상태를 확인하세요.")
+                        last_wait_message = None
                     elif result.get("waiting"):
-                        self.events.put(f'자동 감시 중 · 대기 {result["waiting"]}개 · 변경 대기/호출 상한/재생성 간격 후 자동 진행')
+                        if result.get("save_updates_pending"):
+                            message = f'세이브 업데이트 {result["save_updates_pending"]}/{result["save_update_interval"]}회 · 생성 대기 {result["waiting"]}개'
+                        else:
+                            message = f'자동 감시 중 · 대기 {result["waiting"]}개 · 생성 대기/호출 상한/재생성 간격 후 자동 진행'
+                        if message != last_wait_message:
+                            self.events.put(message)
+                            last_wait_message = message
+                    else:
+                        last_wait_message = None
                 except Exception as exc:
                     self.events.put(f"점검 보류: {exc}")
-                self.stop.wait(e.c["poll_seconds"])
+                self.stop.wait(WATCH_POLL_SECONDS)
         self.background(task)
 
     def pause(self):

@@ -29,14 +29,17 @@ DEFAULTS = {
     "kits_dir": "kits", "pack_dir": "facepack", "codex": "codex",
     "club_ids": [], "player_ids": [], "exclude_player_ids": [], "regen_player_ids": [],
     "my_club_only": True, "all_players": False, "max_age": 0,
-    "daily_limit": 20, "cooldown_hours": 24, "settle_seconds": 30,
-    "poll_seconds": 10, "timeout_seconds": 600,
+    "daily_limit": 0, "cooldown_hours": 0, "settle_seconds": 0,
+    "save_update_interval": 1, "advanced_settings_version": 1, "timeout_seconds": 600,
     "initial_generation": False,
     "style": "Photorealistic football player portrait, natural lighting, detailed face and jersey, no text or frame.",
     "additional_instructions": "", "player_overrides": {}, "kit_overrides": {},
     "name_font_path": "", "frame_template": "", "graphics_root": "", "kit_variant": "home",
     "scope_rules": None,
 }
+
+# File stability polling is an implementation detail, not the generation cadence.
+WATCH_POLL_SECONDS = 2
 
 LEGACY_STYLE = "Photorealistic square head-and-shoulders football portrait, clean neutral background, no text or frame. Preserve the original person's identity and facial features; change only the jersey to the reference kit."
 
@@ -72,7 +75,14 @@ def write_atomic(path, data):
 
 def load_config(path):
     path = Path(path).resolve()
-    config = DEFAULTS | read_json(path)
+    saved = read_json(path)
+    config = DEFAULTS | saved
+    # Migrate the old, untouched limit bundle. Preserve customized bundles.
+    if not saved.get("advanced_settings_version") and all(saved.get(k) == v for k, v in
+            {"daily_limit": 20, "cooldown_hours": 24, "settle_seconds": 30}.items()):
+        config.update(daily_limit=0, cooldown_hours=0, settle_seconds=0)
+    config["advanced_settings_version"] = 1
+    config.pop("poll_seconds", None)
     # Output and XML application are mandatory in v0.2, including old configs.
     config.pop("auto_apply", None)
     if config["style"] == LEGACY_STYLE:
@@ -82,10 +92,15 @@ def load_config(path):
             config[field] = str((path.parent / config[field]).resolve())
     for field in ("club_ids", "player_ids", "exclude_player_ids", "regen_player_ids"):
         config[field] = [str(v) for v in config[field]]
-    for field in ("daily_limit", "poll_seconds", "timeout_seconds"):
-        if int(config[field]) < 1:
+    for field in ("save_update_interval", "timeout_seconds"):
+        if isinstance(config[field], bool) or int(config[field]) != float(config[field]) or int(config[field]) < 1:
             raise ValueError(f"{field}: 1 이상이어야 합니다.")
-    for field in ("cooldown_hours", "settle_seconds", "max_age"):
+        config[field] = int(config[field])
+    for field in ("daily_limit", "max_age"):
+        if isinstance(config[field], bool) or int(config[field]) != float(config[field]) or int(config[field]) < 0:
+            raise ValueError(f"{field}: 0 이상의 정수여야 합니다.")
+        config[field] = int(config[field])
+    for field in ("cooldown_hours", "settle_seconds"):
         if float(config[field]) < 0:
             raise ValueError(f"{field}: 음수는 사용할 수 없습니다.")
     if config["kit_variant"] not in ("home", "away", "third"):
@@ -243,6 +258,9 @@ def detection_messages(summary):
     else:
         text = f'소속 변화 {summary["club_changes"]}명 · 범위 제외 {summary["filtered"]}명 · 신규 작업 {summary["queued"]}개'
     messages = [text]
+    if not summary["baseline"] and summary.get("save_update_interval", 1) > 1:
+        pending, interval = summary["save_updates_pending"], summary["save_update_interval"]
+        messages.append(f'세이브 업데이트 {pending}/{interval}회 · 생성 대기' if pending else f'세이브 업데이트 {interval}회 충족 · 누적 작업 처리')
     for item in (summary["tracked"][:10] or summary["changes"][:5]):
         before = item["previous_club_id"]
         membership = (f'기준 {item["club_id"] or "없음"}' if before is None else f'{before or "없음"} → {item["club_id"] or "없음"}')
@@ -383,6 +401,9 @@ class Engine:
             if not self.meta("owner"):
                 self.setmeta("owner", uuid.uuid4().hex)
             self.setmeta("source", config["source"])
+            if self.meta("save_update_interval") != str(config["save_update_interval"]):
+                self.setmeta("save_update_interval", config["save_update_interval"])
+                self.setmeta("save_updates_pending", 0)
 
     def close(self):
         self.db.close()
@@ -449,9 +470,11 @@ class Engine:
                 except Exception as exc:
                     if self.db.execute("SELECT status FROM jobs WHERE id=?", (job["id"],)).fetchone()[0] != "superseded":
                         self.update(job["id"], "apply_failed", "자동 저장 재시도 대기: " + str(exc))
-        processed = self.run_one(runner)
+        processed = self.run_one(runner, save_gated=True)
         waiting = self.db.execute("SELECT count(*) FROM jobs WHERE status='pending'").fetchone()[0]
         return {"saving": False, "changed": changed, "added": added, "processed": processed, "waiting": waiting,
+                "save_updates_pending": int(self.meta("save_updates_pending") or 0),
+                "save_update_interval": self.c["save_update_interval"],
                 "detection": json.loads(self.meta("detection_summary") or "null") if changed else None}
 
     def meta(self, key):
@@ -479,6 +502,15 @@ class Engine:
         summary["league_status"] = snapshot.get("league_status", {})
         requested = set(self.c["player_ids"])
         with self.db:
+            # Count only distinct, successfully parsed on-disk updates. First
+            # baseline and re-reading the same file do not advance the cadence.
+            stamp = snapshot.get("source_stamp")
+            previous_stamp = json.loads(self.meta("source_stamp") or "null")
+            if self.meta("baseline") and stamp is not None and previous_stamp is not None and stamp != previous_stamp:
+                pending = (int(self.meta("save_updates_pending") or 0) + 1) % self.c["save_update_interval"]
+                self.setmeta("save_updates_pending", pending)
+            summary["save_updates_pending"] = int(self.meta("save_updates_pending") or 0)
+            summary["save_update_interval"] = self.c["save_update_interval"]
             self.setmeta("managed", json.dumps(snapshot.get("managed_club_ids", [])))
             catalog = snapshot.get("clubs")
             if catalog is None:
@@ -598,8 +630,10 @@ class Engine:
         with self.db:
             self.db.execute("UPDATE jobs SET status='interrupted',note='이전 실행 중단. 확인 후 재시도하세요.' WHERE status='running'")
 
-    def next_job(self, now):
-        if self.db.execute("SELECT count(*) FROM attempts WHERE started>?", (now - 86400,)).fetchone()[0] >= self.c["daily_limit"]:
+    def next_job(self, now, save_gated=False):
+        if save_gated and int(self.meta("save_updates_pending") or 0):
+            return None
+        if self.c["daily_limit"] and self.db.execute("SELECT count(*) FROM attempts WHERE started>?", (now - 86400,)).fetchone()[0] >= self.c["daily_limit"]:
             return None
         for job in self.db.execute("SELECT * FROM jobs WHERE status='pending' AND created<=? ORDER BY id", (now - self.c["settle_seconds"],)).fetchall():
             row = json.loads(job["data"])
@@ -612,7 +646,7 @@ class Engine:
             return job
         return None
 
-    def run_one(self, runner=subprocess.run):
+    def run_one(self, runner=subprocess.run, save_gated=False):
         # Resume a fully rendered image after a crash without buying another image.
         ready = self.db.execute("SELECT id FROM jobs WHERE status='generated' ORDER BY id LIMIT 1").fetchone()
         if ready:
@@ -626,7 +660,7 @@ class Engine:
         if not self.db.execute("SELECT 1 FROM jobs WHERE status='pending' LIMIT 1").fetchone():
             return False
         self.refresh()
-        job = self.next_job(time.time())
+        job = self.next_job(time.time(), save_gated=save_gated)
         if job is None:
             return False
         jid, row = job["id"], json.loads(job["data"])

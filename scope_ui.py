@@ -8,7 +8,7 @@ from scope_rules import DIRECTIONS, LEAGUES, PRESETS, describe, migrate_scope
 
 
 class ScopePanel:
-    def __init__(self, parent, variables, save, read, home, changed):
+    def __init__(self, parent, variables, save, read, home, changed, advanced):
         self.variables, self.changed = variables, changed
         self.catalog, self.rules, self.managed = {}, {}, []
         self.league_status = {}
@@ -49,6 +49,7 @@ class ScopePanel:
         ttk.Label(left, text="영입은 새 구단, 방출은 이전 구단을 기준으로 판단합니다.\n방출 후 선택하지 않은 구단으로 옮겨도 생성합니다.\n무소속 상태에는 새 유니폼이 없어 생성하지 않습니다.", style="CardMuted.TLabel", wraplength=350).pack(anchor="w", pady=14)
         ttk.Label(left, textvariable=self.summary, style="CardText.TLabel", wraplength=350).pack(fill="x", pady=6)
         ttk.Button(left, text="범위 저장", style="Primary.TButton", command=save).pack(fill="x", pady=(16, 0))
+        ttk.Button(left, text="고급설정", command=advanced).pack(anchor="w", pady=(10, 0))
         ttk.Label(right, text="구단 직접 설정", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(right, text="구단을 추가하면 ‘직접 설정’으로 전환합니다. 구단마다 방향을 다르게 지정할 수 있습니다.", style="CardMuted.TLabel", wraplength=600).pack(anchor="w", pady=(6, 12))
         search = ttk.Frame(right, style="Card.TFrame")
@@ -79,24 +80,6 @@ class ScopePanel:
         row.pack(fill="x", pady=(8, 0))
         ttk.Button(row, text="선택 구단 삭제", command=self.remove_club).pack(side="left")
         ttk.Checkbutton(row, style="Card.TCheckbutton", text="내가 맡은 구단도 함께 포함", variable=self.include_managed, command=self.render_summary).pack(side="right")
-        advanced = ttk.Frame(parent, style="Card.TFrame", padding=20)
-        advanced.pack(fill="x", pady=(18, 0))
-        ttk.Label(advanced, text="추가 조건 · 호출량", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
-        for index, (key, label) in enumerate((("player_ids", "추가 선수 ID (쉼표)"), ("exclude_player_ids", "제외 선수 ID (쉼표)"), ("regen_player_ids", "생성선수 r- 매핑 ID (쉼표)"))):
-            variables[key] = tk.StringVar()
-            ttk.Label(advanced, text=label, style="CardText.TLabel").grid(row=index + 1, column=0, sticky="w", padx=(0, 16), pady=5)
-            ttk.Entry(advanced, textvariable=variables[key]).grid(row=index + 1, column=1, columnspan=3, sticky="ew", pady=5)
-        limits = ttk.Frame(advanced, style="Card.TFrame")
-        limits.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(12, 0))
-        for key, label in (("max_age", "최대 나이 · 0=전체"), ("daily_limit", "24시간 호출 상한"), ("cooldown_hours", "재생성 간격 · 시간"), ("settle_seconds", "변경 대기 · 초"), ("poll_seconds", "감시 간격 · 초")):
-            group = ttk.Frame(limits, style="Card.TFrame")
-            group.pack(side="left", fill="x", expand=True, padx=(0, 14))
-            ttk.Label(group, text=label, style="CardMuted.TLabel").pack(anchor="w")
-            variables[key] = tk.StringVar()
-            ttk.Entry(group, textvariable=variables[key], width=12).pack(fill="x", pady=6)
-        variables["initial_generation"] = tk.BooleanVar()
-        ttk.Checkbutton(advanced, style="Card.TCheckbutton", text="처음 발견한 선수도 생성 · 기본값은 기준만 기록", variable=variables["initial_generation"]).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
-        advanced.columnconfigure(1, weight=1)
 
     def value(self):
         reverse = {label: key for key, label in DIRECTIONS.items()}
@@ -185,3 +168,38 @@ class ScopePanel:
         self.selected.delete(*self.selected.get_children())
         for cid, direction in self.rules.items():
             self.selected.insert("", "end", iid=cid, values=(cid, self.catalog.get(cid, {}).get("name", "구단 " + cid), DIRECTIONS[direction]))
+
+
+class AdvancedPanel:
+    """Optional controls, opened from the scope page instead of shown inline."""
+
+    UNLIMITED = {"max_age": "전체", "daily_limit": "제한 없음", "cooldown_hours": "제한 없음", "settle_seconds": "대기 없음"}
+
+    def __init__(self, parent, variables, save, scope, home):
+        top = ttk.Frame(parent)
+        top.pack(fill="x", pady=(0, 16))
+        ttk.Label(top, text="고급설정", style="Title.TLabel").pack(side="left")
+        ttk.Button(top, text="홈으로", command=home).pack(side="right")
+        ttk.Button(top, text="생성 범위로", command=scope).pack(side="right", padx=8)
+        ttk.Label(parent, text="기본값은 추가 제한 없음입니다. 필요한 경우에만 변경하세요.", style="Muted.TLabel").pack(anchor="w", pady=(0, 16))
+        advanced = ttk.Frame(parent, style="Card.TFrame", padding=20)
+        advanced.pack(fill="x")
+        ttk.Label(advanced, text="추가 조건 · 호출량", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        for index, (key, label) in enumerate((("player_ids", "추가 선수 ID (쉼표)"), ("exclude_player_ids", "제외 선수 ID (쉼표)"), ("regen_player_ids", "생성선수 r- 매핑 ID (쉼표)"))):
+            variables[key] = tk.StringVar()
+            ttk.Label(advanced, text=label, style="CardText.TLabel").grid(row=index + 1, column=0, sticky="w", padx=(0, 16), pady=5)
+            ttk.Entry(advanced, textvariable=variables[key]).grid(row=index + 1, column=1, sticky="ew", pady=5)
+        ttk.Label(advanced, text="ID 항목을 비워두면 별도 추가·제외·매핑을 지정하지 않습니다.", style="CardMuted.TLabel").grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 16))
+        for index, (key, label) in enumerate((("max_age", "최대 나이"), ("daily_limit", "최근 24시간 호출 상한 · 회"), ("cooldown_hours", "같은 선수 재생성 간격 · 시간"), ("settle_seconds", "대기열 추가 후 생성 대기 · 초")), start=5):
+            ttk.Label(advanced, text=label, style="CardText.TLabel").grid(row=index, column=0, sticky="w", padx=(0, 16), pady=6)
+            variables[key] = tk.StringVar()
+            ttk.Combobox(advanced, textvariable=variables[key], values=(self.UNLIMITED[key],), width=24).grid(row=index, column=1, sticky="ew", pady=6)
+        ttk.Label(advanced, text="숫자를 입력하면 해당 제한을 적용합니다. 0 또는 빈칸은 제한 없음입니다.", style="CardMuted.TLabel").grid(row=9, column=0, columnspan=2, sticky="w", pady=(4, 16))
+        ttk.Label(advanced, text="감시 간격 · 세이브 업데이트 횟수", style="CardText.TLabel").grid(row=10, column=0, sticky="w", padx=(0, 16), pady=6)
+        variables["save_update_interval"] = tk.StringVar()
+        ttk.Spinbox(advanced, textvariable=variables["save_update_interval"], from_=1, to=999999, width=24).grid(row=10, column=1, sticky="ew", pady=6)
+        ttk.Label(advanced, text="1 = 매 업데이트마다 생성 · 2 = 저장 갱신 2회마다 생성\n이적은 매번 기록하고, 지정 횟수가 차면 누적 작업을 처리합니다. 최초 기준 읽기는 횟수에서 제외합니다.", style="CardMuted.TLabel", wraplength=900).grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 16))
+        variables["initial_generation"] = tk.BooleanVar()
+        ttk.Checkbutton(advanced, style="Card.TCheckbutton", text="처음 발견한 선수도 생성 · 기본값은 기준만 기록", variable=variables["initial_generation"]).grid(row=12, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        advanced.columnconfigure(1, weight=1)
+        ttk.Button(parent, text="고급설정 저장", style="Primary.TButton", command=save).pack(anchor="w", pady=(16, 0))
