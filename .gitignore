@@ -4,6 +4,10 @@ __pycache__/
 config.json
 state/
 workspaces/
+diagnostics/
+.refresh-diagnostics.json
+**/bin/
+**/obj/
 facepack/
 portraits/
 kits/

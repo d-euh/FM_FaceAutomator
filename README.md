@@ -29,6 +29,8 @@ v0.7.1은 사용자가 제공한 **Koverwatch · Bebas Neue · Venus Rising** �
 
 ## Windows에서 실행
 
+Steam 빌드 **26620374**의 재시작 없는 적용을 조사하기 위한 **진단 전용 BepInEx 플러그인**과 설치·내보내기 배치를 추가했습니다. 아직 실시간 적용 기능은 아닙니다. 게임을 끄고 `install_refresh_diagnostics.bat` 실행 → FM27 시작 → `export_refresh_diagnostics.bat` 실행 순서입니다. BepInEx 6 IL2CPP x64 be.793 이상이 필요하며, [진단 사용 안내](plugin-src/README.md)를 먼저 확인하세요.
+
 1. 이 저장소를 `D:\FMFaceAutomator`에 내려받습니다.
 2. Python 3.12 이상(Tk 및 Python Launcher 포함)을 준비합니다.
 3. `setup_windows.bat`를 실행한 뒤 `start_windows.bat`를 실행합니다.

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>FMFaceRefresh.Diagnostics</AssemblyName>
+    <Version>0.1.0</Version>
+    <Deterministic>true</Deterministic>
+    <BepInExCoreDir Condition="'$(BepInExCoreDir)' == ''">$(MSBuildThisFileDirectory)../../references/BepInEx/core</BepInExCoreDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="BepInEx.Core">
+      <HintPath>$(BepInExCoreDir)/BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP">
+      <HintPath>$(BepInExCoreDir)/BepInEx.Unity.IL2CPP.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

@@ -26,6 +26,12 @@ v0.7.0은 고급설정을 생성 범위의 버튼으로만 열 수 있는 **팝�
 
 ## 실행
 
+### 재시작 없는 적용 사전 진단
+
+Steam 빌드 **26620374**용 메타데이터 진단 플러그인을 별도로 제공합니다. `install_refresh_diagnostics.bat`로 설치하고 FM27을 한 번 실행한 뒤 `export_refresh_diagnostics.bat`로 결과를 내보냅니다. **아직 그래픽 새로고침은 실행하지 않습니다.** BepInEx 6 IL2CPP x64 be.793 이상이 필요합니다. 로더 자동 설치·교체는 하지 않으며 게임·세이브 파일을 보내지 않고 진단 JSON만 확인하는 절차입니다. 자세한 순서와 검증 한계는 [플러그인 안내](plugin-src/README.md)에 있습니다.
+
+### 일반 앱 실행
+
 감지 진단은 **작업 대기열 → 관리 도구 → 감지 진단 내보내기**에 있습니다. 목록 높이가 줄어들더라도 하단 작업 버튼을 볼 수 있습니다.
 
 1. [python.org](https://www.python.org/downloads/windows/)에서 Python 3.12 이상을 설치합니다. Tk와 Python Launcher를 포함하세요.
