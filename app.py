@@ -26,6 +26,7 @@ from scope_ui import AdvancedPanel, ScopePanel
 from gunzo import BUNDLED_FONTS, bundled_font_path, default_font_path, name_font
 from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, PURPLE, apply_theme
 from diagnostics import APP_VERSION, export_bundle
+from codex_login import STATUS_TEXT, browser_login, login_status, resolve_codex
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
@@ -38,6 +39,10 @@ class App:
         self.events = queue.Queue()
         self.stop = threading.Event()
         self.thread = None
+        self.auth_thread = None
+        self.auth_logging_in = False
+        self.auth_cancel = threading.Event()
+        self.auth_check_timer = None
         self.photo = None
         self.vars = {}
         self.path_scan = 0
@@ -136,6 +141,8 @@ class App:
         self.log_toggle.pack(side="right")
         self.log = tk.Text(log_host, height=4, font=(family, 9), state="disabled", background=LOG_BACKGROUND, foreground=MUTED, relief="flat", padx=10, pady=8)
         self.load()
+        self.vars["codex"].trace_add("write", self.codex_path_changed)
+        self.codex_path_changed()
         self.window.after(100, self.auto_paths)
         self.window.after(500, self.drain)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
@@ -324,13 +331,23 @@ class App:
                 entry = ttk.Combobox(parent, textvariable=self.vars[key], values=[str(bundled_font_path(font)) for font in BUNDLED_FONTS])
                 entry.bind("<<ComboboxSelected>>", lambda event: event.widget.xview_moveto(1))
             else:
-                entry = ttk.Entry(parent, textvariable=self.vars[key])
-            entry.grid(row=index, column=1, sticky="ew", pady=10)
+                field = ttk.Frame(parent, style="Card.TFrame") if key == "codex" else parent
+                entry = ttk.Entry(field, textvariable=self.vars[key])
+            if key == "codex":
+                field.grid(row=index, column=1, sticky="ew", pady=10)
+                entry.pack(fill="x")
+                self.auth_status = tk.StringVar(value="로그인 상태 확인 중…")
+                ttk.Label(field, textvariable=self.auth_status, style="CardMuted.TLabel", wraplength=420).pack(anchor="w", pady=(5, 0))
+            else:
+                entry.grid(row=index, column=1, sticky="ew", pady=10)
             buttons = ttk.Frame(parent, style="Card.TFrame")
             buttons.grid(row=index, column=2, padx=(10, 0))
             ttk.Button(buttons, text="폰트 불러오기" if chooser == "font" else "선택", command=lambda k=key, c=chooser: self.choose(k, c)).pack(side="left")
             if chooser == "font":
                 ttk.Button(buttons, text="기본 글꼴", command=self.default_font).pack(side="left", padx=(8, 0))
+            if key == "codex":
+                self.login_button = ttk.Button(buttons, text="ChatGPT 로그인", command=self.login_chatgpt)
+                self.login_button.pack(side="left", padx=(8, 0))
         self.workspace_note = tk.StringVar(value="세이브별 이적 기준과 작업 기록은 자동으로 분리·관리합니다.")
         ttk.Label(parent, textvariable=self.workspace_note, style="CardMuted.TLabel", wraplength=1000).grid(row=8, column=0, columnspan=3, sticky="w", pady=8)
         ttk.Label(parent, text="합성에 사용할 유니폼", style="CardText.TLabel").grid(row=9, column=0, sticky="w", pady=12)
@@ -349,6 +366,79 @@ class App:
         ttk.Button(parent, text="게임 갱신 테스트 · AI 호출 없음", command=self.test_live_refresh).grid(row=16, column=0, columnspan=2, sticky="w", pady=12)
         self.live_status = tk.StringVar(value="실시간 게임 갱신 꺼짐")
         ttk.Label(parent, textvariable=self.live_status, style="CardMuted.TLabel", wraplength=1000).grid(row=17, column=0, columnspan=3, sticky="w")
+
+    def auth_active(self):
+        return self.auth_thread is not None and self.auth_thread.is_alive()
+
+    def codex_path_changed(self, *args):
+        if self.auth_check_timer is not None:
+            self.window.after_cancel(self.auth_check_timer)
+        self.auth_check_timer = self.window.after(750, self.check_login_status)
+
+    def check_login_status(self):
+        self.auth_check_timer = None
+        if self.auth_cancel.is_set():
+            return
+        if self.auth_active():
+            self.auth_check_timer = self.window.after(750, self.check_login_status)
+            return
+        self.run_auth(login=False)
+
+    def login_chatgpt(self):
+        if self.auth_active():
+            return
+        if self.active():
+            messagebox.showinfo("ChatGPT 로그인", "자동 생성을 멈춘 뒤 로그인하세요. ‘작업 종료 후 멈춤’을 누르면 진행 중인 합성이 끝난 뒤 멈춥니다.")
+            return
+        if self.auth_check_timer is not None:
+            self.window.after_cancel(self.auth_check_timer)
+            self.auth_check_timer = None
+        self.run_auth(login=True)
+
+    def run_auth(self, *, login):
+        value = self.vars["codex"].get()
+        try:
+            executable = resolve_codex(value, self.path.parent)
+            if login:
+                # Logging in must work before a save or any graphics folders are selected.
+                config = dict(self.config, codex=executable)
+                write_atomic(self.path, json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8"))
+                self.config = config
+                self.vars["codex"].set(executable)
+                value = executable
+        except (ValueError, OSError) as exc:
+            self.auth_status.set(str(exc))
+            if login:
+                messagebox.showerror("ChatGPT 로그인", str(exc))
+            return
+        self.auth_status.set("브라우저에서 ChatGPT 로그인을 완료하세요. 열리지 않으면 Codex 로그인 창의 주소를 사용하세요." if login else "로그인 상태 확인 중…")
+        self.login_button.configure(state="disabled")
+        self.auth_logging_in = login
+        def worker():
+            try:
+                result = browser_login(executable, self.path.parent, self.auth_cancel) if login else login_status(executable, self.path.parent)
+            except Exception:
+                result = "launch_failed"  # Do not copy CLI auth output or tokens into app logs.
+            self.events.put({"auth": True, "login": login, "value": value, "result": result})
+        self.auth_thread = threading.Thread(target=worker, daemon=True)
+        self.auth_thread.start()
+
+    def accept_auth(self, event):
+        if self.vars["codex"].get() != event["value"]:
+            self.auth_status.set("Codex 경로 변경됨 · 로그인 상태를 다시 확인합니다.")
+            self.codex_path_changed()
+            return
+        result = event["result"]
+        text = STATUS_TEXT.get(result, {
+            "complete": "ChatGPT 로그인 완료 · 이 계정으로 합성을 요청합니다.",
+            "cancelled": "로그인이 취소되었습니다. 필요할 때 다시 로그인하세요.",
+            "incomplete": "로그인이 완료되지 않았습니다. 로그인 창에서 안내를 확인한 뒤 다시 시도하세요.",
+            "unconfirmed": "로그인 명령이 끝났지만 ChatGPT 연결을 확인하지 못했습니다. 다시 로그인하세요.",
+            "launch_failed": "Codex 로그인을 실행하지 못했습니다. 실행 파일과 설치 상태를 확인하세요.",
+        }.get(result, STATUS_TEXT["unknown"]))
+        self.auth_status.set(text)
+        if event["login"]:
+            self.events.put(text)
 
     def test_live_refresh(self):
         if not self.active() and not self.save():
@@ -576,6 +666,9 @@ class App:
         self.background(task)
 
     def start(self):
+        if self.auth_active() and self.auth_logging_in:
+            self.status.set("로그인 또는 로그인 상태 확인이 끝난 뒤 자동 생성을 시작하세요.")
+            return
         current = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "graphics_root", "codex")}
         if not self.active() and not self.path_scanning and current != self.last_discovery_inputs:
             self.auto_paths()
@@ -957,6 +1050,9 @@ class App:
             if isinstance(text, dict) and "path_scan" in text:
                 self.accept_paths(text)
                 continue
+            if isinstance(text, dict) and "auth" in text:
+                self.accept_auth(text)
+                continue
             if isinstance(text, dict) and "workspace" in text:
                 self.config.update(state_dir=text["workspace"]["state_dir"], workspaces=text["workspace"]["workspaces"])
                 write_atomic(self.path, json.dumps(self.config, ensure_ascii=False, indent=2).encode("utf-8"))
@@ -967,6 +1063,7 @@ class App:
             self.log.insert("end", time.strftime("%H:%M:%S ") + text + "\n")
             self.log.see("end")
             self.log.configure(state="disabled")
+        self.login_button.configure(state="disabled" if self.active() or self.auth_active() else "normal")
         database = Path(self.config["state_dir"]) / "queue.sqlite"
         if database.exists():
             engine = None
@@ -1027,15 +1124,17 @@ class App:
 
     def close(self):
         self.discovery_stop.set()
-        if self.active():
-            self.pause()
-            self.status.set("종료 대기 · 현재 작업이 끝나면 창이 닫힙니다.")
+        self.auth_cancel.set()
+        if self.active() or self.auth_active():
+            if self.active():
+                self.pause()
+            self.status.set("종료 대기 · 현재 작업과 로그인 창을 정리한 뒤 닫습니다.")
             self.window.after(500, self.finish_close)
         else:
             self.window.destroy()
 
     def finish_close(self):
-        if self.active():
+        if self.active() or self.auth_active():
             self.window.after(500, self.finish_close)
         else:
             self.window.destroy()
