@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PIL import Image
-from discovery import discover_defaults
+from PIL import Image, ImageFont
+from discovery import discover_defaults, find_name_font
 from engine import DEFAULTS
 
 
@@ -19,6 +19,9 @@ class DiscoveryTests(unittest.TestCase):
         self.graphics = self.root / "Documents/Sports Interactive/Football Manager 27/graphics"
         self.graphics.mkdir(parents=True)
         self.c = copy.deepcopy(DEFAULTS)
+        font_patch = patch("discovery.find_name_font", return_value="")
+        self.find_font = font_patch.start()
+        self.addCleanup(font_patch.stop)
         for key, directory in (("portraits_dir", "portraits"), ("kits_dir", "kits"), ("state_dir", "state"), ("pack_dir", "facepack")):
             self.c[key] = str(self.base / directory)
 
@@ -62,6 +65,28 @@ class DiscoveryTests(unittest.TestCase):
         with patch("discovery.find_codex", return_value=""):
             found, _ = discover_defaults(self.c, self.base, home=self.root, environ={})
         self.assertEqual(found, {})
+
+    def test_missing_font_path_is_populated_from_validated_system_font(self):
+        self.find_font.return_value = str(self.root / "Windows/Fonts/malgunbd.ttf")
+        found = self.discover()
+        self.assertEqual(found["name_font_path"], self.find_font.return_value)
+
+    def test_existing_font_is_preserved_even_when_file_is_missing(self):
+        self.c["name_font_path"] = str(self.root / "my-font.otf")
+        self.assertNotIn("name_font_path", self.discover())
+        self.find_font.assert_not_called()
+
+    def test_font_search_does_not_invent_a_path_when_no_font_can_be_loaded(self):
+        # Call the actual helper rather than the discovery fixture's stub.
+        with patch("discovery.name_font", side_effect=ValueError("No usable font")):
+            self.assertEqual(find_name_font(), "")
+
+    def test_discovered_font_can_render_an_english_player_name(self):
+        font = find_name_font()
+        self.assertTrue(Path(font).is_absolute())
+        self.assertTrue(Path(font).is_file())
+        bounds = ImageFont.truetype(font, 23).getbbox("Djed Spence")
+        self.assertGreater(bounds[2] - bounds[0], 0)
 
     def test_one_drive_and_extra_search_location_are_used(self):
         shared = self.root / "OneDrive/Documents/Sports Interactive/Football Manager 2027/graphics/faces"

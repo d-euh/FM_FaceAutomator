@@ -18,7 +18,7 @@ from PIL import Image, ImageTk
 
 from engine import DEFAULTS, WATCH_POLL_SECONDS, Engine, detection_messages, load_config, process_lock, read_source, write_atomic
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
-from discovery import discover_defaults
+from discovery import discover_defaults, find_name_font
 import scope_rules
 from scope_ui import AdvancedPanel, ScopePanel
 from gunzo import name_font
@@ -71,7 +71,7 @@ class App:
         self.tabs.add(self.advanced_tab, text="고급설정", state="hidden")
         ttk.Button(header, text="홈", command=lambda: self.tabs.select(self.home_tab)).pack(side="right")
         ttk.Button(header, text="생성 범위 설정", command=lambda: self.tabs.select(self.scope_tab)).pack(side="right", padx=8)
-        ttk.Label(header, text="v0.6.1", style="Muted.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.6.2", style="Muted.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan,
                                       lambda: self.tabs.select(self.home_tab), self.update_scope_summary,
@@ -231,24 +231,30 @@ class App:
         self.recent_name.set("350 × 350 · 영문 이름 · ID 파일명")
 
     def fields(self, parent):
-        ttk.Label(parent, text="폴더 · Codex 연결", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 18))
+        ttk.Label(parent, text="폴더 · Codex · 글꼴 연결", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 18))
         rows = [("source", "FM27 세이브 / JSON", "file"), ("state_dir", "작업 폴더 · 세이브별", "dir"),
                 ("portraits_dir", "원본 얼굴 폴더", "dir"), ("kits_dir", "유니폼 참조 폴더", "dir"),
                 ("pack_dir", "페이스팩 저장 폴더", "dir"), ("codex", "Codex 실행 파일", "exe"),
-                ("graphics_root", "FM 자료 상위 폴더 · 선택", "dir")]
+                ("graphics_root", "FM 자료 상위 폴더 · 선택", "dir"),
+                ("name_font_path", "이름 글꼴 · TTF/OTF/TTC", "font")]
         for index, (key, label, chooser) in enumerate(rows, 1):
             ttk.Label(parent, text=label).grid(row=index, column=0, sticky="w", padx=(0, 18), pady=10)
             self.vars[key] = tk.StringVar()
             ttk.Entry(parent, textvariable=self.vars[key]).grid(row=index, column=1, sticky="ew", pady=10)
-            ttk.Button(parent, text="선택", command=lambda k=key, c=chooser: self.choose(k, c)).grid(row=index, column=2, padx=(10, 0))
-        ttk.Label(parent, text="합성에 사용할 유니폼").grid(row=8, column=0, sticky="w", pady=12)
+            buttons = ttk.Frame(parent)
+            buttons.grid(row=index, column=2, padx=(10, 0))
+            ttk.Button(buttons, text="폰트 불러오기" if chooser == "font" else "선택", command=lambda k=key, c=chooser: self.choose(k, c)).pack(side="left")
+            if chooser == "font":
+                ttk.Button(buttons, text="기본 글꼴", command=self.default_font).pack(side="left", padx=(8, 0))
+        ttk.Label(parent, text="합성에 사용할 유니폼").grid(row=9, column=0, sticky="w", pady=12)
         self.vars["kit_variant"] = tk.StringVar()
-        ttk.Combobox(parent, textvariable=self.vars["kit_variant"], values=("home", "away", "third"), state="readonly", width=14).grid(row=8, column=1, sticky="w")
+        ttk.Combobox(parent, textvariable=self.vars["kit_variant"], values=("home", "away", "third"), state="readonly", width=14).grid(row=9, column=1, sticky="w")
         self.path_status = tk.StringVar(value="폴더와 Codex 경로를 자동 확인합니다. 다른 항목만 직접 바꾸세요.")
-        ttk.Label(parent, textvariable=self.path_status, style="Muted.TLabel", wraplength=1050).grid(row=9, column=0, columnspan=3, sticky="w", pady=20)
-        ttk.Label(parent, text="기존 파일이 있는 페이스팩에도 저장합니다. 같은 선수 ID의 이미지와 매핑은 백업 후 갱신합니다.", style="Muted.TLabel", wraplength=1050).grid(row=10, column=0, columnspan=3, sticky="w", pady=(0, 16))
-        ttk.Button(parent, text="설정 저장", style="Primary.TButton", command=self.save).grid(row=11, column=0, sticky="w")
-        ttk.Button(parent, text="홈으로", command=lambda: self.tabs.select(self.home_tab)).grid(row=11, column=1, sticky="w")
+        ttk.Label(parent, textvariable=self.path_status, style="Muted.TLabel", wraplength=1050).grid(row=10, column=0, columnspan=3, sticky="w", pady=20)
+        ttk.Label(parent, text="이름 글꼴은 시스템에서 자동 선택합니다. 직접 지정한 파일은 유지하며, ‘기본 글꼴’로 자동 선택한 폰트로 돌아갑니다.\nTTF·OTF·TTC 파일을 직접 선택할 수도 있습니다. 선택한 폰트 파일은 해당 위치에 보관하고 변경 후 설정을 저장하세요.", style="Muted.TLabel", wraplength=1050).grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        ttk.Label(parent, text="기존 파일이 있는 페이스팩에도 저장합니다. 같은 선수 ID의 이미지와 매핑은 백업 후 갱신합니다.", style="Muted.TLabel", wraplength=1050).grid(row=12, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        ttk.Button(parent, text="설정 저장", style="Primary.TButton", command=self.save).grid(row=13, column=0, sticky="w")
+        ttk.Button(parent, text="홈으로", command=lambda: self.tabs.select(self.home_tab)).grid(row=13, column=1, sticky="w")
 
     def prompt_fields(self, parent):
         ttk.Label(parent, text="전체 선수 공통 추가 지시", style="Title.TLabel").pack(anchor="w")
@@ -260,18 +266,22 @@ class App:
         self.style_text = tk.Text(parent, height=3, wrap="word", font="TkTextFont")
         self.style_text.pack(fill="x", pady=(6, 12))
         ttk.Label(parent, text="건조폼 출력: 350×350 고정 · 코너 반경 60px · 하단 그라데이션과 선수 이름").pack(anchor="w", pady=(0, 8))
-        for key, title in [("name_font_path", "이름 글꼴 (선택 사항: TTF/OTF/TTC)"), ("frame_template", "추가 폼 템플릿 (선택 사항: 투명 350×350 PNG)")]:
+        for key, title in [("frame_template", "추가 폼 템플릿 (선택 사항: 투명 350×350 PNG)")]:
             ttk.Label(parent, text=title).pack(anchor="w")
             row = ttk.Frame(parent)
             row.pack(fill="x", pady=(4, 8))
             self.vars[key] = tk.StringVar()
             ttk.Entry(row, textvariable=self.vars[key]).pack(side="left", fill="x", expand=True)
-            ttk.Button(row, text="폰트 불러오기" if key == "name_font_path" else "선택", command=lambda k=key: self.choose(k, "font" if k == "name_font_path" else "asset")).pack(side="left", padx=(8, 0))
-            if key == "name_font_path":
-                ttk.Button(row, text="기본 글꼴", command=lambda: self.vars["name_font_path"].set("")).pack(side="left", padx=(8, 0))
-                ttk.Label(parent, text="TTF·OTF·TTC 파일 선택 → 설정 저장. 비워두면 기본 글꼴을 사용합니다. 선택한 파일은 원래 위치에 보관하세요.", style="Muted.TLabel", wraplength=980).pack(anchor="w", pady=(0, 8))
+            ttk.Button(row, text="선택", command=lambda k=key: self.choose(k, "asset")).pack(side="left", padx=(8, 0))
         ttk.Label(parent, text="이름은 AI가 그리지 않고 프로그램이 정확한 문자열로 넣습니다. 이름 수정은 다음 합성부터 반영됩니다.\nPNG와 config.xml을 모두 저장해야 완료 처리합니다. 저장 실패 시 이미지를 보관하고 추가 합성 없이 저장만 재시도합니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
         ttk.Button(parent, text="설정 저장", command=self.save).pack(anchor="w")
+
+    def default_font(self):
+        value = find_name_font()
+        if not value:
+            messagebox.showinfo("이름 글꼴", "사용할 수 있는 기본 글꼴을 찾지 못했습니다. 폰트 파일을 직접 선택하세요.")
+            return
+        self.vars["name_font_path"].set(value)
 
     def choose(self, key, kind):
         if kind == "font":
@@ -295,8 +305,8 @@ class App:
         self.path_scan += 1
         scan_id = self.path_scan
         self.path_scanning = True
-        self.path_status.set("폴더·최신 세이브·Codex 경로 자동 확인 중… 확인된 경로는 기본값에 채웁니다.")
-        snapshot = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex")}
+        self.path_status.set("폴더·최신 세이브·Codex·글꼴 경로 자동 확인 중… 확인된 경로는 기본값에 채웁니다.")
+        snapshot = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex", "name_font_path")}
         config = dict(self.config)
         for key, value in snapshot.items():
             config[key] = str((self.path.parent / value).resolve()) if value and key != "codex" else value
@@ -323,7 +333,7 @@ class App:
             write_atomic(self.path, json.dumps(self.config, ensure_ascii=False, indent=2).encode("utf-8"))
         except Exception as exc:
             self.events.put(f"자동 경로 설정 저장 실패: {exc}")
-        missing = [label for key, label in (("source", "세이브"), ("portraits_dir", "얼굴"), ("kits_dir", "유니폼"))
+        missing = [label for key, label in (("source", "세이브"), ("portraits_dir", "얼굴"), ("kits_dir", "유니폼"), ("name_font_path", "글꼴"))
                    if not self.vars[key].get() or not Path(self.vars[key].get()).exists()]
         text = f"자동 경로 확인 완료 · {len(changed)}개 기본값 반영. 표시된 경로가 다르면 직접 바꾸세요."
         if missing:
@@ -432,7 +442,7 @@ class App:
         self.background(task)
 
     def start(self):
-        current = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex")}
+        current = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex", "name_font_path")}
         if not self.active() and not self.path_scanning and current != self.last_discovery_inputs:
             self.auto_paths()
         if self.path_scanning:

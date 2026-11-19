@@ -6,6 +6,15 @@ from pathlib import Path
 import shutil
 
 from assets import AssetCatalog, discover_roots, document_folders, source_exclusions
+from gunzo import name_font
+
+
+def find_name_font():
+    """Find a usable system font using the renderer's own validated defaults."""
+    try:
+        return str(Path(name_font()).resolve())
+    except (OSError, ValueError):
+        return ""
 
 
 def find_codex(environ=None):
@@ -32,6 +41,10 @@ def discover_defaults(config, base, home=None, environ=None, stop=None):
         return not value or bool(legacy and Path(value).resolve() == (base / legacy).resolve())
 
     search = dict(config)
+    if unset("name_font_path"):
+        font = find_name_font()
+        if font:
+            updates["name_font_path"] = font
     if unset("source"):
         saves = []
         games = []
