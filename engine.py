@@ -17,7 +17,7 @@ import uuid
 import unicodedata
 import xml.etree.ElementTree as ET
 
-from gunzo import LAYOUT, check_options, render_gunzo
+from gunzo import DEFAULT_FONT_FILENAME, LAYOUT, check_options, render_gunzo
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 import facepack
 import scope_rules
@@ -34,7 +34,8 @@ DEFAULTS = {
     "initial_generation": False,
     "style": "Photorealistic football player portrait, natural lighting, detailed face and jersey, no text or frame.",
     "additional_instructions": "", "player_overrides": {}, "kit_overrides": {},
-    "name_font_path": "", "frame_template": "", "graphics_root": "", "kit_variant": "home",
+    "name_font_path": DEFAULT_FONT_FILENAME, "font_default_version": 1,
+    "frame_template": "", "graphics_root": "", "kit_variant": "home",
     "scope_rules": None,
 }
 
@@ -77,6 +78,10 @@ def load_config(path):
     path = Path(path).resolve()
     saved = read_json(path)
     config = DEFAULTS | saved
+    old_system_fonts = {"malgunbd.ttf", "malgun.ttf", "notosanscjk-bold.ttc", "notosanscjk-regular.ttc", "applesdgothicneo.ttc", "dejavusans-bold.ttf"}
+    if not config["name_font_path"] or (not saved.get("font_default_version") and Path(config["name_font_path"].replace("\\", "/")).name.casefold() in old_system_fonts):
+        config["name_font_path"] = DEFAULT_FONT_FILENAME
+    config["font_default_version"] = 1
     # Migrate the old, untouched limit bundle. Preserve customized bundles.
     if not saved.get("advanced_settings_version") and all(saved.get(k) == v for k, v in
             {"daily_limit": 20, "cooldown_hours": 24, "settle_seconds": 30}.items()):

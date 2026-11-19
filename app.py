@@ -18,10 +18,10 @@ from PIL import Image, ImageTk
 
 from engine import DEFAULTS, WATCH_POLL_SECONDS, Engine, detection_messages, load_config, process_lock, read_source, write_atomic
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
-from discovery import discover_defaults, find_name_font
+from discovery import discover_defaults
 import scope_rules
 from scope_ui import AdvancedPanel, ScopePanel
-from gunzo import name_font
+from gunzo import DEFAULT_FONT_FILENAME, name_font
 from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, apply_theme
 
 
@@ -65,20 +65,26 @@ class App:
         self.jobs_tab, jobs = self.page()
         self.settings_tab, settings = self.page(scroll=True)
         self.prompts_tab, prompts = self.page(scroll=True)
-        self.advanced_tab, advanced = self.page(scroll=True)
         for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "추가 지시 · 건조폼")):
             self.tabs.add(host, text=label)
-        self.tabs.add(self.advanced_tab, text="고급설정", state="hidden")
         ttk.Button(header, text="홈", command=lambda: self.tabs.select(self.home_tab)).pack(side="right")
         ttk.Button(header, text="생성 범위 설정", command=lambda: self.tabs.select(self.scope_tab)).pack(side="right", padx=8)
-        ttk.Label(header, text="v0.6.2", style="Muted.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.7.0", style="Muted.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan,
                                       lambda: self.tabs.select(self.home_tab), self.update_scope_summary,
                                       self.open_advanced)
-        self.advanced_panel = AdvancedPanel(advanced, self.vars, self.save,
-                                           lambda: self.tabs.select(self.scope_tab),
-                                           lambda: self.tabs.select(self.home_tab))
+        self.advanced_window = tk.Toplevel(window)
+        self.advanced_window.withdraw()
+        self.advanced_window.title("고급설정 · FM Face Automator")
+        self.advanced_window.transient(window)
+        self.advanced_window.geometry("940x740")
+        self.advanced_window.minsize(820, 560)
+        self.advanced_window.protocol("WM_DELETE_WINDOW", self.advanced_window.withdraw)
+        self.advanced_window.bind("<Escape>", lambda event: self.advanced_window.withdraw())
+        advanced_host, advanced = self.page(scroll=True, parent=self.advanced_window)
+        advanced_host.pack(fill="both", expand=True)
+        self.advanced_panel = AdvancedPanel(advanced, self.vars, self.save, self.advanced_window.withdraw)
         settings.columnconfigure(1, weight=1)
         self.fields(settings)
         self.prompt_fields(prompts)
@@ -121,11 +127,12 @@ class App:
         self.window.protocol("WM_DELETE_WINDOW", self.close)
 
     def open_advanced(self):
-        self.tabs.add(self.advanced_tab, text="고급설정", state="normal")
-        self.tabs.select(self.advanced_tab)
+        self.advanced_window.deiconify()
+        self.advanced_window.lift()
+        self.advanced_window.focus_set()
 
-    def page(self, scroll=False):
-        host = ttk.Frame(self.tabs)
+    def page(self, scroll=False, parent=None):
+        host = ttk.Frame(self.tabs if parent is None else parent)
         if not scroll:
             content = ttk.Frame(host, padding=20)
             content.pack(fill="both", expand=True)
@@ -251,7 +258,7 @@ class App:
         ttk.Combobox(parent, textvariable=self.vars["kit_variant"], values=("home", "away", "third"), state="readonly", width=14).grid(row=9, column=1, sticky="w")
         self.path_status = tk.StringVar(value="폴더와 Codex 경로를 자동 확인합니다. 다른 항목만 직접 바꾸세요.")
         ttk.Label(parent, textvariable=self.path_status, style="Muted.TLabel", wraplength=1050).grid(row=10, column=0, columnspan=3, sticky="w", pady=20)
-        ttk.Label(parent, text="이름 글꼴은 시스템에서 자동 선택합니다. 직접 지정한 파일은 유지하며, ‘기본 글꼴’로 자동 선택한 폰트로 돌아갑니다.\nTTF·OTF·TTC 파일을 직접 선택할 수도 있습니다. 선택한 폰트 파일은 해당 위치에 보관하고 변경 후 설정을 저장하세요.", style="Muted.TLabel", wraplength=1050).grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        ttk.Label(parent, text="기본 글꼴은 koverwatch.ttf입니다. 프로그램 폴더(config.json 옆)에 파일을 넣어주세요.\n기본 파일이 없으면 합성 전에 보류합니다. 다른 TTF·OTF·TTC를 직접 선택할 수도 있습니다.", style="Muted.TLabel", wraplength=1050).grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 16))
         ttk.Label(parent, text="기존 파일이 있는 페이스팩에도 저장합니다. 같은 선수 ID의 이미지와 매핑은 백업 후 갱신합니다.", style="Muted.TLabel", wraplength=1050).grid(row=12, column=0, columnspan=3, sticky="w", pady=(0, 16))
         ttk.Button(parent, text="설정 저장", style="Primary.TButton", command=self.save).grid(row=13, column=0, sticky="w")
         ttk.Button(parent, text="홈으로", command=lambda: self.tabs.select(self.home_tab)).grid(row=13, column=1, sticky="w")
@@ -277,11 +284,7 @@ class App:
         ttk.Button(parent, text="설정 저장", command=self.save).pack(anchor="w")
 
     def default_font(self):
-        value = find_name_font()
-        if not value:
-            messagebox.showinfo("이름 글꼴", "사용할 수 있는 기본 글꼴을 찾지 못했습니다. 폰트 파일을 직접 선택하세요.")
-            return
-        self.vars["name_font_path"].set(value)
+        self.vars["name_font_path"].set(str(self.path.parent / DEFAULT_FONT_FILENAME))
 
     def choose(self, key, kind):
         if kind == "font":
@@ -305,8 +308,8 @@ class App:
         self.path_scan += 1
         scan_id = self.path_scan
         self.path_scanning = True
-        self.path_status.set("폴더·최신 세이브·Codex·글꼴 경로 자동 확인 중… 확인된 경로는 기본값에 채웁니다.")
-        snapshot = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex", "name_font_path")}
+        self.path_status.set("폴더·최신 세이브·Codex 경로 자동 확인 중… 확인된 경로는 기본값에 채웁니다.")
+        snapshot = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex")}
         config = dict(self.config)
         for key, value in snapshot.items():
             config[key] = str((self.path.parent / value).resolve()) if value and key != "codex" else value
@@ -393,7 +396,8 @@ class App:
             try:
                 write_atomic(temp, json.dumps(c, ensure_ascii=False, indent=2).encode("utf-8"))
                 checked = load_config(temp)
-                if checked["name_font_path"]:
+                default_font = (self.path.parent / DEFAULT_FONT_FILENAME).resolve()
+                if Path(checked["name_font_path"]).is_file() or Path(checked["name_font_path"]) != default_font:
                     name_font(checked["name_font_path"])
             finally:
                 temp.unlink(missing_ok=True)
@@ -442,7 +446,7 @@ class App:
         self.background(task)
 
     def start(self):
-        current = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex", "name_font_path")}
+        current = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "state_dir", "graphics_root", "codex")}
         if not self.active() and not self.path_scanning and current != self.last_discovery_inputs:
             self.auto_paths()
         if self.path_scanning:

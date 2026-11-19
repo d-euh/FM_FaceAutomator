@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 
 from PIL import Image, ImageChops, ImageFont
 from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, detection_messages, game_english_name, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
-from gunzo import LAYOUT, render_gunzo
+from gunzo import LAYOUT, name_font, render_gunzo
 from scope_rules import DEFAULT_SCOPE
 
 
@@ -36,10 +36,27 @@ class EngineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        # Test rendering with an available real font; the requested default
+        # font is supplied by the user and is not bundled with these tests.
+        for candidate in ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "DejaVuSans-Bold.ttf",
+                          str(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "malgunbd.ttf")):
+            try:
+                test_font = ImageFont.truetype(candidate, 20).path
+                break
+            except OSError:
+                continue
+        else:
+            raise RuntimeError("A font is required for the rendering tests")
+        self.test_font = self.root / "test-renderer.ttf"
+        shutil.copyfile(test_font, self.test_font)
+        font_patch = patch("gunzo.default_font_path", return_value=self.test_font)
+        font_patch.start()
+        self.addCleanup(font_patch.stop)
         self.c = copy.deepcopy(DEFAULTS)
         self.c.update({key: str(self.root / key) for key in ("state_dir", "portraits_dir", "kits_dir", "pack_dir")})
         self.c.update(source=str(self.root / "career.json"), all_players=True,
-                      settle_seconds=0, cooldown_hours=0, codex=shutil.which("python3") or shutil.which("python"))
+                      settle_seconds=0, cooldown_hours=0, name_font_path=str(self.test_font),
+                      codex=shutil.which("python3") or shutil.which("python"))
         self.e = Engine(self.c)
 
     def tearDown(self):
@@ -854,6 +871,35 @@ class EngineTests(unittest.TestCase):
             loaded = load_config(path)
             for key in ("daily_limit", "cooldown_hours", "settle_seconds"):
                 self.assertEqual(loaded[key], saved[key])
+
+    def test_koverwatch_default_path_and_previous_system_font_migration(self):
+        path = self.root / "config.json"
+        for saved in ({}, {"name_font_path": ""}, {"name_font_path": "C:\\Windows\\Fonts\\malgunbd.ttf"},
+                      {"name_font_path": "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"}):
+            with self.subTest(saved=saved):
+                path.write_text(json.dumps(saved))
+                self.assertEqual(load_config(path)["name_font_path"], str(self.root / "koverwatch.ttf"))
+        for saved in ({"name_font_path": str(self.test_font)},
+                      {"name_font_path": "malgun.ttf", "font_default_version": 1}):
+            path.write_text(json.dumps(saved))
+            self.assertEqual(load_config(path)["name_font_path"], str((self.root / saved["name_font_path"]).resolve()))
+
+    def test_missing_koverwatch_blocks_generation_without_system_fallback(self):
+        self.c["name_font_path"] = str(self.root / "koverwatch.ttf")
+        self.transfer()
+        self.refs()
+        def forbidden(*args, **kwargs):
+            self.fail("Missing koverwatch.ttf must not invoke Codex")
+        self.e.run_one(forbidden)
+        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+        self.assertIn("koverwatch.ttf", self.e.jobs()[0]["note"])
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+
+    def test_blank_font_uses_fixed_default_instead_of_searching_system_fonts(self):
+        missing = self.root / "koverwatch.ttf"
+        with patch("gunzo.default_font_path", return_value=missing):
+            with self.assertRaisesRegex(ValueError, "koverwatch.ttf"):
+                name_font()
 
     def test_save_interval_and_limits_reject_invalid_values(self):
         path = self.root / "config.json"

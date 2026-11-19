@@ -175,12 +175,11 @@ class AdvancedPanel:
 
     UNLIMITED = {"max_age": "전체", "daily_limit": "제한 없음", "cooldown_hours": "제한 없음", "settle_seconds": "대기 없음"}
 
-    def __init__(self, parent, variables, save, scope, home):
+    def __init__(self, parent, variables, save, close):
         top = ttk.Frame(parent)
         top.pack(fill="x", pady=(0, 16))
         ttk.Label(top, text="고급설정", style="Title.TLabel").pack(side="left")
-        ttk.Button(top, text="홈으로", command=home).pack(side="right")
-        ttk.Button(top, text="생성 범위로", command=scope).pack(side="right", padx=8)
+        ttk.Button(top, text="창 닫기", command=close).pack(side="right")
         ttk.Label(parent, text="기본값은 추가 제한 없음입니다. 필요한 경우에만 변경하세요.", style="Muted.TLabel").pack(anchor="w", pady=(0, 16))
         advanced = ttk.Frame(parent, style="Card.TFrame", padding=20)
         advanced.pack(fill="x")

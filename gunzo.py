@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from io import BytesIO
-import os
 from pathlib import Path
+import sys
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, PngImagePlugin
 
@@ -12,27 +12,23 @@ SIZE = 350
 CORNER_RADIUS = 60
 NAME_WIDTH = 300
 LAYOUT = "gunzo-350-v1"
+DEFAULT_FONT_FILENAME = "koverwatch.ttf"
+
+
+def default_font_path():
+    root = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
+    return root / DEFAULT_FONT_FILENAME
 
 
 def name_font(path=""):
-    if path:
-        if not Path(path).is_file():
-            raise ValueError("이름 글꼴 파일이 없습니다.")
-        candidates = [str(path)]
-    else:
-        windows = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-        candidates = [str(windows / "malgunbd.ttf"), str(windows / "malgun.ttf"),
-                      "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-                      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                      "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-                      "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
-    for candidate in candidates:
-        try:
-            ImageFont.truetype(candidate, 20)
-            return candidate
-        except OSError:
-            continue
-    raise ValueError("선수 이름용 글꼴을 찾지 못했습니다. TTF/OTF/TTC 파일을 선택하세요.")
+    candidate = Path(path) if path else default_font_path()
+    if not candidate.is_file():
+        raise ValueError(f"이름 글꼴 파일이 없습니다: {candidate}. 기본 글꼴 koverwatch.ttf를 프로그램 폴더에 넣거나 ‘폴더 · 연결’에서 폰트를 직접 선택하세요.")
+    try:
+        ImageFont.truetype(str(candidate), 20)
+    except OSError as exc:
+        raise ValueError("이름 글꼴을 읽을 수 없습니다. 올바른 TTF/OTF/TTC 파일을 선택하세요.") from exc
+    return str(candidate)
 
 
 def layout_name(name, font_path=""):
