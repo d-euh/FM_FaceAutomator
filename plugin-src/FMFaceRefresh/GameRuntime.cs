@@ -9,8 +9,12 @@ public sealed class GameRuntime : IGraphicsRuntime
 {
     private const BindingFlags All = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
     private readonly Type resource, panel, manager;
-    private readonly MethodInfo find, il2cppType, rescan, clear, reload, convert;
+    private readonly MethodInfo find, il2cppType, register, rescan, clear, reload, convert;
     private readonly List<object> delegateRoots = new();
+    private readonly GraphicsRegistration registrations = new();
+    public string SelectedPack { get; set; } = "";
+    private string registrationMode = "none";
+    private int registrationAttempts, rescanInvocations;
     public Dictionary<string, object?> Observations { get; } = new();
 
     public static Type GameType(string assembly, string name) => Assembly.Load(assembly).GetType(name, true)!;
@@ -31,8 +35,10 @@ public sealed class GameRuntime : IGraphicsRuntime
         find = Method(GameType("UnityEngine.CoreModule", "UnityEngine.Resources"), "FindObjectsOfTypeAll", "Il2CppSystem.Type");
         il2cppType = Method(GameType("Il2CppInterop.Runtime", "Il2CppInterop.Runtime.Il2CppType"), "From", "System.Type");
         rescan = Method(resource, "RescanLocalPaths", "Il2CppSystem.Action");
+        register = Method(resource, "RegisterLocalPath", "System.String", "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStringArray");
         clear = Method(resource, "ClearCache"); reload = Method(panel, "ReloadPanels");
-        if (rescan.IsStatic || rescan.ReturnType != typeof(void) || clear.IsStatic || reload.IsStatic)
+        if (rescan.IsStatic || rescan.ReturnType != typeof(void) || clear.IsStatic || reload.IsStatic
+            || register.IsStatic || register.ReturnType.Name != "LocalPathScan")
             throw new InvalidOperationException("Unexpected graphics API signature");
         convert = GameType("Il2CppInterop.Runtime", "Il2CppInterop.Runtime.DelegateSupport").GetMethods(All)
             .Single(m => m.Name == "ConvertDelegate" && m.IsGenericMethodDefinition && m.GetParameters().Length == 1);
@@ -58,6 +64,9 @@ public sealed class GameRuntime : IGraphicsRuntime
     public FrameState State()
     {
         Observations.Clear();
+        Observations["registration_mode"] = registrationMode;
+        Observations["selected_pack_registration_attempts"] = registrationAttempts;
+        Observations["rescan_invocations"] = rescanInvocations;
         var managers = Objects(manager).Where(c => Bool(c, "get_m_active") && Bool(c, "get_m_isInMainGameScene")).Take(2).ToArray();
         if (managers.Length != 1) return new(false, "save_not_ready_or_multiple_managers");
         var c = managers[0];
@@ -90,6 +99,9 @@ public sealed class GameRuntime : IGraphicsRuntime
         Observations["registered_path_count"] = count;
         if (count < 0 || count > 10000) throw new InvalidOperationException("Invalid root count");
         var item = Method(registrations.GetType(), "get_Item", "System.Int32");
+        var formats = new List<string>();
+        Observations["registered_path_formats"] = formats;
+        var physicalPack = GraphicsPaths.Physical(pack);
         for (var index = 0; index < count; index++)
         {
             var registration = item.Invoke(registrations, new object[] { index });
@@ -97,14 +109,9 @@ public sealed class GameRuntime : IGraphicsRuntime
             Observations["registration_string_getters"] = registration.GetType().GetMethods(All)
                 .Where(m => !m.IsStatic && m.Name.StartsWith("get_") && m.ReturnType == typeof(string) && m.GetParameters().Length == 0)
                 .Select(m => m.Name).ToArray();
-            foreach (var getter in registration.GetType().GetMethods(All).Where(m => !m.IsStatic && m.Name.StartsWith("get_")
-                     && m.ReturnType == typeof(string) && m.GetParameters().Length == 0
-                     && new[] { "path", "folder", "root" }.Any(k => m.Name.Contains(k, StringComparison.OrdinalIgnoreCase))))
-            {
-                if (getter.Invoke(registration, null) is not string root || !Path.IsPathRooted(root)) continue;
-                var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(pack));
-                if (relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar) && !Path.IsPathRooted(relative)) return true;
-            }
+            var root = Call(registration, "get_Path") as string;
+            formats.Add(GraphicsPaths.Kind(root));
+            if (GraphicsPaths.Contains(root, pack) || (physicalPack is not null && GraphicsPaths.Contains(GraphicsPaths.Physical(root), physicalPack))) return true;
         }
         return false;
     }
@@ -114,6 +121,26 @@ public sealed class GameRuntime : IGraphicsRuntime
         var native = convert.MakeGenericMethod(rescan.GetParameters()[0].ParameterType).Invoke(null, new object[] { completed })
             ?? throw new InvalidOperationException("Completion delegate unavailable");
         delegateRoots.Add(native); // Retain through completion, including uncertain timeouts.
+        var pack = Path.GetFullPath(SelectedPack);
+        if (!Directory.Exists(pack) || !File.Exists(Path.Combine(pack, "config.xml")))
+            throw new InvalidOperationException("Selected pack directory/config.xml no longer exists");
+        var added = registrations.Ensure(pack, ContainsRegisteredPath, path => {
+            var arrayType = register.GetParameters()[1].ParameterType;
+            var excluded = arrayType.GetConstructor(new[] { typeof(long) })?.Invoke(new object[] { 0L })
+                ?? arrayType.GetConstructor(new[] { typeof(string[]) })?.Invoke(new object[] { Array.Empty<string>() })
+                ?? throw new MissingMethodException(arrayType.FullName, ".ctor(empty)");
+            delegateRoots.Add(excluded);
+            registrationAttempts++;
+            registrationMode = "registering_selected_pack";
+            Observations["registration_mode"] = registrationMode;
+            Observations["selected_pack_registration_attempts"] = registrationAttempts;
+            var scan = register.Invoke(Unique(resource), new object[] { path, excluded });
+            if (scan is not null) delegateRoots.Add(scan);
+        });
+        registrationMode = added ? "registered_selected_pack" : "existing_registration";
+        Observations["registration_mode"] = registrationMode;
+        Observations["selected_pack_registration_attempts"] = registrationAttempts;
+        Observations["rescan_invocations"] = ++rescanInvocations;
         rescan.Invoke(Unique(resource), new[] { native });
     }
 

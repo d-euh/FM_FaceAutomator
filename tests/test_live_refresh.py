@@ -20,7 +20,7 @@ class LiveRefreshTests(unittest.TestCase):
         self.session = "a" * 32
         self.directory = self.bridge / "sessions" / f"12-{self.session}"
         self.status = {"protocol": 1, "profile": live_refresh.PROFILE, "pid": 12, "session": self.session,
-                       "heartbeat": 1000, "available": True, "stage": "idle", "reason": "idle", "plugin_version": "0.2.1"}
+                       "heartbeat": 1000, "available": True, "stage": "idle", "reason": "idle", "plugin_version": "0.2.2"}
         self.pending = {"pack_dir": str(self.pack), "revision": "revision"}
         self.connect()
 
@@ -87,7 +87,7 @@ class LiveRefreshTests(unittest.TestCase):
         self.assertFalse((self.bridge / "requests").exists())
 
     def test_old_plugin_cannot_receive_new_requests_after_the_idle_bug_fix(self):
-        for version in ("0.2.0", "", "unknown"):
+        for version in ("0.2.0", "0.2.1", "", "unknown"):
             self.connect(plugin_version=version)
             pending, message = live_refresh.pump(self.pending, self.bridge, 1000)
             self.assertNotIn("request_id", pending)

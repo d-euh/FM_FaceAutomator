@@ -22,7 +22,7 @@ public sealed class RefreshRequest
     public double expires_at { get; set; }
 }
 
-[BepInPlugin("io.github.d_euh.fmface.refresh", "FM Face Refresh Experimental", "0.2.1")]
+[BepInPlugin("io.github.d_euh.fmface.refresh", "FM Face Refresh Experimental", "0.2.2")]
 public sealed class Plugin : BasePlugin
 {
     public const string Profile = "fm27-steam-26620374-v1";
@@ -142,9 +142,8 @@ public sealed class Plugin : BasePlugin
             if (state.Reason == "unrecognized_game_state")
             { active = request; Reply("failed", "unsupported_game_state"); File.Delete(file); continue; }
             if (!state.Idle) return; // Saving, processing, matches and unknown states remain queued.
-            if (!runtime.ContainsRegisteredPath(request.pack_dir))
-            { active = request; Reply("failed", "pack_not_under_registered_graphics_path"); File.Delete(file); continue; }
             active = request;
+            runtime.SelectedPack = request.pack_dir;
             File.Delete(file); // A unique request ID is never automatically replayed after claiming.
             controller!.Begin(clock.Elapsed.TotalSeconds, request.expires_at - Now);
             activeStarted = true;
@@ -181,7 +180,7 @@ public sealed class Plugin : BasePlugin
 
     private void Status() => Write(Path.Combine(SessionDir, "status.json"), new {
         protocol = 1, profile = Profile, session, pid = Environment.ProcessId, heartbeat = Now,
-        plugin_version = "0.2.1", experimental = true, visual_result_verified = false,
+        plugin_version = "0.2.2", experimental = true, visual_result_verified = false,
         available = enabled && controller?.Faulted == false, stage = controller?.Stage ?? "unavailable",
         request_id = active?.id, reason = controller?.Faulted == true || activeStarted ? controller?.Reason : problem,
         observations = runtime?.Observations, execution = Execution()

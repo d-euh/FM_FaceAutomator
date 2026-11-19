@@ -11,7 +11,7 @@ import time
 import uuid
 
 PROFILE = "fm27-steam-26620374-v1"
-MIN_PLUGIN_VERSION = (0, 2, 1)
+MIN_PLUGIN_VERSION = (0, 2, 2)
 
 
 def plugin_is_current(session):

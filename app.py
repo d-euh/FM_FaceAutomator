@@ -77,7 +77,7 @@ class App:
         self.prompts_tab, prompts = self.page(scroll=True)
         for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
-        ttk.Label(header, text="v0.10.1", style="Badge.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.10.2", style="Badge.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan, self.update_scope_summary,
                                       self.open_advanced)
@@ -343,7 +343,7 @@ class App:
         self.vars["live_refresh_enabled"] = tk.BooleanVar()
         ttk.Checkbutton(parent, text="생성 후 게임 그래픽 갱신 · 실험 기능", variable=self.vars["live_refresh_enabled"],
                         style="Card.TCheckbutton").grid(row=14, column=0, columnspan=3, sticky="w", pady=(22, 8))
-        ttk.Label(parent, text="전용 플러그인을 설치한 Steam 26620374에서 사용합니다. 처음에는 꺼져 있습니다.\n지원 빌드·파일 해시·게임 대기 상태를 확인하며, 게임 갱신 실패가 AI 재호출을 일으키지는 않습니다.",
+        ttk.Label(parent, text="전용 플러그인을 설치한 Steam 26620374에서 사용합니다. 처음에는 꺼져 있습니다.\n선택한 저장 폴더를 게임에 등록하고 재검색합니다. 수동 추가한 새 PNG에는 config.xml 매핑도 필요합니다.\n지원 빌드·파일 해시·게임 대기 상태를 확인하며, 게임 갱신 실패가 AI 재호출을 일으키지는 않습니다.",
                   style="CardMuted.TLabel", wraplength=1000).grid(row=15, column=0, columnspan=3, sticky="w")
         ttk.Button(parent, text="게임 갱신 테스트 · AI 호출 없음", command=self.test_live_refresh).grid(row=16, column=0, columnspan=2, sticky="w", pady=12)
         self.live_status = tk.StringVar(value="실시간 게임 갱신 꺼짐")

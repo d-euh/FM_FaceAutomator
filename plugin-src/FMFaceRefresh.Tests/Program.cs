@@ -2,6 +2,24 @@ using FMFaceRefresh;
 using System.Text.Json;
 
 void Check(bool value, string message) { if (!value) throw new Exception(message); }
+var chosen = @"D:\Sports Interactive\Football Manager 27\Graphics\faces\Y_new";
+foreach (var root in new[] { @"d:\sports interactive\football manager 27\graphics\", "D:/Sports Interactive/Football Manager 27/Graphics",
+                            "file:///D:/Sports%20Interactive/Football%20Manager%2027/Graphics/", @"\\?\D:\Sports Interactive\Football Manager 27\Graphics" })
+    Check(GraphicsPaths.Contains(root, chosen), "The selected D: pack must match equivalent registered path spellings: " + root);
+Check(GraphicsPaths.Contains("file://server/share/Graphics", @"\\SERVER\share\Graphics\faces"), "File URL UNC roots must match Windows UNC paths");
+Check(!GraphicsPaths.Contains(@"D:\Graphics", @"D:\Graphics-old\faces"), "A sibling prefix must never count as a child");
+Check(!GraphicsPaths.Contains(@"D:\Graphics", @"D:\Graphics\..\Private"), "Dot segments must not bypass directory boundaries");
+Check(!GraphicsPaths.Contains("https://server/Graphics", chosen), "A remote URL must not be treated as a local root");
+Check(GraphicsPaths.Canonical(@"D:\Graphics\100%20literal") == "D:/Graphics/100%20literal", "Plain filenames must not be URL decoded");
+var registration = new GraphicsRegistration();
+var added = new List<string>();
+Check(!registration.Ensure(chosen, _ => true, added.Add) && added.Count == 0, "An existing native root must not be registered twice");
+Check(registration.Ensure(chosen, _ => false, added.Add) && added.Single() == chosen, "Only the selected pack may be newly registered");
+Check(!registration.Ensure(chosen.ToLowerInvariant(), _ => false, added.Add) && added.Count == 1, "Path aliases must not repeatedly add the same registration");
+var failedRegistration = new GraphicsRegistration();
+try { failedRegistration.Ensure(chosen, _ => false, _ => throw new IOException()); throw new Exception("Expected registration failure"); }
+catch (IOException) { }
+Check(failedRegistration.Ensure(chosen, _ => false, _ => { }), "Failed native registration must not be remembered as success");
 using var sample = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "game-states.json")));
 var reported = sample.RootElement;
 var definedFlags = reported.GetProperty("flag_values").EnumerateArray().Select(v => v.GetProperty("name").GetString()!).ToArray();
@@ -69,7 +87,7 @@ game = new FakeGame(); results.Clear();
 controller = new Controller(game, () => true, (s, r) => results.Add(s));
 controller.Begin(100, 1); controller.Tick(100); controller.Tick(102);
 Check(game.Scans == 0 && results.Single() == "failed", "Claiming an old queued request must not extend its original expiry");
-Console.WriteLine("PASS: actual FM27 None/CanContinue regression, all reported busy states/flags, execution evidence, callbacks, coalescing, timeout and guards.");
+Console.WriteLine("PASS: selected-pack registration, D: paths/file URLs/UNC/boundaries, actual FM27 states, callbacks, execution evidence and guards.");
 
 sealed class FakeGame : IGraphicsRuntime
 {
