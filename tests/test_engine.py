@@ -850,6 +850,53 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("auto_apply", config)
         self.assertEqual(config["additional_instructions"], "")
 
+    def test_removed_style_and_template_inputs_do_not_apply_old_values(self):
+        path = self.root / "config.json"
+        path.write_text(json.dumps({"style": "Unwanted old cartoon style", "frame_template": "missing-old-template.png",
+                                    "additional_instructions": "Laughing with arms raised"}))
+        config = load_config(path)
+        self.assertEqual(config["style"], DEFAULTS["style"])
+        self.assertEqual(config["frame_template"], "")
+        self.assertEqual(config["additional_instructions"], "Laughing with arms raised")
+        prompt = build_prompt(config, snapshot()["players"][0])
+        self.assertNotIn("Unwanted old cartoon style", prompt)
+        self.assertIn("Laughing with arms raised", prompt)
+
+    def test_recent_results_returns_five_cards_by_render_order_after_restart(self):
+        source = self.root / "portrait.png"
+        Image.new("RGB", (512, 512), "gray").save(source)
+        for number in range(1, 7):
+            artifact = self.root / f"card-{number}.png"
+            write_atomic(artifact, render_gunzo(source, f"Player {number}"))
+            os.utime(artifact, (100 + number, 100 + number))
+            # Reverse request order; failed later requests must not reorder cards.
+            self.e.db.execute("INSERT INTO jobs(player_id,data,status,created,started,artifact) VALUES (?,?,?,1,?,?)",
+                              (str(number), json.dumps({"name": "localized name", "club_name": "Club A"}),
+                               "failed" if number == 1 else "applied", 1000 - number, str(artifact)))
+        self.e.db.commit()
+        self.e.close()
+        self.e = Engine(self.c)
+        cards = self.e.recent_results()
+        self.assertEqual([card["name"] for card in cards], ["PLAYER 6", "PLAYER 5", "PLAYER 4", "PLAYER 3", "PLAYER 2"])
+        self.assertEqual(len(cards), 5)
+
+    def test_recent_results_skips_missing_or_broken_files_and_pending_jobs(self):
+        source = self.root / "portrait.png"
+        Image.new("RGB", (512, 512), "gray").save(source)
+        for filename, data in (("good.png", render_gunzo(source, "Djed Spence")), ("broken.png", b"invalid PNG")):
+            artifact = self.root / filename
+            write_atomic(artifact, data)
+            self.e.db.execute("INSERT INTO jobs(player_id,data,status,created,artifact) VALUES ('1',?,'applied',1,?)",
+                              (json.dumps({"name": "Player", "club_name": "Arsenal"}), str(artifact)))
+        self.e.db.execute("INSERT INTO jobs(player_id,data,status,created,artifact) VALUES ('2','{}','applied',2,?)", (str(self.root / "missing.png"),))
+        self.e.db.executemany("INSERT INTO jobs(player_id,data,status,created) VALUES ('3','{}','pending',3)", [()] * 301)
+        self.e.db.commit()
+        self.assertEqual([card["name"] for card in self.e.recent_results()], ["DJED SPENCE"])
+        self.e.close()
+        self.c["state_dir"] = str(self.root / "other-career")
+        self.e = Engine(self.c)
+        self.assertEqual(self.e.recent_results(), [])
+
     def test_advanced_defaults_and_legacy_limit_migration(self):
         path = self.root / "config.json"
         path.write_text("{}")

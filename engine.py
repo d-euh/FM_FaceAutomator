@@ -94,8 +94,9 @@ def load_config(path):
     config.pop("poll_seconds", None)
     # Output and XML application are mandatory in v0.2, including old configs.
     config.pop("auto_apply", None)
-    if config["style"] == LEGACY_STYLE:
-        config["style"] = DEFAULTS["style"]
+    # These controls are fixed by the app; old editable values must not linger.
+    config["style"] = DEFAULTS["style"]
+    config["frame_template"] = ""
     for field in ("source", "state_dir", "portraits_dir", "kits_dir", "pack_dir", "name_font_path", "frame_template", "graphics_root"):
         if config[field]:
             config[field] = str((path.parent / config[field]).resolve())
@@ -624,6 +625,39 @@ class Engine:
 
     def jobs(self):
         return [dict(r) for r in self.db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 300")]
+
+    def recent_results(self):
+        """The five most recently generated, readable cards in this workspace."""
+        from PIL import Image
+        results, candidates = [], []
+        for job in self.db.execute("SELECT id,data,artifact,status FROM jobs WHERE artifact IS NOT NULL"):
+            try:
+                path = Path(job["artifact"])
+                stamp = path.stat()
+                if path.is_file() and stamp.st_size <= 25 * 1024 * 1024:
+                    candidates.append((stamp.st_mtime_ns, job["id"], job, stamp))
+            except OSError:
+                continue
+        # A retry can change started without producing a new image. Sort by the
+        # completed artifact, rather than the job ID or latest request attempt.
+        for _, _, job, stamp in sorted(candidates, key=lambda item: item[:2], reverse=True):
+            try:
+                path = Path(job["artifact"])
+                with Image.open(path) as card:
+                    if card.format != "PNG" or card.size != (350, 350):
+                        continue
+                    name = card.info.get("PlayerName", "")
+                    card.verify()
+                player = json.loads(job["data"])
+                results.append({"id": job["id"], "artifact": str(path),
+                                "name": name or player.get("english_name") or player["name"],
+                                "club_name": player["club_name"], "status": job["status"],
+                                "stamp": (stamp.st_mtime_ns, stamp.st_size)})
+            except (OSError, ValueError, KeyError, SyntaxError, Image.DecompressionBombError):
+                continue
+            if len(results) == 5:
+                break
+        return results
 
     def update(self, job_id, status, note="", artifact=None):
         with self.db:

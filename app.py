@@ -42,6 +42,9 @@ class App:
         self.start_after_discovery = False
         self.discovery_stop = threading.Event()
         self.dashboard_key = None
+        self.recent_results = []
+        self.recent_index = 0
+        self.recent_state = None
         self.catalog_key = None
         self.status = tk.StringVar(value="경로와 범위를 확인하고 감시를 시작하세요.")
         self.scope_summary = tk.StringVar(value="내가 맡은 구단만 · 방출·영입 모두")
@@ -60,16 +63,16 @@ class App:
         ttk.Label(title, text="세이브가 바뀌면, 새로운 팀의 페이스온으로", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
         self.tabs = ttk.Notebook(window)
         self.tabs.pack(fill="both", expand=True, padx=20)
-        self.home_tab, home = self.page()
+        self.home_tab, home = self.page(scroll=True)
         self.scope_tab, scope = self.page(scroll=True)
         self.jobs_tab, jobs = self.page()
         self.settings_tab, settings = self.page(scroll=True)
         self.prompts_tab, prompts = self.page(scroll=True)
-        for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "추가 지시 · 건조폼")):
+        for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
         ttk.Button(header, text="홈", command=lambda: self.tabs.select(self.home_tab)).pack(side="right")
         ttk.Button(header, text="생성 범위 설정", command=lambda: self.tabs.select(self.scope_tab)).pack(side="right", padx=8)
-        ttk.Label(header, text="v0.7.1", style="Muted.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.8.0", style="Muted.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan,
                                       lambda: self.tabs.select(self.home_tab), self.update_scope_summary,
@@ -159,6 +162,7 @@ class App:
         return host, content
 
     def build_home(self, parent):
+        parent.configure(padding=(20, 12))
         parent.columnconfigure(0, weight=1)
         parent.columnconfigure(1, weight=0)
         parent.rowconfigure(0, weight=1)
@@ -185,7 +189,7 @@ class App:
             ttk.Label(card, text=label, style="CardMuted.TLabel").pack(anchor="w")
             self.metric_vars[key] = tk.StringVar(value="0")
             ttk.Label(card, textvariable=self.metric_vars[key], style="Metric.TLabel").pack(anchor="w", pady=(4, 0))
-        recent = ttk.Frame(parent, style="Card.TFrame", padding=20)
+        recent = ttk.Frame(parent, style="Card.TFrame", padding=(20, 12))
         recent.grid(row=0, column=1, sticky="nsew")
         ttk.Label(recent, text="최근 생성된 페이스온", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 14))
         self.recent_canvas = tk.Canvas(recent, width=350, height=350, background=PREVIEW_BACKGROUND, highlightthickness=0)
@@ -193,6 +197,14 @@ class App:
         self.recent_canvas.create_text(175, 175, text="첫 페이스온을 기다리고 있습니다\n생성이 끝나면 여기에 표시됩니다", fill=MUTED, font="TkDefaultFont", justify="center")
         self.recent_name = tk.StringVar(value="350 × 350 · 영문 이름 · ID 파일명")
         ttk.Label(recent, textvariable=self.recent_name, style="CardText.TLabel", wraplength=350).pack(anchor="w", pady=(14, 0))
+        navigation = ttk.Frame(recent, style="Card.TFrame")
+        navigation.pack(fill="x", pady=(10, 0))
+        self.recent_previous = ttk.Button(navigation, text="◀ 이전", command=lambda: self.browse_recent(-1), state="disabled")
+        self.recent_previous.pack(side="left")
+        self.recent_position = tk.StringVar(value="0 / 0")
+        ttk.Label(navigation, textvariable=self.recent_position, style="CardText.TLabel", anchor="center").pack(side="left", fill="x", expand=True)
+        self.recent_next = ttk.Button(navigation, text="다음 ▶", command=lambda: self.browse_recent(1), state="disabled")
+        self.recent_next.pack(side="right")
 
     def update_scope_summary(self):
         if hasattr(self, "config"):
@@ -208,31 +220,53 @@ class App:
             self.catalog_key = catalog_key
             self.scope_panel.set_catalog(json.loads(engine.meta("club_catalog") or "[]"),
                                          json.loads(engine.meta("managed") or "[]"), json.loads(engine.meta("league_status") or "{}"))
-        latest = json.loads(engine.meta("latest_result") or "null")
-        if latest is None:
-            candidates = [job for job in engine.jobs() if job["artifact"] and Path(job["artifact"]).is_file()]
-            if candidates:
-                job = max(candidates, key=lambda j: Path(j["artifact"]).stat().st_mtime_ns)
-                player = json.loads(job["data"])
-                latest = {"id": job["id"], "artifact": job["artifact"], "name": player["name"], "club_name": player["club_name"]}
-        key = (self.config["state_dir"], latest["artifact"]) if latest else None
-        if latest is None and self.dashboard_key is not None:
+        state = self.config["state_dir"]
+        selected = self.recent_results[self.recent_index]["id"] if self.recent_results and self.recent_index else None
+        if state != self.recent_state:
+            selected = None
+        self.recent_state = state
+        self.recent_results = engine.recent_results()
+        self.recent_index = next((i for i, item in enumerate(self.recent_results) if item["id"] == selected), 0)
+        self.show_recent()
+
+    def browse_recent(self, direction):
+        if self.recent_results:
+            self.recent_index = min(max(self.recent_index + direction, 0), len(self.recent_results) - 1)
+            self.show_recent()
+
+    def show_recent(self):
+        if not self.recent_results:
             self.clear_preview()
-        if latest and key != self.dashboard_key:
+            return
+        latest = self.recent_results[self.recent_index]
+        self.recent_position.set(f'{self.recent_index + 1} / {len(self.recent_results)}')
+        self.recent_previous.configure(state="normal" if self.recent_index else "disabled")
+        self.recent_next.configure(state="normal" if self.recent_index + 1 < len(self.recent_results) else "disabled")
+        key = (self.recent_state, latest["id"], latest["artifact"], latest["stamp"], latest["status"])
+        if key != self.dashboard_key:
             self.dashboard_key = key
+            self.recent_canvas.delete("all")
             try:
                 with Image.open(latest["artifact"]) as image:
                     image = image.convert("RGBA")
                     image.thumbnail((350, 350), Image.Resampling.LANCZOS)
                     self.recent_photo = ImageTk.PhotoImage(image, master=self.window)
-                self.recent_canvas.delete("all")
                 self.recent_canvas.create_image(175, 175, image=self.recent_photo)
-                self.recent_name.set(f'{latest["name"]}\n{latest["club_name"]} · 작업 {latest["id"]}')
+                status = {"applied": "저장 완료", "generated": "저장 대기", "apply_failed": "저장 실패",
+                          "superseded": "이전 결과", "failed": "작업 실패", "blocked": "보류",
+                          "pending": "재시도 대기", "running": "재생성 중", "interrupted": "중단"}.get(latest["status"], latest["status"])
+                self.recent_name.set(f'{latest["name"]}\n{latest["club_name"]} · 작업 {latest["id"]} · {status}')
             except Exception:
-                self.recent_name.set("최근 결과 이미지 파일을 열 수 없습니다.")
+                self.recent_canvas.create_text(175, 175, text="이미지 파일을 열 수 없습니다", fill=MUTED, font="TkDefaultFont")
+                self.recent_name.set("결과 파일을 확인하세요.")
 
     def clear_preview(self):
         self.dashboard_key = None
+        self.recent_results = []
+        self.recent_index = 0
+        self.recent_position.set("0 / 0")
+        self.recent_previous.configure(state="disabled")
+        self.recent_next.configure(state="disabled")
         self.recent_canvas.delete("all")
         self.recent_canvas.create_text(175, 175, text="아직 생성된 페이스온이 없습니다", fill=MUTED, font="TkDefaultFont")
         self.recent_name.set("350 × 350 · 영문 이름 · ID 파일명")
@@ -274,17 +308,8 @@ class App:
         self.additional_text = tk.Text(parent, height=5, wrap="word", font="TkTextFont")
         self.additional_text.pack(fill="x")
         ttk.Label(parent, text="추가 지시가 있으면 머리카락·표정·자세 유지 문구를 넣지 않습니다. 얼굴 동일성은 기본 유지합니다.\n선수별 입력은 대기열에서 ‘선수별 이름·지시’를 선택하세요. 공통 지시와 충돌하면 선수별 지시를 우선합니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
-        ttk.Label(parent, text="기본 사진 스타일").pack(anchor="w")
-        self.style_text = tk.Text(parent, height=3, wrap="word", font="TkTextFont")
-        self.style_text.pack(fill="x", pady=(6, 12))
         ttk.Label(parent, text="건조폼 출력: 350×350 고정 · 코너 반경 60px · 하단 그라데이션과 선수 이름").pack(anchor="w", pady=(0, 8))
-        for key, title in [("frame_template", "추가 폼 템플릿 (선택 사항: 투명 350×350 PNG)")]:
-            ttk.Label(parent, text=title).pack(anchor="w")
-            row = ttk.Frame(parent)
-            row.pack(fill="x", pady=(4, 8))
-            self.vars[key] = tk.StringVar()
-            ttk.Entry(row, textvariable=self.vars[key]).pack(side="left", fill="x", expand=True)
-            ttk.Button(row, text="선택", command=lambda k=key: self.choose(k, "asset")).pack(side="left", padx=(8, 0))
+        ttk.Label(parent, text="기본 사진 스타일과 건조폼은 자동 적용합니다. 원하는 외형·분위기는 위 커스텀 지시에 적어주세요.", style="Muted.TLabel", wraplength=980).pack(anchor="w", pady=(0, 10))
         ttk.Label(parent, text="이름은 AI가 그리지 않고 프로그램이 정확한 문자열로 넣습니다. 이름 수정은 다음 합성부터 반영됩니다.\nPNG와 config.xml을 모두 저장해야 완료 처리합니다. 저장 실패 시 이미지를 보관하고 추가 합성 없이 저장만 재시도합니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
         ttk.Button(parent, text="설정 저장", command=self.save).pack(anchor="w")
 
@@ -364,7 +389,6 @@ class App:
             if key in AdvancedPanel.UNLIMITED and value == 0:
                 value = AdvancedPanel.UNLIMITED[key]
             var.set(",".join(value) if isinstance(value, list) else value)
-        self.style_text.insert("1.0", c["style"])
         self.additional_text.insert("1.0", c["additional_instructions"])
         self.config = c
         self.scope_panel.load(c)
@@ -391,7 +415,8 @@ class App:
                 elif key in ("cooldown_hours", "settle_seconds"):
                     value = float(value)
                 c[key] = value
-            c["style"] = self.style_text.get("1.0", "end").strip()
+            c["style"] = DEFAULTS["style"]
+            c["frame_template"] = ""
             c["additional_instructions"] = self.additional_text.get("1.0", "end").strip()
             c["scope_rules"] = self.scope_panel.value()
             if not c["source"]:
