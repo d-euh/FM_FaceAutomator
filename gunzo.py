@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-import sys
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, PngImagePlugin
 
@@ -13,17 +12,23 @@ CORNER_RADIUS = 60
 NAME_WIDTH = 300
 LAYOUT = "gunzo-350-v1"
 DEFAULT_FONT_FILENAME = "koverwatch.ttf"
+DEFAULT_FONT_RELATIVE = "fonts/" + DEFAULT_FONT_FILENAME
+BUNDLED_FONTS = (DEFAULT_FONT_FILENAME, "BebasNeue.otf", "venus rising rg.ttf")
+
+
+def bundled_font_path(filename):
+    # PyInstaller also resolves __file__ inside its bundled resource directory.
+    return Path(__file__).resolve().parent / "fonts" / filename
 
 
 def default_font_path():
-    root = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
-    return root / DEFAULT_FONT_FILENAME
+    return bundled_font_path(DEFAULT_FONT_FILENAME)
 
 
 def name_font(path=""):
     candidate = Path(path) if path else default_font_path()
     if not candidate.is_file():
-        raise ValueError(f"이름 글꼴 파일이 없습니다: {candidate}. 기본 글꼴 koverwatch.ttf를 프로그램 폴더에 넣거나 ‘폴더 · 연결’에서 폰트를 직접 선택하세요.")
+        raise ValueError(f"이름 글꼴 파일이 없습니다: {candidate}. 프로그램의 fonts 폴더를 복구하거나 ‘폴더 · 연결’에서 폰트를 직접 선택하세요.")
     try:
         ImageFont.truetype(str(candidate), 20)
     except OSError as exc:

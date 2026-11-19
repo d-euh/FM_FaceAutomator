@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 
 from PIL import Image, ImageChops, ImageFont
 from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, detection_messages, game_english_name, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
-from gunzo import LAYOUT, name_font, render_gunzo
+from gunzo import BUNDLED_FONTS, LAYOUT, bundled_font_path, default_font_path, name_font, render_gunzo
 from scope_rules import DEFAULT_SCOPE
 
 
@@ -36,8 +36,7 @@ class EngineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        # Test rendering with an available real font; the requested default
-        # font is supplied by the user and is not bundled with these tests.
+        # Keep the general rendering fixtures independent of bundled styling.
         for candidate in ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "DejaVuSans-Bold.ttf",
                           str(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "malgunbd.ttf")):
             try:
@@ -878,11 +877,48 @@ class EngineTests(unittest.TestCase):
                       {"name_font_path": "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"}):
             with self.subTest(saved=saved):
                 path.write_text(json.dumps(saved))
-                self.assertEqual(load_config(path)["name_font_path"], str(self.root / "koverwatch.ttf"))
+                self.assertEqual(load_config(path)["name_font_path"], str(default_font_path()))
+        for old_path in ("koverwatch.ttf", str(self.root / "koverwatch.ttf")):
+            path.write_text(json.dumps({"name_font_path": old_path, "font_default_version": 1}))
+            self.assertEqual(load_config(path)["name_font_path"], str(default_font_path()))
         for saved in ({"name_font_path": str(self.test_font)},
                       {"name_font_path": "malgun.ttf", "font_default_version": 1}):
             path.write_text(json.dumps(saved))
             self.assertEqual(load_config(path)["name_font_path"], str((self.root / saved["name_font_path"]).resolve()))
+        existing = self.root / "koverwatch.ttf"
+        shutil.copyfile(self.test_font, existing)
+        path.write_text(json.dumps({"name_font_path": str(existing), "font_default_version": 1}))
+        self.assertEqual(load_config(path)["name_font_path"], str(existing))
+
+    def test_all_three_bundled_fonts_render_real_350px_portraits(self):
+        source = self.root / "portrait.png"
+        Image.new("RGB", (512, 512), (70, 90, 120)).save(source)
+        for filename in BUNDLED_FONTS:
+            with self.subTest(font=filename):
+                output = self.root / (filename + ".png")
+                write_atomic(output, render_gunzo(source, "Djed Spence", str(bundled_font_path(filename))))
+                validate_png(output)
+                with Image.open(output) as card:
+                    self.assertEqual(card.size, (350, 350))
+                    self.assertEqual(card.info["NameFont"], filename)
+                    self.assertEqual(card.info["PlayerName"], "DJED SPENCE")
+                    self.assertGreater(card.crop((25, 290, 325, 335)).getextrema()[0][1], 245)
+
+    def test_custom_config_location_uses_bundled_koverwatch_without_manual_setup(self):
+        config_path = self.root / "elsewhere" / "config.json"
+        config = dict(self.c)
+        config.pop("name_font_path")
+        write_atomic(config_path, json.dumps(config).encode())
+        self.c = load_config(config_path)
+        self.assertEqual(self.c["name_font_path"], str(default_font_path()))
+        self.e.close()
+        self.e = Engine(self.c)
+        self.transfer()
+        self.refs()
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        with Image.open(Path(self.c["pack_dir"]) / "900001.png") as card:
+            self.assertEqual(card.info["NameFont"], "koverwatch.ttf")
 
     def test_missing_koverwatch_blocks_generation_without_system_fallback(self):
         self.c["name_font_path"] = str(self.root / "koverwatch.ttf")

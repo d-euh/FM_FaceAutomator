@@ -17,7 +17,7 @@ import uuid
 import unicodedata
 import xml.etree.ElementTree as ET
 
-from gunzo import DEFAULT_FONT_FILENAME, LAYOUT, check_options, render_gunzo
+from gunzo import DEFAULT_FONT_FILENAME, DEFAULT_FONT_RELATIVE, LAYOUT, check_options, default_font_path, render_gunzo
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 import facepack
 import scope_rules
@@ -34,7 +34,7 @@ DEFAULTS = {
     "initial_generation": False,
     "style": "Photorealistic football player portrait, natural lighting, detailed face and jersey, no text or frame.",
     "additional_instructions": "", "player_overrides": {}, "kit_overrides": {},
-    "name_font_path": DEFAULT_FONT_FILENAME, "font_default_version": 1,
+    "name_font_path": DEFAULT_FONT_RELATIVE, "font_default_version": 2,
     "frame_template": "", "graphics_root": "", "kit_variant": "home",
     "scope_rules": None,
 }
@@ -79,9 +79,13 @@ def load_config(path):
     saved = read_json(path)
     config = DEFAULTS | saved
     old_system_fonts = {"malgunbd.ttf", "malgun.ttf", "notosanscjk-bold.ttc", "notosanscjk-regular.ttc", "applesdgothicneo.ttc", "dejavusans-bold.ttf"}
-    if not config["name_font_path"] or (not saved.get("font_default_version") and Path(config["name_font_path"].replace("\\", "/")).name.casefold() in old_system_fonts):
-        config["name_font_path"] = DEFAULT_FONT_FILENAME
-    config["font_default_version"] = 1
+    font_value = config["name_font_path"].replace("\\", "/")
+    old_default = (path.parent / DEFAULT_FONT_FILENAME).resolve()
+    missing_old_default = font_value and (path.parent / font_value).resolve() == old_default and not old_default.is_file()
+    if (not font_value or font_value == DEFAULT_FONT_RELATIVE or missing_old_default
+            or (not saved.get("font_default_version") and Path(font_value).name.casefold() in old_system_fonts)):
+        config["name_font_path"] = str(default_font_path())
+    config["font_default_version"] = 2
     # Migrate the old, untouched limit bundle. Preserve customized bundles.
     if not saved.get("advanced_settings_version") and all(saved.get(k) == v for k, v in
             {"daily_limit": 20, "cooldown_hours": 24, "settle_seconds": 30}.items()):

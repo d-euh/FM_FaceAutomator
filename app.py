@@ -21,7 +21,7 @@ from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
 import scope_rules
 from scope_ui import AdvancedPanel, ScopePanel
-from gunzo import DEFAULT_FONT_FILENAME, name_font
+from gunzo import BUNDLED_FONTS, bundled_font_path, default_font_path, name_font
 from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, apply_theme
 
 
@@ -69,7 +69,7 @@ class App:
             self.tabs.add(host, text=label)
         ttk.Button(header, text="홈", command=lambda: self.tabs.select(self.home_tab)).pack(side="right")
         ttk.Button(header, text="생성 범위 설정", command=lambda: self.tabs.select(self.scope_tab)).pack(side="right", padx=8)
-        ttk.Label(header, text="v0.7.0", style="Muted.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.7.1", style="Muted.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan,
                                       lambda: self.tabs.select(self.home_tab), self.update_scope_summary,
@@ -247,7 +247,12 @@ class App:
         for index, (key, label, chooser) in enumerate(rows, 1):
             ttk.Label(parent, text=label).grid(row=index, column=0, sticky="w", padx=(0, 18), pady=10)
             self.vars[key] = tk.StringVar()
-            ttk.Entry(parent, textvariable=self.vars[key]).grid(row=index, column=1, sticky="ew", pady=10)
+            if chooser == "font":
+                entry = ttk.Combobox(parent, textvariable=self.vars[key], values=[str(bundled_font_path(font)) for font in BUNDLED_FONTS])
+                entry.bind("<<ComboboxSelected>>", lambda event: event.widget.xview_moveto(1))
+            else:
+                entry = ttk.Entry(parent, textvariable=self.vars[key])
+            entry.grid(row=index, column=1, sticky="ew", pady=10)
             buttons = ttk.Frame(parent)
             buttons.grid(row=index, column=2, padx=(10, 0))
             ttk.Button(buttons, text="폰트 불러오기" if chooser == "font" else "선택", command=lambda k=key, c=chooser: self.choose(k, c)).pack(side="left")
@@ -258,7 +263,7 @@ class App:
         ttk.Combobox(parent, textvariable=self.vars["kit_variant"], values=("home", "away", "third"), state="readonly", width=14).grid(row=9, column=1, sticky="w")
         self.path_status = tk.StringVar(value="폴더와 Codex 경로를 자동 확인합니다. 다른 항목만 직접 바꾸세요.")
         ttk.Label(parent, textvariable=self.path_status, style="Muted.TLabel", wraplength=1050).grid(row=10, column=0, columnspan=3, sticky="w", pady=20)
-        ttk.Label(parent, text="기본 글꼴은 koverwatch.ttf입니다. 프로그램 폴더(config.json 옆)에 파일을 넣어주세요.\n기본 파일이 없으면 합성 전에 보류합니다. 다른 TTF·OTF·TTC를 직접 선택할 수도 있습니다.", style="Muted.TLabel", wraplength=1050).grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        ttk.Label(parent, text="기본 제공 폰트: Koverwatch(기본값) · Bebas Neue · Venus Rising. 이름 글꼴의 드롭다운에서 선택하세요.\n세 파일은 fonts 폴더에 포함되어 있습니다. 다른 TTF·OTF·TTC를 직접 선택할 수도 있습니다. 변경 후 설정을 저장하세요.", style="Muted.TLabel", wraplength=1050).grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 16))
         ttk.Label(parent, text="기존 파일이 있는 페이스팩에도 저장합니다. 같은 선수 ID의 이미지와 매핑은 백업 후 갱신합니다.", style="Muted.TLabel", wraplength=1050).grid(row=12, column=0, columnspan=3, sticky="w", pady=(0, 16))
         ttk.Button(parent, text="설정 저장", style="Primary.TButton", command=self.save).grid(row=13, column=0, sticky="w")
         ttk.Button(parent, text="홈으로", command=lambda: self.tabs.select(self.home_tab)).grid(row=13, column=1, sticky="w")
@@ -284,11 +289,11 @@ class App:
         ttk.Button(parent, text="설정 저장", command=self.save).pack(anchor="w")
 
     def default_font(self):
-        self.vars["name_font_path"].set(str(self.path.parent / DEFAULT_FONT_FILENAME))
+        self.vars["name_font_path"].set(str(default_font_path()))
 
     def choose(self, key, kind):
         if kind == "font":
-            value = filedialog.askopenfilename(title="선수 이름 폰트 불러오기", filetypes=[("글꼴 파일 (TTF / OTF / TTC)", "*.ttf *.otf *.ttc *.TTF *.OTF *.TTC"), ("모든 파일", "*")])
+            value = filedialog.askopenfilename(title="선수 이름 폰트 불러오기", initialdir=str(default_font_path().parent), filetypes=[("글꼴 파일 (TTF / OTF / TTC)", "*.ttf *.otf *.ttc *.TTF *.OTF *.TTC"), ("모든 파일", "*")])
             if value:
                 try:
                     name_font(value)
@@ -396,7 +401,7 @@ class App:
             try:
                 write_atomic(temp, json.dumps(c, ensure_ascii=False, indent=2).encode("utf-8"))
                 checked = load_config(temp)
-                default_font = (self.path.parent / DEFAULT_FONT_FILENAME).resolve()
+                default_font = default_font_path()
                 if Path(checked["name_font_path"]).is_file() or Path(checked["name_font_path"]) != default_font:
                     name_font(checked["name_font_path"])
             finally:
