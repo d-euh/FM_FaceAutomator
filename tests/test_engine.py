@@ -91,6 +91,43 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
 
+    def test_live_refresh_failure_never_reclassifies_a_saved_face_or_rebills_ai(self):
+        self.c["live_refresh_enabled"] = True
+        self.transfer()
+        self.refs()
+        with patch("live_refresh.pump", side_effect=OSError("mailbox inaccessible")):
+            self.e.run_one(self.good_runner)
+            self.e.pump_live_refresh()
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.assertEqual(self.e.jobs()[0]["note"], "생성 완료")
+        self.assertTrue((Path(self.c["pack_dir"]) / "900001.png").is_file())
+        self.assertTrue((Path(self.c["pack_dir"]) / "config.xml").is_file())
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 1)
+        self.assertIn("저장 상태는 유지", self.e.meta("live_refresh_status"))
+        self.assertFalse(self.e.run_one(lambda *a, **k: self.fail("Saved faces must not be synthesized again")))
+
+    def test_live_refresh_bookkeeping_failure_cannot_undo_committed_png_xml(self):
+        self.c["live_refresh_enabled"] = True
+        self.transfer()
+        self.refs()
+        with patch.object(self.e, "queue_live_refresh", side_effect=OSError("secondary state failed")):
+            self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        self.assertTrue((Path(self.c["pack_dir"]) / "900001.png").is_file())
+
+    def test_older_refresh_response_cannot_erase_a_newer_result_request(self):
+        self.c["live_refresh_enabled"] = True
+        self.e.queue_live_refresh()
+        def received_old_reply(pending):
+            self.e.queue_live_refresh()
+            with self.e.db:
+                self.e.setmeta("live_refresh_status", "newer result waiting")
+            return None, "게임 그래픽 갱신 처리 완료 · old response"
+        with patch("live_refresh.pump", side_effect=received_old_reply):
+            self.e.pump_live_refresh()
+        self.assertIsNotNone(json.loads(self.e.meta("live_refresh_pending")))
+        self.assertEqual(self.e.meta("live_refresh_status"), "newer result waiting")
+
     def test_goalkeeper_is_read_from_position_ratings_without_name_guessing(self):
         self.assertTrue(goalkeeper_role(SimpleNamespace(positions=SimpleNamespace(gk=20, stc=1))))
         self.assertFalse(goalkeeper_role(SimpleNamespace(positions=SimpleNamespace(gk=1, stc=20))))

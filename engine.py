@@ -21,6 +21,7 @@ from gunzo import DEFAULT_FONT_FILENAME, DEFAULT_FONT_RELATIVE, LAYOUT, check_op
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 import facepack
 import scope_rules
+import live_refresh
 from league_catalog import read_catalog
 from workspaces import select_workspace, source_key
 
@@ -60,6 +61,7 @@ DEFAULTS = {
     "name_font_path": DEFAULT_FONT_RELATIVE, "font_default_version": 2,
     "frame_template": "", "graphics_root": "", "kit_variant": "home",
     "scope_rules": None,
+    "live_refresh_enabled": False,
 }
 
 # File stability polling is an implementation detail, not the generation cadence.
@@ -101,6 +103,8 @@ def load_config(path):
     path = Path(path).resolve()
     saved = read_json(path)
     config = DEFAULTS | saved
+    if not isinstance(config["live_refresh_enabled"], bool):
+        raise ValueError("실시간 게임 갱신 설정은 true/false여야 합니다.")
     old_system_fonts = {"malgunbd.ttf", "malgun.ttf", "notosanscjk-bold.ttc", "notosanscjk-regular.ttc", "applesdgothicneo.ttc", "dejavusans-bold.ttf"}
     font_value = config["name_font_path"].replace("\\", "/")
     old_default = (path.parent / DEFAULT_FONT_FILENAME).resolve()
@@ -508,6 +512,7 @@ class Engine:
 
     def watch_step(self, runner=subprocess.run, now=None):
         now = time.time() if now is None else now
+        self.pump_live_refresh()
         if now - Path(self.c["source"]).stat().st_mtime < 3:
             return {"saving": True, "added": 0, "processed": False}
         before = self.meta("source_stamp")
@@ -1029,6 +1034,44 @@ class Engine:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO applied VALUES (?,?,?)", (row["id"], job_id, filename))
             self.db.execute("UPDATE jobs SET status='applied',note='생성 완료' WHERE id=?", (job_id,))
+        # Refresh failures must never turn a successfully saved card into an AI/save retry.
+        try:
+            self.queue_live_refresh()
+            self.pump_live_refresh()
+        except Exception:
+            pass  # A side-channel bookkeeping failure cannot undo a committed PNG/XML save.
+
+    def queue_live_refresh(self):
+        if self.c.get("live_refresh_enabled"):
+            with self.db:
+                self.setmeta("live_refresh_pending", json.dumps({"pack_dir": self.c["pack_dir"], "revision": uuid.uuid4().hex}))
+
+    def pump_live_refresh(self):
+        if not self.c.get("live_refresh_enabled"):
+            return
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(process_lock(Path(self.c["state_dir"]) / ".live-refresh-client"))
+            except OSError:
+                return  # Another app instance is already polling/submitting this workspace.
+            self._pump_live_refresh()
+
+    def _pump_live_refresh(self):
+        try:
+            previous = self.meta("live_refresh_pending") or "null"
+            pending, message = live_refresh.pump(json.loads(previous))
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                # A simultaneous manual/new result must not be erased by an older response.
+                if (self.meta("live_refresh_pending") or "null") != previous:
+                    return
+                self.setmeta("live_refresh_pending", json.dumps(pending))
+                terminal = (self.meta("live_refresh_status") or "").startswith(("게임 그래픽 갱신 처리 완료", "게임 갱신 실패", "게임 갱신 응답 시간 초과", "더 최신 페이스팩", "FM27이 다시 시작"))
+                if json.loads(previous) is not None or not terminal:
+                    self.setmeta("live_refresh_status", message)
+        except Exception as exc:
+            with self.db:
+                self.setmeta("live_refresh_status", "게임 갱신 연결 확인 필요 · " + type(exc).__name__ + " · 페이스온 저장 상태는 유지됨")
 
     def restore(self, backup):
         with process_lock(Path(self.c["pack_dir"]) / ".fm-face-lock"):

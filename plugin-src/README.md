@@ -1,5 +1,7 @@
 # FM27 실시간 그래픽 갱신 사전 진단 · 0.1.0
 
+후속 **0.2.0 실험 갱신 플러그인**과 앱 연동은 [실험 기능 안내](FMFaceRefresh/README.md)에 있습니다. 아래 내용은 원래의 읽기 전용 진단 플러그인 설명입니다.
+
 대상은 Windows Steam **26620374 / FM27 27.1.0 계열**입니다. 이 배포물은 **진단 전용**입니다. 페이스온 실시간 적용, 게임 함수 호출, 캐시 초기화, 후킹은 구현하지 않습니다. 일반 앱의 PNG·config.xml 저장 동작은 바꾸지 않습니다.
 
 FM26용 [FM Graphics Reload](https://github.com/dev-junos/FM-Graphics-Reload)는 `SI.Core.ResourcesSubsystem.RegisterLocalPath`, 비동기 열거 완료, `SI.Bindable.PanelManager.ReloadPanels`를 사용합니다. FM27에서 같은 이름을 찾았다는 것만으로 같은 인자·동작·완료 조건을 보장할 수 없습니다. 이 진단은 실제 사용자 설치의 생성된 interop 메타데이터를 확인하는 첫 단계입니다. 메서드 주소를 FM26에서 복사하지 않습니다.

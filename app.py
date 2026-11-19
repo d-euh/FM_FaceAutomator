@@ -77,7 +77,7 @@ class App:
         self.prompts_tab, prompts = self.page(scroll=True)
         for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
-        ttk.Label(header, text="v0.9.1", style="Badge.TLabel").pack(side="right", padx=12)
+        ttk.Label(header, text="v0.10.0", style="Badge.TLabel").pack(side="right", padx=12)
         self.build_home(home)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan, self.update_scope_summary,
                                       self.open_advanced)
@@ -340,6 +340,32 @@ class App:
         ttk.Label(parent, text="기본 제공 폰트: Koverwatch(기본값) · Bebas Neue · Venus Rising. 이름 글꼴의 드롭다운에서 선택하세요.\n다른 폰트를 직접 선택할 수도 있습니다. 변경 후 설정을 저장하세요.", style="CardMuted.TLabel", wraplength=1000).grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 16))
         ttk.Label(parent, text="기존 파일이 있는 페이스팩에도 저장할 수 있습니다. 교체 전 이미지는 자동 백업합니다.\n골키퍼는 골키퍼 키트를 자동 선택합니다. 해당 자료가 없으면 작업을 보류하고 유니폼 변경을 안내합니다.", style="CardMuted.TLabel", wraplength=1000).grid(row=12, column=0, columnspan=3, sticky="w", pady=(0, 16))
         ttk.Button(parent, text="설정 저장", style="Primary.TButton", command=self.save).grid(row=13, column=0, sticky="w")
+        self.vars["live_refresh_enabled"] = tk.BooleanVar()
+        ttk.Checkbutton(parent, text="생성 후 게임 그래픽 갱신 · 실험 기능", variable=self.vars["live_refresh_enabled"],
+                        style="Card.TCheckbutton").grid(row=14, column=0, columnspan=3, sticky="w", pady=(22, 8))
+        ttk.Label(parent, text="전용 플러그인을 설치한 Steam 26620374에서 사용합니다. 처음에는 꺼져 있습니다.\n지원 빌드·파일 해시·게임 대기 상태를 확인하며, 게임 갱신 실패가 AI 재호출을 일으키지는 않습니다.",
+                  style="CardMuted.TLabel", wraplength=1000).grid(row=15, column=0, columnspan=3, sticky="w")
+        ttk.Button(parent, text="게임 갱신 테스트 · AI 호출 없음", command=self.test_live_refresh).grid(row=16, column=0, columnspan=2, sticky="w", pady=12)
+        self.live_status = tk.StringVar(value="실시간 게임 갱신 꺼짐")
+        ttk.Label(parent, textvariable=self.live_status, style="CardMuted.TLabel", wraplength=1000).grid(row=17, column=0, columnspan=3, sticky="w")
+
+    def test_live_refresh(self):
+        if not self.active() and not self.save():
+            return
+        if not self.config.get("live_refresh_enabled"):
+            messagebox.showinfo("게임 갱신 테스트", "‘생성 후 게임 그래픽 갱신’을 체크하고 설정을 저장하세요.")
+            return
+        engine = Engine(self.config)
+        try:
+            if not (Path(self.config["pack_dir"]) / "config.xml").is_file():
+                raise ValueError("생성 페이스팩 저장 위치에 config.xml이 있어야 합니다. 먼저 페이스온 하나를 생성하세요.")
+            engine.queue_live_refresh()
+            engine.pump_live_refresh()
+            self.events.put("게임 갱신 테스트 요청 · AI를 호출하지 않습니다. 폴더 · 연결의 갱신 상태를 확인하세요.")
+        except Exception as exc:
+            messagebox.showerror("게임 갱신 테스트", str(exc))
+        finally:
+            engine.close()
 
     def prompt_fields(self, parent):
         ttk.Label(parent, text="커스텀 지시", style="Title.TLabel").pack(anchor="w", pady=(0, 12))
@@ -567,6 +593,10 @@ class App:
             while not self.stop.is_set():
                 try:
                     result = e.watch_step()
+                    refresh_status = e.meta("live_refresh_status")
+                    if refresh_status and refresh_status != getattr(e, "_shown_live_status", None):
+                        self.events.put(refresh_status)
+                        e._shown_live_status = refresh_status
                     if result.get("changed"):
                         self.events.put(f'세이브 변경 점검 · 신규 작업 {result["added"]}개')
                         for message in detection_messages(result["detection"]):
@@ -930,6 +960,9 @@ class App:
             engine = None
             try:
                 engine = Engine(self.config)
+                if not self.active():
+                    engine.pump_live_refresh()
+                self.live_status.set(engine.meta("live_refresh_status") or "게임 갱신 연결 확인 대기" if self.config.get("live_refresh_enabled") else "실시간 게임 갱신 꺼짐")
                 self.update_dashboard(engine)
                 selected = self.tree.selection()
                 self.tree.delete(*self.tree.get_children())
