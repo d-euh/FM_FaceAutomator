@@ -701,8 +701,9 @@ class Engine:
                     count += 1
         return count
 
-    def enqueue_manual(self, player_id, club_id=None, instructions="", expected_identity=None, expected_club_id=None):
+    def enqueue_manual(self, player_id, club_id=None, instructions="", expected_identity=None, expected_club_id=None, reference_path=None):
         """Explicit single-player request, independent of automatic transfer scope."""
+        reference = reference_png(reference_path) if reference_path else None
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             record = self.db.execute('SELECT data FROM people WHERE id=?', (str(player_id),)).fetchone()
@@ -722,6 +723,12 @@ class Engine:
                 raise ValueError("이 선수의 생성·저장·편집 중인 작업이 있습니다. 완료 후 요청하세요.")
             self.db.execute("UPDATE jobs SET status='superseded',note='새 직접 생성 요청으로 대체' WHERE player_id=? AND status IN ('pending','blocked','failed','interrupted')", (row['id'],))
             row.update(manual_request=True, requested_club_id=target, requested_club_name=clubs[target]['name'])
+            if reference is not None:
+                # Snapshot now: queued/retried work must not depend on the user's
+                # source file still existing or containing the same photograph.
+                staged = Path(self.c['state_dir']) / 'manual-references' / (uuid.uuid4().hex + '.png')
+                write_atomic(staged, reference)
+                row.update(manual_reference=str(staged), manual_reference_name=Path(reference_path).name)
             cursor = self.db.execute("INSERT INTO jobs(player_id,data,status,created) VALUES (?,?,'pending',?)", (row['id'], json.dumps(row, ensure_ascii=False), time.time()))
             jid = cursor.lastrowid
             if instructions.strip():
@@ -1088,14 +1095,20 @@ class Engine:
             return True
         try:
             portrait = None
-            try:
-                if not Path(self.c['portraits_dir']).exists():
-                    raise MissingFaceError('기존 페이스팩 폴더가 없습니다.', ('r-' if row['id'] in self.c['regen_player_ids'] else '') + row['id'])
-                portrait, face_target = self.lookup_asset(self.c["portraits_dir"], "face", row["id"], row["id"] in self.c["regen_player_ids"])
-            except MissingFaceError as exc:
-                face_target = exc.target
-                if face_target.startswith('r-'):
-                    raise AssetError("생성선수 원본 사진이 없습니다. 실제 인물의 웹 사진으로 대체할 수 없습니다.") from exc
+            if row.get('manual_request') and row.get('manual_reference'):
+                portrait = Path(row['manual_reference'])
+                face_target = ('r-' if row['id'] in self.c['regen_player_ids'] else '') + row['id']
+                if Path(self.c['portraits_dir']).is_dir():
+                    face_target = self.lookup_asset(self.c['portraits_dir'], 'face_target', row['id'], row['id'] in self.c['regen_player_ids'])
+            else:
+                try:
+                    if not Path(self.c['portraits_dir']).exists():
+                        raise MissingFaceError('기존 페이스팩 폴더가 없습니다.', ('r-' if row['id'] in self.c['regen_player_ids'] else '') + row['id'])
+                    portrait, face_target = self.lookup_asset(self.c["portraits_dir"], "face", row["id"], row["id"] in self.c["regen_player_ids"])
+                except MissingFaceError as exc:
+                    face_target = exc.target
+                    if face_target.startswith('r-'):
+                        raise AssetError("생성선수 원본 사진이 없습니다. 실제 인물의 웹 사진으로 대체할 수 없습니다.") from exc
             kit = self.kit_reference(rendering["club_id"], rendering)
             job_options = self.job_options(jid)
             options = request_options(self.c, row, job_options)

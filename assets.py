@@ -242,7 +242,7 @@ class AssetCatalog:
             raise AssetError(f"{description}: 연결된 이미지 파일이 없습니다.")
         return paths[0]
 
-    def face(self, player_id, regen=False):
+    def face_target(self, player_id, regen=False):
         pid = str(player_id)
         key = ("r-" if regen else "") + pid
         # An existing r- mapping is positive evidence; never infer from ID size.
@@ -250,6 +250,11 @@ class AssetCatalog:
         regen_evidence = regen_key in self.faces or regen_key in self.missing_faces or (self.direct.get(regen_key) and not self.direct.get(pid))
         if not regen and pid not in self.missing_faces and not self.faces.get(pid) and regen_evidence:
             key = "r-" + pid
+        return key
+
+    def face(self, player_id, regen=False):
+        pid = str(player_id)
+        key = self.face_target(pid, regen)
         if key in self.face_mappings:
             if key in self.face_conflicts:
                 paths = self.face_conflicts[key]

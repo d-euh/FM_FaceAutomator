@@ -698,6 +698,68 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(json.loads(jobs[jid]['data'])['requested_club_id'], '20')
         self.assertEqual(self.e.next_job(time.time())['id'], jid)
 
+    def test_manual_photo_overrides_facepack_and_survives_source_removal_and_restart(self):
+        self.transfer()
+        self.refs()
+        photo = self.root / 'chosen face.jpg'
+        Image.new('RGB', (420, 560), 'purple').save(photo)
+        expected = reference_png(photo)
+        self.c['additional_instructions'] = 'Rainy stadium'
+        jid = self.e.enqueue_manual('900001', instructions='Smile', reference_path=photo)
+        photo.unlink()
+        self.e.close()
+        self.e = Engine(self.c)
+        def runner(cmd, **kwargs):
+            folder = Path(cmd[cmd.index('--cd') + 1])
+            self.assertNotIn('--search', cmd)
+            self.assertEqual((folder / 'original.png').read_bytes(), expected)
+            self.assertIn('Rainy stadium', kwargs['input'])
+            self.assertIn('Smile', kwargs['input'])
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(runner, job_id=jid)
+        job = self.e.db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone()
+        self.assertEqual(job['status'], 'applied')
+        self.assertEqual(Path(json.loads(job['data'])['manual_reference']).read_bytes(), expected)
+        self.assertTrue((Path(self.c['pack_dir']) / '900001.png').is_file())
+
+    def test_manual_photo_supplies_missing_newgen_face_and_keeps_r_id_mapping(self):
+        self.transfer()
+        self.refs()
+        faces = Path(self.c['portraits_dir'])
+        (faces / '900001.png').unlink()
+        (faces / 'config.xml').write_text('<record><record from="missing" to="graphics/pictures/person/r-900001/portrait"/></record>')
+        photo = self.root / 'newgen.png'
+        Image.new('RGB', (400, 400), 'orange').save(photo)
+        jid = self.e.enqueue_manual('900001', reference_path=photo)
+        def runner(cmd, **kwargs):
+            self.assertNotIn('--search', cmd)
+            self.assertEqual(cmd.count('--image'), 2)
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(runner, job_id=jid)
+        self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?', (jid,)).fetchone()[0], 'applied')
+        self.assertIn('person/r-900001/portrait', (Path(self.c['pack_dir']) / 'config.xml').read_text())
+
+    def test_bad_manual_photo_does_not_replace_waiting_request_or_call_ai(self):
+        jid = self.transfer()
+        photo = self.root / 'broken.png'
+        photo.write_text('broken image')
+        with self.assertRaises((OSError, ValueError)):
+            self.e.enqueue_manual('900001', reference_path=photo)
+        self.assertEqual([(job['id'], job['status']) for job in self.e.jobs()], [(jid, 'pending')])
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
+
+    def test_missing_staged_manual_photo_is_blocked_without_web_fallback(self):
+        self.transfer()
+        self.refs()
+        photo = self.root / 'chosen.png'
+        Image.new('RGB', (400, 400), 'blue').save(photo)
+        jid = self.e.enqueue_manual('900001', reference_path=photo)
+        job = self.e.db.execute('SELECT data FROM jobs WHERE id=?', (jid,)).fetchone()
+        Path(json.loads(job[0])['manual_reference']).unlink()
+        self.e.run_one(lambda *a, **k: self.fail('Missing manual reference must not call AI'), job_id=jid)
+        self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?', (jid,)).fetchone()[0], 'blocked')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
+
     def test_manual_request_rejects_unknown_identity_club_and_busy_work(self):
         self.transfer()
         for args in [('missing',), ('900001','missing')]:

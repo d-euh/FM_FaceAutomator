@@ -91,8 +91,7 @@ class App:
         self.manual_tab, manual = self.page()
         self.scope_tab, scope = self.page()
         self.jobs_tab, jobs = self.page()
-        self.prompts_tab, prompts = self.page()
-        for host, label in ((self.home_tab, "홈"), (self.manual_tab, "직접 생성"), (self.scope_tab, "이적 감지 범위"), (self.jobs_tab, "작업 대기열"), (self.prompts_tab, "커스텀 지시")):
+        for host, label in ((self.home_tab, "홈"), (self.manual_tab, "직접 생성"), (self.scope_tab, "이적 감지 범위"), (self.jobs_tab, "작업 대기열")):
             self.tabs.add(host, text=label)
         ttk.Button(header, text="폴더 · 연결", command=self.open_settings).pack(side='right')
         ttk.Label(header, text="v" + APP_VERSION, style="Badge.TLabel").pack(side="right", padx=12)
@@ -122,7 +121,6 @@ class App:
         settings_host, settings = self.page(parent=self.settings_window)
         settings_host.pack(fill='both', expand=True)
         self.fields(settings)
-        self.prompt_fields(prompts)
         jobs.columnconfigure(0, weight=1)
         jobs.rowconfigure(2, weight=1)
         toolbar = ttk.Frame(jobs)
@@ -463,8 +461,14 @@ class App:
         ttk.Button(buttons,text='기본값으로 초기화',style='Compact.TButton',command=self.reset_name_style).pack(side='left')
         self.name_style_fields(right)
 
-        self.support_toggle = ttk.Button(parent,text='문제 해결 펼치기',style='Compact.TButton',command=self.toggle_support)
-        self.support_toggle.grid(row=2,column=0,sticky='w',pady=(8,0))
+        sections = ttk.Frame(parent)
+        sections.grid(row=2,column=0,sticky='ew',pady=(8,0))
+        self.common_toggle = ttk.Button(sections,text='공통 지시 펼치기',style='Compact.TButton',command=self.toggle_common)
+        self.common_toggle.pack(side='left',padx=(0,8))
+        self.common_frame = ttk.Frame(parent,style='Panel.Card.TFrame',padding=10)
+        self.prompt_fields(self.common_frame)
+        self.support_toggle = ttk.Button(sections,text='문제 해결 펼치기',style='Compact.TButton',command=self.toggle_support)
+        self.support_toggle.pack(side='left')
         self.support_frame = ttk.Frame(parent,style='Panel.Card.TFrame',padding=10)
         self.support_frame.columnconfigure(1,weight=1)
         self.vars['graphics_root'] = tk.StringVar()
@@ -486,8 +490,20 @@ class App:
             self.support_frame.grid_remove()
             self.support_toggle.configure(text='문제 해결 펼치기')
         else:
+            self.common_frame.grid_remove()
+            self.common_toggle.configure(text='공통 지시 펼치기')
             self.support_frame.grid(row=3,column=0,sticky='ew',pady=(6,0))
             self.support_toggle.configure(text='문제 해결 접기')
+
+    def toggle_common(self):
+        if self.common_frame.winfo_manager():
+            self.common_frame.grid_remove()
+            self.common_toggle.configure(text='공통 지시 펼치기')
+        else:
+            self.support_frame.grid_remove()
+            self.support_toggle.configure(text='문제 해결 펼치기')
+            self.common_frame.grid(row=3,column=0,sticky='ew',pady=(6,0))
+            self.common_toggle.configure(text='공통 지시 접기')
 
     def name_style_fields(self, parent):
         panel = ttk.Frame(parent,style='Card.TFrame')
@@ -627,15 +643,12 @@ class App:
             engine.close()
 
     def prompt_fields(self, parent):
-        ttk.Label(parent, text="커스텀 지시", style="Title.TLabel").pack(anchor="w", pady=(0, 12))
         heading = ttk.Frame(parent)
         heading.pack(fill="x")
-        ttk.Label(heading, text="모든 선수에게 적용할 지시", style="Section.TLabel").pack(side="left")
-        ttk.Button(heading, text="공통 지시 저장", command=self.save).pack(side="right")
-        ttk.Label(parent, text="예: 비 오는 경기장에서 골을 넣고 활짝 웃는 모습. 앞머리는 뒤로 넘기고 한 손을 들어주세요.", wraplength=980).pack(anchor="w", pady=(8, 6))
-        self.additional_text = tk.Text(parent, height=5, wrap="word", font="TkTextFont")
+        ttk.Label(heading, text="모든 선수에게 적용할 지시", style="CardTitle.TLabel").pack(side="left")
+        ttk.Label(heading,text='정지 후 설정 저장 · 개별 지시와 함께 전달',style='CardMuted.TLabel').pack(side='right')
+        self.additional_text = tk.Text(parent, height=4, wrap="word", font="TkTextFont")
         self.additional_text.pack(fill="both", expand=True)
-        ttk.Label(parent, text="공통 지시는 정지 후 저장 · 개별 지시는 생성 중에도 편집 가능", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
 
     def reset_name_style(self):
         self.vars["name_font_path"].set(str(default_font_path()))
@@ -830,7 +843,7 @@ class App:
             self.events.put(f"현재 범위에서 {e.enqueue_current()}개 작업 추가")
         self.background(task)
 
-    def request_manual(self, player_id, club_id, instructions, identity):
+    def request_manual(self, player_id, club_id, instructions, identity, reference_path=None):
         if self.request_active() or (self.active() and (not self.watching or self.stop.is_set())):
             self.status.set('현재 작업이 끝난 뒤 생성 요청을 다시 누르세요.')
             return
@@ -842,7 +855,7 @@ class App:
         def enqueue(engine):
             if engine.c['state_dir'] != workspace:
                 raise ValueError('연결된 세이브가 바뀌었습니다. 선수를 다시 선택하세요.')
-            jid = engine.enqueue_manual(player_id, club_id, instructions, identity, expected_club_id=actual_club)
+            jid = engine.enqueue_manual(player_id, club_id, instructions, identity, expected_club_id=actual_club, reference_path=reference_path)
             self.events.put({'manual_job': jid, 'workspace_id': workspace})
             self.events.put(f'직접 생성 요청 · 작업 {jid} 추가')
             return jid
