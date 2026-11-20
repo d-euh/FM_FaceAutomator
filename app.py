@@ -345,7 +345,7 @@ class App:
             buttons.grid(row=index, column=2, padx=(10, 0))
             ttk.Button(buttons, text="폰트 불러오기" if chooser == "font" else "선택", command=lambda k=key, c=chooser: self.choose(k, c)).pack(side="left")
             if chooser == "font":
-                ttk.Button(buttons, text="기본 글꼴", command=self.default_font).pack(side="left", padx=(8, 0))
+                ttk.Button(buttons, text="기본값으로 초기화", command=self.reset_name_style).pack(side="left", padx=(8, 0))
             if key == "codex":
                 self.login_button = ttk.Button(buttons, text="ChatGPT 로그인", command=self.login_chatgpt)
                 self.login_button.pack(side="left", padx=(8, 0))
@@ -537,8 +537,11 @@ class App:
         ttk.Label(parent, text="기본 사진 스타일과 건조폼은 자동 적용합니다. 원하는 외형·분위기는 위 커스텀 지시에 적어주세요.", style="Muted.TLabel", wraplength=980).pack(anchor="w", pady=(0, 10))
         ttk.Label(parent, text="이름은 AI가 그리지 않고 프로그램이 정확한 문자열로 넣습니다. 이름 수정은 다음 합성부터 반영됩니다.\nPNG와 config.xml을 모두 저장해야 완료 처리합니다. 저장 실패 시 이미지를 보관하고 추가 합성 없이 저장만 재시도합니다.", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
 
-    def default_font(self):
+    def reset_name_style(self):
         self.vars["name_font_path"].set(str(default_font_path()))
+        self.vars["name_color"].set(DEFAULT_NAME_COLOR)
+        self.vars["name_font_size"].set(str(DEFAULT_NAME_FONT_SIZE))
+        self.vars["name_bold"].set(DEFAULT_NAME_BOLD)
 
     def choose(self, key, kind):
         if kind == "font":
