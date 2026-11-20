@@ -29,6 +29,7 @@ from diagnostics import APP_VERSION, export_bundle
 from codex_login import STATUS_TEXT, browser_login, login_status, resolve_codex
 from player_catalog import find_players
 from manual_ui import ManualPanel
+from transfer_types import TRANSFER_TYPES, event_type
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
@@ -131,8 +132,8 @@ class App:
         table.grid(row=2, column=0, sticky="nsew")
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
-        self.tree = ttk.Treeview(table, columns=("id", "player", "club", "status", "note"), show="headings", height=8, selectmode="browse")
-        for key, label, width in [("id", "순서", 45), ("player", "선수", 145), ("club", "이동 · 새 소속팀", 210), ("status", "상태", 100), ("note", "설명", 400)]:
+        self.tree = ttk.Treeview(table, columns=("id", "player", "club", 'type', "status", "note"), show="headings", height=8, selectmode="browse")
+        for key, label, width in [("id", "순서", 45), ("player", "선수", 145), ("club", "이동 · 새 소속팀", 200), ('type','이적 유형',90), ("status", "상태", 100), ("note", "설명", 320)]:
             self.tree.heading(key, text=label)
             self.tree.column(key, width=width, stretch=key == "note")
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -1478,7 +1479,8 @@ class App:
                 movement = (source.get('short_name') or row.get('from_club_name') or row['from_club_id']) + ' → ' + (destination.get('short_name') or row['club_name'])
             status = '지시 편집 중' if job['editing'] else labels.get(job['status'],job['status'])
             note = '생성 완료' if job['status']=='applied' else (('개별 지시 · ' if job['has_custom'] else '') + ('골키퍼 · ' if row.get('is_goalkeeper') is True else '') + job['note'])
-            values = (str(position) if job['status'] not in ('applied','superseded') else '',row['name'],movement,status,note)
+            kind = '직접 생성' if row.get('manual_request') else TRANSFER_TYPES.get(event_type(row), '현재 선수')
+            values = (str(position) if job['status'] not in ('applied','superseded') else '',row['name'],movement,kind,status,note)
             key = str(job['id'])
             if not self.tree.exists(key):
                 self.tree.insert('', 'end', iid=key, values=values)

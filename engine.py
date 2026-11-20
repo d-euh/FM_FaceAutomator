@@ -26,6 +26,7 @@ import live_refresh
 from league_catalog import read_catalog
 from workspaces import select_workspace, source_key
 from generation import GenerationCancelled, run_codex
+from transfer_types import TRANSFER_TYPES, classify_transfer
 
 
 class PastSaveError(ValueError):
@@ -337,7 +338,9 @@ def detection_messages(summary):
         before = item["previous_club_id"]
         membership = (f'기준 {item["club_id"] or "없음"}' if before is None else f'{before or "없음"} → {item["club_id"] or "없음"}')
         messages.append(f'감지 진단 · {item["name"]}({item["id"]}) · {membership} · 등록팀 {item.get("registered_club_id", item["club_id"]) or "없음"}'
-                        f' / 계약구단 {item.get("contract_club_id") or "미확인"} · {item["result"]}')
+                        f' / 계약구단 {item.get("contract_club_id") or "미확인"}'
+                        + (f' · {TRANSFER_TYPES.get(item["transfer_type"], "유형 미확인")}' if item.get('transfer_type') else '')
+                        + f' · {item["result"]}')
     if summary["missing_player_ids"]:
         messages.append("지정 선수 ID를 세이브에서 찾지 못함: " + ", ".join(summary["missing_player_ids"][:20]))
     league_status = summary.get("league_status", {})
@@ -625,7 +628,7 @@ class Engine:
                 before = json.loads(old[0]) if old else None
                 row = resolve_membership(row, before)
                 row["league_ids"] = clubs.get(row["club_id"], {}).get("league_ids", row.get("league_ids", []))
-                for field in ("from_club_id", "from_club_name", "from_league_ids"):
+                for field in ("from_club_id", "from_club_name", "from_league_ids", 'transfer_type', 'transfer_type_reason'):
                     row.pop(field, None)
                 old_club = before["club_id"] if before and before["identity"] == row["identity"] else ""
                 if not old_club and before and before["identity"] == row["identity"]:
@@ -638,6 +641,8 @@ class Engine:
                     row["last_league_ids"] = event["from_league_ids"]
                 changed = before is not None and (before["club_id"], before["identity"]) != (row["club_id"], row["identity"])
                 club_changed = before is not None and before["club_id"] != row["club_id"]
+                if club_changed and row['club_id']:
+                    event['transfer_type'], event['transfer_type_reason'] = classify_transfer(before, row)
                 summary["club_changes"] += int(club_changed)
                 added = before is None and self.c["initial_generation"]
                 reason = scope_reason(event, self.c, snapshot.get("managed_club_ids", []))
@@ -655,8 +660,11 @@ class Engine:
                     outcome += " · 생성 범위: " + reason
                 item = {key: row[key] for key in ("id", "name", "club_id", "club_name", "registered_club_id", "contract_club_id", "on_loan", "club_basis", "registered_team_id", "is_goalkeeper") if key in row}
                 item.update(previous_club_id=before["club_id"] if before else None,
+                            previous_on_loan=before.get('on_loan') if before else None,
                             previous_registered_club_id=before.get("registered_club_id", before["club_id"]) if before else None,
                             previous_contract_club_id=before.get("contract_club_id") if before else None, result=outcome)
+                if 'transfer_type' in event:
+                    item.update(transfer_type=event['transfer_type'], transfer_type_reason=event['transfer_type_reason'])
                 if row["id"] in requested and len(summary["tracked"]) < 100:
                     summary["tracked"].append(item)
                 if changed and len(summary["changes"]) < 200:
@@ -1046,7 +1054,8 @@ class Engine:
             if waiting_for_save and not row.get('manual_request'):
                 continue
             if not self.latest(row):
-                self.update(job["id"], "superseded", "현재 범위/소속과 불일치")
+                reason = scope_reason(row, self.c, json.loads(self.meta('managed') or '[]'))
+                self.update(job["id"], "superseded", reason if reason != '대상' else "현재 범위/소속과 불일치")
                 continue
             recent = self.db.execute("SELECT max(started) FROM jobs WHERE player_id=? AND id<>?", (row["id"], job["id"])).fetchone()[0]
             if recent is not None and recent > now - self.c["cooldown_hours"] * 3600:
@@ -1339,7 +1348,8 @@ class Engine:
             raise ValueError("적용할 수 있는 생성 결과가 아닙니다.")
         row = json.loads(job["data"])
         if not self.latest(row):
-            self.update(job_id, "superseded", "적용 전 소속/범위 변경")
+            reason = scope_reason(row, self.c, json.loads(self.meta('managed') or '[]'))
+            self.update(job_id, "superseded", reason if reason != '대상' else "적용 전 소속/범위 변경")
             raise ValueError("현재 소속/범위와 맞지 않는 결과입니다.")
         if not job['artifact'] or not Path(job['artifact']).is_file():
             self.render_paid_result(job)

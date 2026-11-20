@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 
+from transfer_types import TRANSFER_TYPES, exclusion_reason
+
 
 PRESETS = {
     "managed": "내가 맡은 구단만", "all": "모든 이적", "top5": "5대 리그만",
@@ -15,7 +17,8 @@ DIRECTIONS = {"both": "방출·영입 모두", "incoming": "영입된 선수만"
 # Sources: sortitoutsi.net/football-manager-data-update/competition/{id}
 LEAGUES = {"premier_league": "11", "serie_a": "32", "la_liga": "67", "ligue_1": "16", "bundesliga": "22"}
 BIG6 = {"602", "630", "676", "679", "680", "728"}
-DEFAULT_SCOPE = {"preset": "managed", "direction": "both", "clubs": {}, "include_managed": False}
+DEFAULT_SCOPE = {"preset": "managed", "direction": "both", "clubs": {}, "include_managed": False,
+                 'transfer_types': list(TRANSFER_TYPES)}
 
 
 def migrate_scope(config):
@@ -38,6 +41,10 @@ def validate_scope(value):
     value["clubs"] = {str(key): direction for key, direction in value["clubs"].items()}
     if not isinstance(value["include_managed"], bool):
         raise ValueError("내 구단 포함 설정이 올바르지 않습니다.")
+    kinds = value['transfer_types']
+    if not isinstance(kinds, list) or any(not isinstance(kind, str) or kind not in TRANSFER_TYPES for kind in kinds):
+        raise ValueError('이적 유형 설정을 확인하세요.')
+    value['transfer_types'] = [kind for kind in TRANSFER_TYPES if kind in kinds]
     return value
 
 
@@ -79,6 +86,9 @@ def reason(row, config, managed):
         return "무소속 또는 소속 미확인"
     if not selected(row, config, managed):
         return "선택한 구단·선수 범위 또는 영입·방출 방향 밖"
+    excluded = exclusion_reason(row, config['scope_rules'])
+    if excluded:
+        return excluded
     if config["max_age"] and (row.get("age") is None or int(row["age"]) > config["max_age"]):
         return "나이 제한"
     return "대상"
@@ -99,4 +109,7 @@ def describe(config):
         label += " · " + DIRECTIONS[rules["direction"]]
     if config.get("player_ids"):
         label += f' · 선택 선수 {len(config["player_ids"])}명 추가'
+    kinds = rules.get('transfer_types', list(TRANSFER_TYPES))
+    if set(kinds) != set(TRANSFER_TYPES):
+        label += ' · ' + ('/'.join(TRANSFER_TYPES[kind] for kind in kinds) + ' 포함' if kinds else '이적 유형 모두 제외')
     return label

@@ -88,6 +88,22 @@ class ScopeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_scope({"clubs": {"680": "invalid"}})
 
+    def test_type_filter_applies_to_selected_players_and_outgoing_unselected_destinations(self):
+        self.custom('outgoing')
+        self.c['scope_rules']['transfer_types'] = ['permanent','loan_return']
+        self.c['player_ids'] = [self.row['id']]
+        for kind, allowed in [('permanent',True), ('loan',False), ('loan_return',True), ('unknown',False)]:
+            with self.subTest(kind=kind):
+                self.assertEqual(in_scope(self.row | {'transfer_type':kind}, self.c, []), allowed)
+
+    def test_all_presets_obey_types_and_current_player_generation_is_unfiltered(self):
+        for preset in ('all','managed','big6','premier_league','top5'):
+            self.c['scope_rules'].update(preset=preset,transfer_types=[])
+            with self.subTest(preset=preset):
+                self.assertFalse(in_scope(self.row | {'transfer_type':'loan'}, self.c, ['602']))
+                current = {key:value for key,value in self.row.items() if key != 'from_club_id'}
+                self.assertTrue(in_scope(current, self.c, ['602']))
+
 
 class LeagueCatalogTests(unittest.TestCase):
     def clubs(self):

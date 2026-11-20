@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from scope_rules import DIRECTIONS, LEAGUES, PRESETS, describe, migrate_scope
+from transfer_types import TRANSFER_TYPES
 
 
 class ScopePanel:
@@ -24,6 +25,7 @@ class ScopePanel:
         self.preset = tk.StringVar(value="managed")
         self.direction = tk.StringVar(value=DIRECTIONS["both"])
         self.include_managed = tk.BooleanVar(value=False)
+        self.transfer_types = {kind: tk.BooleanVar(value=True) for kind in TRANSFER_TYPES}
         self.search = tk.StringVar()
         self.manual_id = tk.StringVar()
         self.club_direction = tk.StringVar(value=DIRECTIONS["both"])
@@ -50,6 +52,11 @@ class ScopePanel:
         ttk.Button(toolbar, text='목록 불러오기', style='Compact.TButton', command=read).grid(row=1, column=2, padx=12)
         ttk.Label(toolbar, textvariable=self.summary, style='CardMuted.TLabel', wraplength=300).grid(row=0, column=3, rowspan=2, sticky='w')
         self.direction.trace_add('write', lambda *_: self.render_summary())
+        kinds = ttk.Frame(toolbar, style='Card.TFrame')
+        kinds.grid(row=2,column=0,columnspan=4,sticky='ew',pady=(8,0))
+        ttk.Label(kinds,text='포함할 이적 유형',style='CardText.TLabel').pack(side='left',padx=(0,14))
+        for kind, label in TRANSFER_TYPES.items():
+            ttk.Checkbutton(kinds,text=label,variable=self.transfer_types[kind],style='Card.TCheckbutton',command=self.render_summary).pack(side='left',padx=(0,14))
 
         body = ttk.Frame(parent)
         body.grid(row=1, column=0, sticky='nsew')
@@ -142,7 +149,8 @@ class ScopePanel:
 
     def value(self):
         reverse = {label: key for key, label in DIRECTIONS.items()}
-        return {"preset": self.preset.get(), "direction": reverse[self.direction.get()], "clubs": dict(self.rules), "include_managed": self.include_managed.get()}
+        return {"preset": self.preset.get(), "direction": reverse[self.direction.get()], "clubs": dict(self.rules), "include_managed": self.include_managed.get(),
+                'transfer_types': [kind for kind, variable in self.transfer_types.items() if variable.get()]}
 
     def load(self, config):
         value = migrate_scope(config)
@@ -150,6 +158,8 @@ class ScopePanel:
         self.preset.set(value["preset"])
         self.direction.set(DIRECTIONS[value["direction"]])
         self.include_managed.set(value.get("include_managed", False))
+        for kind, variable in self.transfer_types.items():
+            variable.set(kind in value['transfer_types'])
         self.player_rules = {str(pid): 'include' for pid in config.get('player_ids', [])}
         self.player_rules.update({str(pid): 'exclude' for pid in config.get('exclude_player_ids', [])})
         self.render_players()

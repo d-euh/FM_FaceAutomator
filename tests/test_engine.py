@@ -94,6 +94,56 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
 
+    def test_excluded_loan_is_recorded_so_later_return_is_classified_and_queued(self):
+        self.c['scope_rules'] = copy.deepcopy(DEFAULT_SCOPE) | {'preset':'all','transfer_types':['loan_return']}
+        self.e.ingest(membership_snapshot())
+        self.assertEqual(self.e.ingest(membership_snapshot('20','10',True,'2027-07-02')), 0)
+        report = json.loads(self.e.meta('detection_summary'))
+        self.assertEqual(report['changes'][0]['transfer_type'], 'loan')
+        self.assertIn('이적 유형 제외: 임대 이적', report['changes'][0]['result'])
+        self.assertIn('임대 이적', '\n'.join(detection_messages(report)))
+        self.assertEqual(self.e.ingest(membership_snapshot('10','10',False,'2027-07-03')), 1)
+        job = self.e.jobs()[0]
+        self.assertEqual(json.loads(job['data'])['transfer_type'], 'loan_return')
+        self.assertEqual(json.loads(job['data'])['from_club_id'], '20')
+        self.assertNotIn('transfer_type', json.loads(self.e.db.execute('SELECT data FROM people').fetchone()[0]))
+
+    def test_same_club_loan_to_permanent_conversion_does_not_generate_a_new_face(self):
+        self.e.ingest(membership_snapshot('20','10',True))
+        self.assertEqual(self.e.ingest(membership_snapshot('20','20',False,'2027-07-02')), 0)
+        self.assertEqual(self.e.jobs(), [])
+
+    def test_new_type_exclusion_prevents_queued_or_paid_results_from_being_applied(self):
+        self.c['scope_rules'] = copy.deepcopy(DEFAULT_SCOPE) | {'preset':'all'}
+        self.e.ingest(membership_snapshot())
+        moved = membership_snapshot('20','10',True,'2027-07-02')
+        self.source(moved)
+        self.e.refresh()
+        self.refs()
+        jid = self.e.jobs()[0]['id']
+        def runner(cmd, **kwargs):
+            result = self.good_runner(cmd, **kwargs)
+            self.c['scope_rules']['transfer_types'] = ['permanent']
+            return result
+        self.e.run_one(runner)
+        self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?',(jid,)).fetchone()[0], 'superseded')
+        self.assertFalse((Path(self.c['pack_dir'])/'900001.png').exists())
+        self.c['scope_rules']['transfer_types'] = list(DEFAULT_SCOPE['transfer_types'])
+        with self.e.db:
+            self.e.db.execute("INSERT INTO jobs(player_id,data,status,created) SELECT player_id,data,'pending',created FROM jobs WHERE id=?", (jid,))
+        self.c['scope_rules']['transfer_types'] = []
+        self.e.run_one(lambda *a,**k:self.fail('Excluded queued loan must not call AI'))
+        self.assertTrue(all(job['status']=='superseded' for job in self.e.jobs()))
+        self.assertTrue(all(job['note']=='이적 유형 제외: 임대 이적' for job in self.e.jobs()))
+
+    def test_direct_generation_bypasses_all_transfer_type_exclusions(self):
+        self.transfer()
+        self.refs()
+        self.c['scope_rules'] = copy.deepcopy(DEFAULT_SCOPE) | {'preset':'all','transfer_types':[]}
+        jid = self.e.enqueue_manual('900001')
+        self.e.run_one(self.good_runner, job_id=jid)
+        self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?',(jid,)).fetchone()[0], 'applied')
+
     def test_local_render_failure_retry_reuses_paid_raw_image(self):
         jid = self.transfer()
         self.refs()
