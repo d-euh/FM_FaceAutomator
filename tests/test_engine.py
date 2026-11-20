@@ -90,6 +90,16 @@ class EngineTests(unittest.TestCase):
         (directory / "reply.json").write_text(json.dumps({"status": "generated", "reason": "ok"}))
         return SimpleNamespace(returncode=0)
 
+    def supply_web_kit(self, cmd, **changes):
+        folder = Path(cmd[cmd.index('--cd') + 1])
+        row = json.loads(self.e.db.execute('SELECT data FROM jobs WHERE id=?', (int(folder.name.split('-')[0]),)).fetchone()[0])
+        Image.new('RGB', (300, 400), 'green').save(folder/'kit.png')
+        record = {'season':'2026/27', 'club_id':row.get('requested_club_id',row['club_id']),
+                  'variant':row['kit_variant'], 'verified_club':'Verified Club',
+                  'source_url':'https://club.example/2026-27-kit', 'image_url':'https://club.example/2026-27.png'}
+        (folder/'kit-source.json').write_text(json.dumps(record | changes))
+        return folder
+
     def test_first_read_is_baseline(self):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
@@ -406,19 +416,24 @@ class EngineTests(unittest.TestCase):
         self.e.run_one(runner)
         self.assertEqual(self.e.jobs()[0]["status"], "applied")
 
-    def test_goalkeeper_with_only_outfield_kit_blocks_before_ai(self):
+    def test_goalkeeper_with_only_outfield_kit_searches_for_2026_27_goalkeeper_reference(self):
         self.transfer()
         self.refs()
         after = read_source(self.c)
         after["players"][0]["is_goalkeeper"] = True
         self.source(after)
         self.e.ingest(read_source(self.c))
-        def forbidden(*args, **kwargs):
-            self.fail("Must not synthesize a goalkeeper in an outfield kit")
-        self.e.run_one(forbidden)
-        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
-        self.assertIn("골키퍼 유니폼 필요", self.e.jobs()[0]["note"])
-        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+        def runner(cmd, **kwargs):
+            self.assertIn('--search',cmd)
+            self.assertEqual(cmd.count('--image'),1)
+            self.assertIn('gk_home',kwargs['input'])
+            self.assertIn('2026/27',kwargs['input'])
+            folder = Path(cmd[cmd.index('--cd')+1])
+            self.assertFalse((folder/'kit.png').exists())
+            self.supply_web_kit(cmd)
+            return self.good_runner(cmd,**kwargs)
+        self.e.run_one(runner)
+        self.assertEqual(self.e.jobs()[0]['status'],'applied')
 
     def test_job_edit_lease_stops_other_connection_and_saved_directives_are_used(self):
         jid = self.transfer()
@@ -605,16 +620,19 @@ class EngineTests(unittest.TestCase):
             with Image.open(folder / "kit.png") as image:
                 self.assertEqual(image.getpixel((0, 0))[:3], (255, 0, 0))
 
-    def test_missing_saved_kit_choice_blocks_without_fallback_or_charge(self):
+    def test_missing_saved_kit_choice_searches_without_using_another_local_choice(self):
         self.refs()
         self.transfer()
         self.c["kit_overrides"] = {"20:home": str(self.root / "missing.png")}
-        with patch.object(self, "good_runner") as runner:
-            self.e.run_one(runner)
-            runner.assert_not_called()
-        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
-        self.assertIn("선택했던 유니폼 파일이 없습니다", self.e.jobs()[0]["note"])
-        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+        def runner(cmd, **kwargs):
+            self.assertIn('--search',cmd)
+            folder = Path(cmd[cmd.index('--cd')+1])
+            self.assertFalse((folder/'kit.png').exists())
+            self.supply_web_kit(cmd)
+            return self.good_runner(cmd,**kwargs)
+        self.e.run_one(runner)
+        self.assertEqual(self.e.jobs()[0]['status'],'applied')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0],1)
 
     def test_saved_kit_choice_is_scoped_to_club_and_variant(self):
         self.refs()
@@ -709,13 +727,20 @@ class EngineTests(unittest.TestCase):
         self.assertIsNone(self.e.next_job(now))
         self.assertIsNotNone(self.e.next_job(now+86401))
 
-    def test_missing_refs_are_blocked_without_call(self):
+    def test_missing_both_refs_requests_search_without_attaching_nonexistent_images(self):
         self.transfer()
-        def forbidden(*args, **kwargs):
-            self.fail("missing refs must never invoke Codex")
-        self.e.run_one(forbidden)
+        def runner(cmd, **kwargs):
+            self.assertIn('--search',cmd)
+            self.assertNotIn('--image',cmd)
+            folder = Path(cmd[cmd.index('--cd')+1])
+            self.assertIn('No local face photograph or kit reference is attached',kwargs['input'])
+            (folder/'reply.json').write_text(json.dumps({'status':'unavailable','reason':'Exact references unavailable','english_name':''}))
+            return SimpleNamespace(returncode=0)
+        self.e.run_one(runner)
         self.assertEqual(self.e.jobs()[0]["status"], "blocked")
-        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 1)
+        self.e.retry_preflight()
+        self.assertFalse(self.e.run_one(lambda *a,**k:self.fail('No automatic repeated paid search')))
 
     def test_manual_generation_outside_scope_uses_requested_club_and_maps_same_player(self):
         self.source(snapshot())
@@ -1120,7 +1145,9 @@ class EngineTests(unittest.TestCase):
 
     def test_preflight_recovers_automatically_but_ai_failures_do_not(self):
         jid = self.transfer()
-        self.e.run_one(self.good_runner)
+        self.refs()
+        (Path(self.c['kits_dir'])/'20.png').write_text('broken local kit')
+        self.e.run_one(lambda *a,**k:self.fail('Corrupt local references must not call AI'))
         self.assertEqual(self.e.jobs()[0]["status"], "blocked")
         self.refs()
         self.e.retry_preflight()
@@ -1130,6 +1157,97 @@ class EngineTests(unittest.TestCase):
         self.e.db.commit()
         self.e.retry_preflight()
         self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+
+    def test_missing_kit_folder_searches_fixed_season_for_requested_manual_club(self):
+        self.transfer()
+        self.refs()
+        shutil.rmtree(self.c['kits_dir'])
+        self.c['kits_dir'] = ''
+        jid = self.e.enqueue_manual('900001','10')
+        def runner(cmd, **kwargs):
+            self.assertIn('--search',cmd)
+            self.assertEqual(cmd.count('--image'),1)
+            self.assertIn('"club_id": "10"',kwargs['input'])
+            self.assertIn('2026/27',kwargs['input'])
+            self.assertNotIn('second image',kwargs['input'])
+            self.supply_web_kit(cmd)
+            return self.good_runner(cmd,**kwargs)
+        self.e.run_one(runner,job_id=jid)
+        self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?',(jid,)).fetchone()[0],'applied')
+
+    def test_missing_face_and_kit_are_retrieved_in_one_request(self):
+        self.transfer()
+        def runner(cmd, **kwargs):
+            self.assertIn('--search',cmd)
+            self.assertNotIn('--image',cmd)
+            folder = self.supply_web_kit(cmd)
+            Image.new('RGB',(300,400),'gray').save(folder/'original.png')
+            (folder/'face-source.json').write_text(json.dumps({'verified_name':'Player','source_url':'https://club.example/player','image_url':'https://club.example/face.png'}))
+            return self.good_runner(cmd,**kwargs)
+        self.e.run_one(runner)
+        self.assertEqual(self.e.jobs()[0]['status'],'applied')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0],1)
+
+    def test_wrong_web_kit_season_club_or_variant_never_applies_or_auto_retries(self):
+        jid = self.transfer()
+        self.refs()
+        (Path(self.c['kits_dir'])/'20.png').unlink()
+        for changes in ({'season':'2027/28'}, {'club_id':'10'}, {'variant':'away'}, {'source_url':'file:///kit'}):
+            with self.subTest(changes=changes):
+                def runner(cmd, **kwargs):
+                    self.supply_web_kit(cmd,**changes)
+                    return self.good_runner(cmd,**kwargs)
+                self.e.run_one(runner)
+                self.assertEqual(self.e.jobs()[0]['status'],'blocked')
+                self.assertIn('유니폼 검색 검증 실패',self.e.jobs()[0]['note'])
+                self.assertFalse((Path(self.c['pack_dir'])/'900001.png').exists())
+                self.e.retry_preflight()
+                self.assertFalse(self.e.run_one(lambda *a,**k:self.fail('Never auto-repeat failed paid search')))
+                self.e.retry(jid)
+
+    def test_success_reply_without_downloaded_kit_and_provenance_is_not_applied(self):
+        self.transfer()
+        self.refs()
+        (Path(self.c['kits_dir'])/'20.png').unlink()
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]['status'],'blocked')
+        self.assertFalse((Path(self.c['pack_dir'])/'config.xml').exists())
+
+    def test_web_kit_and_paid_image_survive_local_failure_and_restart_without_rebilling(self):
+        jid = self.transfer()
+        self.refs()
+        (Path(self.c['kits_dir'])/'20.png').unlink()
+        def runner(cmd, **kwargs):
+            self.supply_web_kit(cmd)
+            return self.good_runner(cmd,**kwargs)
+        with patch('engine.render_gunzo',side_effect=OSError('renderer busy')):
+            self.e.run_one(runner)
+        self.assertEqual(self.e.jobs()[0]['status'],'apply_failed')
+        self.e.close()
+        self.e = Engine(self.c)
+        self.e.recover()
+        self.e.retry(jid)
+        self.e.run_one(lambda *a,**k:self.fail('Reuse downloaded kit and paid original'))
+        self.assertEqual(self.e.jobs()[0]['status'],'applied')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0],1)
+
+    def test_web_kit_provenance_is_rechecked_before_retrying_a_rendered_result(self):
+        jid = self.transfer()
+        self.refs()
+        (Path(self.c['kits_dir'])/'20.png').unlink()
+        def runner(cmd, **kwargs):
+            self.supply_web_kit(cmd)
+            return self.good_runner(cmd,**kwargs)
+        with patch.object(self.e,'check_pack',side_effect=[None,OSError('pack busy')]):
+            self.e.run_one(runner)
+        self.assertEqual(self.e.jobs()[0]['status'],'apply_failed')
+        source = Path(self.e.jobs()[0]['artifact']).parent/'kit-source.json'
+        metadata = json.loads(source.read_text()) | {'season':'2025/26'}
+        source.write_text(json.dumps(metadata))
+        self.e.retry(jid)
+        self.e.run_one(lambda *a,**k:self.fail('Invalid source must not cause another AI call'))
+        self.assertEqual(self.e.jobs()[0]['status'],'apply_failed')
+        self.assertFalse((Path(self.c['pack_dir'])/'900001.png').exists())
 
     def test_watch_retries_only_application_after_disk_recovers(self):
         self.refs(); self.transfer()

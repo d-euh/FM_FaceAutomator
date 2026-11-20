@@ -42,6 +42,10 @@ class MissingFaceError(AssetError):
         self.target = target
 
 
+class MissingKitError(AssetError):
+    """No usable kit path was found; different from a corrupt/configuration error."""
+
+
 def _under(path, root):
     return path == root or path.is_relative_to(root)
 
@@ -277,7 +281,7 @@ class AssetCatalog:
         if key in self.kits:
             return self._choose_kit(self.kits[key], f"구단 {club_id} {variant}")
         if key in self.missing_kits:
-            raise AssetError(f"구단 {club_id} {variant}: config.xml은 있지만 키트 이미지가 없습니다.")
+            raise MissingKitError(f"구단 {club_id} {variant}: config.xml은 있지만 키트 이미지가 없습니다.")
         paths = self.direct.get(f"{club_id}_{variant}", set())
         if not paths and variant == "home":
             paths = self.direct.get(str(club_id), set())
@@ -287,7 +291,7 @@ class AssetCatalog:
     def _choose_kit(paths, description):
         available = sorted({p for p in paths if p.is_file()})
         if not available:
-            raise AssetError(f"{description}: 연결된 이미지 파일이 없습니다.")
+            raise MissingKitError(f"{description}: 연결된 이미지 파일이 없습니다.")
         return random.choice(available)
 
     def kit_candidates(self, club_id, variant="home"):
