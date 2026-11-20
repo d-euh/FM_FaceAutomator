@@ -86,10 +86,10 @@ class App:
         self.tabs.pack(fill="both", expand=True, padx=20)
         self.home_tab, home = self.page(scroll=True)
         self.manual_tab, manual = self.page(scroll=True)
-        self.scope_tab, scope = self.page(scroll=True)
+        self.scope_tab, scope = self.page()
         self.jobs_tab, jobs = self.page()
         self.prompts_tab, prompts = self.page(scroll=True)
-        for host, label in ((self.home_tab, "홈"), (self.manual_tab, "직접 생성"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.prompts_tab, "커스텀 지시")):
+        for host, label in ((self.home_tab, "홈"), (self.manual_tab, "직접 생성"), (self.scope_tab, "이적 감지 범위"), (self.jobs_tab, "작업 대기열"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
         ttk.Button(header, text="폴더 · 연결", command=self.open_settings).pack(side='right')
         ttk.Label(header, text="v" + APP_VERSION, style="Badge.TLabel").pack(side="right", padx=12)
@@ -231,7 +231,7 @@ class App:
         hero = ttk.Frame(left, style="Panel.Card.TFrame", padding=24)
         hero.pack(fill="both", expand=True)
         ttk.Label(hero, text="자동 생성", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Label(hero, text="선택한 생성 범위", style="CardMuted.TLabel").pack(anchor="w")
+        ttk.Label(hero, text="이적 감지 범위", style="CardMuted.TLabel").pack(anchor="w")
         ttk.Label(hero, textvariable=self.scope_summary, style="CardTitle.TLabel", wraplength=540).pack(anchor="w", pady=(6, 14))
         ttk.Label(hero, textvariable=self.status, style="CardMuted.TLabel", wraplength=540).pack(anchor="w", pady=(0, 12))
         controls = ttk.Frame(hero, style="Card.TFrame")
