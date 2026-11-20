@@ -459,6 +459,7 @@ class Engine:
           CREATE TABLE IF NOT EXISTS applied(player_id TEXT PRIMARY KEY, job_id INTEGER NOT NULL,
             filename TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS job_custom(job_id INTEGER PRIMARY KEY, options TEXT NOT NULL DEFAULT '{}', editing INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS job_order(job_id INTEGER PRIMARY KEY, position INTEGER NOT NULL);
         """)
         original = self.meta("source")
         if original and source_key(original) != source_key(config["source"]):
@@ -695,13 +696,57 @@ class Engine:
     def jobs(self):
         return [dict(r) for r in self.db.execute("SELECT jobs.*,COALESCE(job_custom.editing,0) AS editing, "
                     "CASE WHEN job_custom.options IS NOT NULL AND job_custom.options<>'{}' THEN 1 ELSE 0 END AS has_custom "
-                    "FROM jobs LEFT JOIN job_custom ON job_custom.job_id=jobs.id ORDER BY jobs.id DESC LIMIT 300")]
+                    "FROM jobs LEFT JOIN job_custom ON job_custom.job_id=jobs.id LEFT JOIN job_order ON job_order.job_id=jobs.id "
+                    "WHERE jobs.status<>'deleted' ORDER BY CASE WHEN status='running' THEN 0 WHEN status='generated' THEN 1 WHEN status='apply_failed' THEN 2 "
+                    "WHEN status IN ('pending','blocked','failed','interrupted') THEN 3 ELSE 4 END, "
+                    "CASE WHEN status IN ('applied','superseded') THEN -jobs.id ELSE COALESCE(job_order.position,jobs.id) END,jobs.id LIMIT 300")]
+
+    def reorder_job(self, job_id, action):
+        if action not in ('up', 'down', 'first'):
+            raise ValueError("우선순위 변경 방향을 확인하세요.")
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            ids = [row[0] for row in self.db.execute("SELECT jobs.id FROM jobs LEFT JOIN job_order ON job_order.job_id=jobs.id WHERE status IN ('pending','blocked','failed','interrupted') ORDER BY COALESCE(job_order.position,jobs.id),jobs.id")]
+            editing = self.db.execute("SELECT editing FROM job_custom WHERE job_id=?", (job_id,)).fetchone()
+            if job_id not in ids or (editing and editing[0]):
+                return False
+            index = ids.index(job_id)
+            target = 0 if action == 'first' else max(0, index - 1) if action == 'up' else min(len(ids) - 1, index + 1)
+            if target == index:
+                return False
+            ids.insert(target, ids.pop(index))
+            self.db.executemany("INSERT OR REPLACE INTO job_order VALUES (?,?)", [(jid, pos) for pos, jid in enumerate(ids, 1)])
+            self.setmeta("queue_revision", int(self.meta("queue_revision") or 0) + 1)
+        return True
+
+    def remove_job(self, job_id):
+        # Keep images, attempt accounting and ID history; never delete pack mappings.
+        row = self.db.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            return False
+        saving = row[0] in ('generated', 'apply_failed')
+        with contextlib.ExitStack() as stack:
+            if saving:
+                try:
+                    stack.enter_context(process_lock(Path(self.c['state_dir'])))
+                except OSError as exc:
+                    raise ValueError("자동 생성을 멈춘 뒤 저장 대기 작업을 삭제하세요.") from exc
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                current = self.db.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+                edit = self.db.execute("SELECT editing FROM job_custom WHERE job_id=?", (job_id,)).fetchone()
+                if not current or current[0] == 'deleted':
+                    return False
+                if current[0] == 'running' or (current[0] in ('generated', 'apply_failed') and not saving) or (edit and edit[0]):
+                    raise ValueError("생성·저장·편집 중인 작업은 종료 후 삭제하세요.")
+                self.db.execute("UPDATE jobs SET status='deleted',note='대기열에서 삭제' WHERE id=?", (job_id,))
+        return True
 
     def recent_results(self):
         """The five most recently generated, readable cards in this workspace."""
         from PIL import Image
         results, candidates = [], []
-        for job in self.db.execute("SELECT id,data,artifact,status FROM jobs WHERE artifact IS NOT NULL"):
+        for job in self.db.execute("SELECT id,data,artifact,status FROM jobs WHERE artifact IS NOT NULL AND status<>'deleted'"):
             try:
                 path = Path(job["artifact"])
                 stamp = path.stat()
@@ -738,10 +783,21 @@ class Engine:
         job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if job and job["status"] in ("failed", "blocked", "interrupted"):
             if self.recover_busy_result(job_id):
-                return
-            self.update(job_id, "pending")
+                return True
+            with self.db:
+                changed = self.db.execute("UPDATE jobs SET status='pending',note='' WHERE id=? AND status IN ('failed','blocked','interrupted') AND NOT EXISTS (SELECT 1 FROM job_custom WHERE job_id=jobs.id AND editing=1)", (job_id,))
+            return bool(changed.rowcount)
         elif job and job["status"] == "apply_failed":
-            self.update(job_id, "generated")
+            with self.db:
+                changed = self.db.execute("UPDATE jobs SET status='generated',note='' WHERE id=? AND status='apply_failed'", (job_id,))
+            return bool(changed.rowcount)
+        elif job and job['status'] == 'generated':
+            return True  # Recovery may already have restored the paid image before this retry.
+        return False
+
+    def retry_all(self):
+        ids = [row[0] for row in self.db.execute("SELECT jobs.id FROM jobs LEFT JOIN job_order ON job_order.job_id=jobs.id WHERE status IN ('failed','blocked','interrupted','apply_failed','generated') AND NOT EXISTS (SELECT 1 FROM job_custom WHERE job_id=jobs.id AND editing=1) ORDER BY COALESCE(job_order.position,jobs.id),jobs.id")]
+        return [jid for jid in ids if self.retry(jid)]
 
     def recover(self):
         # Call only while holding the OS worker lock. Don't silently re-bill interrupted work.
@@ -850,13 +906,13 @@ class Engine:
         if lock:
             lock.__exit__(None, None, None)
 
-    def next_job(self, now, save_gated=False):
+    def next_job(self, now, save_gated=False, job_id=None):
         if save_gated and int(self.meta("save_updates_pending") or 0):
             return None
         if self.c["daily_limit"] and self.db.execute("SELECT count(*) FROM attempts WHERE started>?", (now - 86400,)).fetchone()[0] >= self.c["daily_limit"]:
             return None
-        for job in self.db.execute("SELECT * FROM jobs WHERE status='pending' AND created<=? AND NOT EXISTS "
-                                   "(SELECT 1 FROM job_custom WHERE job_id=jobs.id AND editing=1) ORDER BY id", (now - self.c["settle_seconds"],)).fetchall():
+        for job in self.db.execute("SELECT * FROM jobs WHERE status='pending' AND created<=? AND (? IS NULL OR id=?) AND NOT EXISTS "
+                                   "(SELECT 1 FROM job_custom WHERE job_id=jobs.id AND editing=1) ORDER BY COALESCE((SELECT position FROM job_order WHERE job_id=jobs.id),id),id", (now - self.c["settle_seconds"], job_id, job_id)).fetchall():
             row = json.loads(job["data"])
             if not self.latest(row):
                 self.update(job["id"], "superseded", "현재 범위/소속과 불일치")
@@ -867,9 +923,9 @@ class Engine:
             return job
         return None
 
-    def run_one(self, runner=subprocess.run, save_gated=False):
+    def run_one(self, runner=subprocess.run, save_gated=False, job_id=None):
         # Resume a fully rendered image after a crash without buying another image.
-        ready = self.db.execute("SELECT id FROM jobs WHERE status='generated' ORDER BY id LIMIT 1").fetchone()
+        ready = self.db.execute("SELECT id FROM jobs WHERE status='generated' AND (? IS NULL OR id=?) ORDER BY id LIMIT 1", (job_id, job_id)).fetchone()
         if ready:
             try:
                 self.apply(ready[0])
@@ -881,10 +937,11 @@ class Engine:
                 if current != "superseded":
                     self.update(ready[0], "apply_failed", "이미지는 보관됨. 저장 재시도 필요: " + str(exc))
             return True
-        if not self.db.execute("SELECT 1 FROM jobs WHERE status='pending' LIMIT 1").fetchone():
+        if not self.db.execute("SELECT 1 FROM jobs WHERE status='pending' AND (? IS NULL OR id=?) LIMIT 1", (job_id, job_id)).fetchone():
             return False
         self.refresh()
-        job = self.next_job(time.time(), save_gated=save_gated)
+        queue_revision = self.meta("queue_revision")
+        job = self.next_job(time.time(), save_gated=save_gated, job_id=job_id)
         if job is None:
             return False
         jid, row = job["id"], json.loads(job["data"])
@@ -933,6 +990,8 @@ class Engine:
         started = time.time()
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
+            if job_id is None and self.meta("queue_revision") != queue_revision:
+                return False
             custom = self.db.execute("SELECT editing FROM job_custom WHERE job_id=?", (jid,)).fetchone()
             if (custom and custom[0]) or self.job_options(jid) != job_options:
                 return False

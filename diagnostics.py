@@ -8,7 +8,7 @@ import sqlite3
 
 from live_refresh import bridge_root, read_json
 
-APP_VERSION = "0.10.8"
+APP_VERSION = "0.11.0"
 
 
 def recent_files(directory, pattern, limit):

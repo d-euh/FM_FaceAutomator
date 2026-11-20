@@ -98,5 +98,5 @@ def describe(config):
     else:
         label += " · " + DIRECTIONS[rules["direction"]]
     if config.get("player_ids"):
-        label += f' · 지정 선수 {len(config["player_ids"])}명 추가'
+        label += f' · 선택 선수 {len(config["player_ids"])}명 추가'
     return label

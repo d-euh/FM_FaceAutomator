@@ -222,7 +222,9 @@ class AssetCatalog:
         pid = str(player_id)
         key = ("r-" if regen else "") + pid
         # An existing r- mapping is positive evidence; never infer from ID size.
-        if not regen and pid not in self.missing_faces and not self.faces.get(pid) and self.faces.get("r-" + pid):
+        regen_key = "r-" + pid
+        regen_evidence = self.faces.get(regen_key) or (self.direct.get(regen_key) and not self.direct.get(pid) and regen_key not in self.missing_faces)
+        if not regen and pid not in self.missing_faces and not self.faces.get(pid) and regen_evidence:
             key = "r-" + pid
         if key in self.faces:
             return self._choose(self.faces[key], f"선수 {key}"), key

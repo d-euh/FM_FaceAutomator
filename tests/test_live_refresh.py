@@ -4,6 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
+import queue
 
 import live_refresh
 from engine import DEFAULTS, Engine
@@ -187,6 +189,26 @@ class LiveRefreshTests(unittest.TestCase):
             engine.pump_live_refresh()
         self.assertIn("연결 대기", engine.meta("live_refresh_status"))
         self.assertIn("처리 완료", json.loads(engine.meta("live_refresh_last_result"))["status"])
+
+    def test_home_refresh_sends_one_manual_request_when_automatic_refresh_is_off(self):
+        from app import App
+        engine = self.engine()
+        config = engine.c | {'live_refresh_enabled': False}
+        ui = SimpleNamespace(config=config, manual_refresh_requested=False, events=queue.Queue())
+        with patch('live_refresh.bridge_root', return_value=self.bridge), patch('time.time', return_value=1000), patch('app.messagebox.showerror') as errors:
+            App.test_live_refresh(ui)
+        errors.assert_not_called()
+        self.assertTrue(ui.manual_refresh_requested)
+        self.assertIs(config['live_refresh_enabled'], False)
+        pending = json.loads(engine.meta('live_refresh_pending'))
+        self.assertIn('request_id', pending)
+        automatic = Engine(config)
+        try:
+            automatic.queue_live_refresh()
+            self.assertEqual(json.loads(automatic.meta('live_refresh_pending'))['request_id'], pending['request_id'])
+        finally:
+            automatic.close()
+        self.assertEqual(len(list((self.bridge / 'requests').rglob('*.json'))), 1)
 
 
 if __name__ == "__main__":

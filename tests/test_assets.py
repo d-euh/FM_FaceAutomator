@@ -46,6 +46,12 @@ class AssetTests(unittest.TestCase):
         self.xml(".", [("face", "graphics/pictures/person/r-123/portrait")])
         self.assertEqual(AssetCatalog(self.root).face("123"), (face, "r-123"))
 
+    def test_regen_filename_is_detected_without_a_manual_id_mapping(self):
+        regen = self.image('r-123.png')
+        self.assertEqual(AssetCatalog(self.root).face('123'), (regen, 'r-123'))
+        normal = self.image('123.png')
+        self.assertEqual(AssetCatalog(self.root).face('123'), (normal, '123'))
+
     def test_kit_variant_uses_team_kits_mapping_not_logos(self):
         home = self.image("kits/manchester_h.png")
         away = self.image("kits/manchester_a.png")
