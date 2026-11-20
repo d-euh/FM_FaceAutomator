@@ -13,7 +13,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import font as tkfont
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
@@ -23,7 +23,7 @@ from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
 import scope_rules
 from scope_ui import AdvancedPanel, ScopePanel
-from gunzo import BUNDLED_FONTS, bundled_font_path, default_font_path, name_font
+from gunzo import BUNDLED_FONTS, DEFAULT_NAME_COLOR, DEFAULT_NAME_FONT_SIZE, bundled_font_path, caption_settings, default_font_path, name_font, render_gunzo
 from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, PURPLE, apply_theme
 from diagnostics import APP_VERSION, export_bundle
 from codex_login import STATUS_TEXT, browser_login, login_status, resolve_codex
@@ -43,6 +43,7 @@ class App:
         self.auth_logging_in = False
         self.auth_cancel = threading.Event()
         self.auth_check_timer = None
+        self.name_preview_timer = None
         self.photo = None
         self.vars = {}
         self.path_scan = 0
@@ -348,24 +349,75 @@ class App:
             if key == "codex":
                 self.login_button = ttk.Button(buttons, text="ChatGPT 로그인", command=self.login_chatgpt)
                 self.login_button.pack(side="left", padx=(8, 0))
+        self.name_style_fields(parent)
         self.workspace_note = tk.StringVar(value="세이브별 이적 기준과 작업 기록은 자동으로 분리·관리합니다.")
-        ttk.Label(parent, textvariable=self.workspace_note, style="CardMuted.TLabel", wraplength=1000).grid(row=8, column=0, columnspan=3, sticky="w", pady=8)
-        ttk.Label(parent, text="합성에 사용할 유니폼", style="CardText.TLabel").grid(row=9, column=0, sticky="w", pady=12)
+        ttk.Label(parent, textvariable=self.workspace_note, style="CardMuted.TLabel", wraplength=1000).grid(row=9, column=0, columnspan=3, sticky="w", pady=8)
+        ttk.Label(parent, text="합성에 사용할 유니폼", style="CardText.TLabel").grid(row=10, column=0, sticky="w", pady=12)
         self.vars["kit_variant"] = tk.StringVar()
-        ttk.Combobox(parent, textvariable=self.vars["kit_variant"], values=list(KIT_LABELS.values()), state="readonly", width=14).grid(row=9, column=1, sticky="w")
+        ttk.Combobox(parent, textvariable=self.vars["kit_variant"], values=list(KIT_LABELS.values()), state="readonly", width=14).grid(row=10, column=1, sticky="w")
         self.path_status = tk.StringVar(value="폴더와 Codex 경로를 자동 확인합니다. 다른 항목만 직접 바꾸세요.")
-        ttk.Label(parent, textvariable=self.path_status, style="CardMuted.TLabel", wraplength=1000).grid(row=10, column=0, columnspan=3, sticky="w", pady=20)
-        ttk.Label(parent, text="기본 제공 폰트: Koverwatch(기본값) · Bebas Neue · Venus Rising. 이름 글꼴의 드롭다운에서 선택하세요.\n다른 폰트를 직접 선택할 수도 있습니다. 변경 후 설정을 저장하세요.", style="CardMuted.TLabel", wraplength=1000).grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 16))
-        ttk.Label(parent, text="기존 파일이 있는 페이스팩에도 저장할 수 있습니다. 교체 전 이미지는 자동 백업합니다.\n골키퍼는 골키퍼 키트를 자동 선택합니다. 해당 자료가 없으면 작업을 보류하고 유니폼 변경을 안내합니다.", style="CardMuted.TLabel", wraplength=1000).grid(row=12, column=0, columnspan=3, sticky="w", pady=(0, 16))
-        ttk.Button(parent, text="설정 저장", style="Primary.TButton", command=self.save).grid(row=13, column=0, sticky="w")
+        ttk.Label(parent, textvariable=self.path_status, style="CardMuted.TLabel", wraplength=1000).grid(row=11, column=0, columnspan=3, sticky="w", pady=20)
+        ttk.Label(parent, text="기본 제공 폰트: Koverwatch(기본값) · Bebas Neue · Venus Rising. 이름 글꼴의 드롭다운에서 선택하세요.\n다른 폰트를 직접 선택할 수도 있습니다. 변경 후 설정을 저장하세요.", style="CardMuted.TLabel", wraplength=1000).grid(row=12, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        ttk.Label(parent, text="기존 파일이 있는 페이스팩에도 저장할 수 있습니다. 교체 전 이미지는 자동 백업합니다.\n골키퍼는 골키퍼 키트를 자동 선택합니다. 해당 자료가 없으면 작업을 보류하고 유니폼 변경을 안내합니다.", style="CardMuted.TLabel", wraplength=1000).grid(row=13, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        ttk.Button(parent, text="설정 저장", style="Primary.TButton", command=self.save).grid(row=14, column=0, sticky="w")
         self.vars["live_refresh_enabled"] = tk.BooleanVar()
         ttk.Checkbutton(parent, text="생성 후 게임 그래픽 갱신 · 실험 기능", variable=self.vars["live_refresh_enabled"],
-                        style="Card.TCheckbutton").grid(row=14, column=0, columnspan=3, sticky="w", pady=(22, 8))
+                        style="Card.TCheckbutton").grid(row=15, column=0, columnspan=3, sticky="w", pady=(22, 8))
         ttk.Label(parent, text="전용 플러그인을 설치한 Steam 26620374에서 사용합니다. 처음에는 꺼져 있습니다.\n선택한 저장 폴더를 게임에 등록하고 재검색합니다. 수동 추가한 새 PNG에는 config.xml 매핑도 필요합니다.\n지원 빌드·파일 해시·게임 대기 상태를 확인하며, 게임 갱신 실패가 AI 재호출을 일으키지는 않습니다.",
-                  style="CardMuted.TLabel", wraplength=1000).grid(row=15, column=0, columnspan=3, sticky="w")
-        ttk.Button(parent, text="게임 갱신 테스트 · AI 호출 없음", command=self.test_live_refresh).grid(row=16, column=0, columnspan=2, sticky="w", pady=12)
+                  style="CardMuted.TLabel", wraplength=1000).grid(row=16, column=0, columnspan=3, sticky="w")
+        ttk.Button(parent, text="게임 갱신 테스트 · AI 호출 없음", command=self.test_live_refresh).grid(row=17, column=0, columnspan=2, sticky="w", pady=12)
         self.live_status = tk.StringVar(value="실시간 게임 갱신 꺼짐")
-        ttk.Label(parent, textvariable=self.live_status, style="CardMuted.TLabel", wraplength=1000).grid(row=17, column=0, columnspan=3, sticky="w")
+        ttk.Label(parent, textvariable=self.live_status, style="CardMuted.TLabel", wraplength=1000).grid(row=18, column=0, columnspan=3, sticky="w")
+
+    def name_style_fields(self, parent):
+        panel = ttk.Frame(parent, style="Card.TFrame", padding=(0, 10))
+        panel.grid(row=8, column=0, columnspan=3, sticky="ew")
+        self.vars["name_color"] = tk.StringVar(value=DEFAULT_NAME_COLOR)
+        self.vars["name_font_size"] = tk.StringVar(value=str(DEFAULT_NAME_FONT_SIZE))
+        ttk.Label(panel, text="이름 색상", style="CardText.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Entry(panel, textvariable=self.vars["name_color"], width=10).grid(row=0, column=1)
+        ttk.Button(panel, text="색상 선택", command=self.choose_name_color).grid(row=0, column=2, padx=(8, 18))
+        ttk.Label(panel, text="크기 · px", style="CardText.TLabel").grid(row=0, column=3, padx=(0, 10))
+        ttk.Spinbox(panel, from_=12, to=48, textvariable=self.vars["name_font_size"], width=5).grid(row=0, column=4)
+        panel.columnconfigure(5, weight=1)
+        self.name_preview = tk.Canvas(panel, width=350, height=80, highlightthickness=0, background=PREVIEW_BACKGROUND)
+        self.name_preview.grid(row=0, column=6, rowspan=2, padx=(20, 0))
+        ttk.Label(panel, text="한 줄 영문 대문자 · 어두운 외곽선·그림자\n긴 이름은 한 줄에 맞춰 자동 축소됩니다.", style="CardMuted.TLabel").grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0))
+        self.name_preview_note = tk.StringVar(value="미리보기 · AI 호출 없음. 설정 저장 후 다음 생성부터 반영됩니다.")
+        ttk.Label(panel, textvariable=self.name_preview_note, style="CardMuted.TLabel", wraplength=900).grid(row=2, column=0, columnspan=7, sticky="w", pady=(8, 0))
+        for key in ("name_font_path", "name_color", "name_font_size"):
+            self.vars[key].trace_add("write", self.queue_name_preview)
+
+    def choose_name_color(self):
+        try:
+            color = caption_settings(self.vars["name_color"].get())["name_color"]
+        except ValueError:
+            color = DEFAULT_NAME_COLOR
+        _, chosen = colorchooser.askcolor(color=color, title="선수 이름 색상", parent=self.window)
+        if chosen:
+            self.vars["name_color"].set(chosen.upper())
+
+    def queue_name_preview(self, *args):
+        if self.name_preview_timer is not None:
+            self.window.after_cancel(self.name_preview_timer)
+        self.name_preview_timer = self.window.after(200, self.draw_name_preview)
+
+    def draw_name_preview(self):
+        self.name_preview_timer = None
+        try:
+            settings = caption_settings(self.vars["name_color"].get(), self.vars["name_font_size"].get())
+            sample = BytesIO()
+            Image.new("RGB", (350, 350), (90, 95, 110)).save(sample, format="PNG")
+            sample.seek(0)
+            data = render_gunzo(sample, "BRUNO FERNANDES", self.vars["name_font_path"].get(), **settings)
+            with Image.open(BytesIO(data)) as image:
+                self.name_preview_photo = ImageTk.PhotoImage(image.crop((0, 270, 350, 350)), master=self.window)
+            self.name_preview.delete("all")
+            self.name_preview.create_image(0, 0, anchor="nw", image=self.name_preview_photo)
+            self.name_preview_note.set("미리보기 · AI 호출 없음. 설정 저장 후 다음 생성부터 반영됩니다.")
+        except (OSError, ValueError) as exc:
+            self.name_preview.delete("all")
+            self.name_preview_note.set(str(exc))
 
     def auth_active(self):
         return self.auth_thread is not None and self.auth_thread.is_alive()

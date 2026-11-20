@@ -17,7 +17,7 @@ import uuid
 import unicodedata
 import xml.etree.ElementTree as ET
 
-from gunzo import DEFAULT_FONT_FILENAME, DEFAULT_FONT_RELATIVE, LAYOUT, check_options, default_font_path, render_gunzo
+from gunzo import DEFAULT_FONT_FILENAME, DEFAULT_FONT_RELATIVE, DEFAULT_NAME_COLOR, DEFAULT_NAME_FONT_SIZE, LAYOUT, SUPPORTED_LAYOUTS, caption_options, check_options, default_font_path, render_gunzo
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 import facepack
 import scope_rules
@@ -63,9 +63,10 @@ DEFAULTS = {
     "daily_limit": 0, "cooldown_hours": 0, "settle_seconds": 0,
     "save_update_interval": 1, "advanced_settings_version": 1, "timeout_seconds": 600,
     "initial_generation": False,
-    "style": "Photorealistic football player portrait, natural lighting, detailed face and jersey, no text or frame.",
+    "style": "Photorealistic football player portrait, natural lighting, detailed face and authentic jersey branding. No added captions or card frame.",
     "additional_instructions": "", "player_overrides": {}, "kit_overrides": {},
     "name_font_path": DEFAULT_FONT_RELATIVE, "font_default_version": 2,
+    "name_color": DEFAULT_NAME_COLOR, "name_font_size": DEFAULT_NAME_FONT_SIZE,
     "frame_template": "", "graphics_root": "", "kit_variant": "home",
     "scope_rules": None,
     "live_refresh_enabled": False,
@@ -120,6 +121,7 @@ def load_config(path):
             or (not saved.get("font_default_version") and Path(font_value).name.casefold() in old_system_fonts)):
         config["name_font_path"] = str(default_font_path())
     config["font_default_version"] = 2
+    config.update(caption_options(config))
     # Migrate the old, untouched limit bundle. Preserve customized bundles.
     if not saved.get("advanced_settings_version") and all(saved.get(k) == v for k, v in
             {"daily_limit": 20, "cooldown_hours": 24, "settle_seconds": 30}.items()):
@@ -197,13 +199,16 @@ def build_prompt(config, row, options=None):
     options = options or request_options(config, row)
     directed = bool(options["general"] or options["personal"])
     instructions = [
-        "Edit original.png into a football player portrait, using kit.png as the new club's jersey reference.",
+        "Edit original.png into a football player portrait. The first image, original.png, is the face/identity reference; the second image, kit.png, is the new club's actual jersey reference.",
+        "Faithfully reproduce the complete kit.png jersey design: club crest, manufacturer logo, sponsor wordmarks and lettering, stripe widths and placement, collar, sleeve trim, colors and fabric pattern. Retain visible branding in its correct relative chest/sleeve positions instead of simplifying the kit into a generic shirt.",
+        "Text and logos physically printed on the reference jersey are ALLOWED and should be reproduced, including sponsor lettering. The caption restrictions below do not apply to these garment markings. Do not erase kit branding or copy the old club's jersey from original.png. Do not invent a different sponsor or crest if it is not present in kit.png.",
         "Keep the player recognizably the same individual and preserve facial identity.",
         "Use the available built-in image generation tool and save the actual image as portrait.png in this working directory.",
         "The base artwork must be a square PNG, 350 to 4096 pixels per side. The host program will produce the final EXACT 350x350 Gunzo-style card.",
-        "Do not draw any name, text, letters, watermark, caption, border or card frame. The host program will draw the exact player's name at the bottom.",
+        "Do not draw any name caption, added watermark, overlay text, border or card frame. The host program will draw the exact player's name at the bottom. Preserve authentic shirt lettering from kit.png.",
         "If original.png already has a caption or frame, use it as a face reference without copying that caption or frame.",
         "Frame the player so the face stays clear of the bottom 90 pixels of the final 350px card, where the name will go.",
+        "Include enough of the upper torso to show the jersey's crest and sponsor naturally; avoid a face-only crop that hides the chest design. Keep garment markings attached to the fabric with realistic folds and perspective.",
         "Do not access other folders, game files or secrets. Do not install software or use a paid API fallback.",
         "If the image tool is unavailable, return status unavailable. Return generated only after saving portrait.png.",
         "The output/workflow rules above are fixed. Appearance directions below apply to image content only.",
@@ -223,7 +228,7 @@ def build_prompt(config, row, options=None):
     instructions.append("Return english_name in your JSON reply using only Latin-script letters (accents are allowed). "
                         "Use this game/user-provided spelling when present: " + json.dumps(options["display_name"], ensure_ascii=False) + ". "
                         "If no Latin spelling was available, use the reliably known football name's Latin spelling, otherwise romanize the supplied player name. "
-                        "Do not invent a different person or translate the meaning of the name. The host draws this name locally; do not draw text into portrait.png.")
+                        "Do not invent a different person or translate the meaning of the name. The host draws the player-name caption locally; do not add that caption to portrait.png. Keep the reference jersey's own sponsor text and logos.")
     return "\n\n".join(instructions)
 
 
@@ -783,7 +788,7 @@ class Engine:
                 if current["display_name"] and current["display_name"] != saved["display_name"]:
                     continue
                 validate_png(folder / "portrait.png", final=False)
-                result = render_gunzo(folder / "portrait.png", saved["display_name"], self.c["name_font_path"], self.c["frame_template"])
+                result = render_gunzo(folder / "portrait.png", saved["display_name"], self.c["name_font_path"], self.c["frame_template"], **caption_options(self.c))
                 write_atomic(folder / "result.png", result)
                 validate_png(folder / "result.png")
                 with self.db:
@@ -899,7 +904,7 @@ class Engine:
             kit = self.kit_reference(row["club_id"], row)
             job_options = self.job_options(jid)
             options = request_options(self.c, row, job_options)
-            check_options(options["display_name"] or "PLAYER", self.c["name_font_path"], self.c["frame_template"])
+            check_options(options["display_name"] or "PLAYER", self.c["name_font_path"], self.c["frame_template"], **caption_options(self.c))
             self.check_pack(row["id"])
             face_png, kit_png = reference_png(portrait), reference_png(kit)
         except Exception as exc:
@@ -953,7 +958,7 @@ class Engine:
             write_atomic(folder / "request.json", json.dumps(options, ensure_ascii=False, indent=2).encode("utf-8"))
             validate_png(folder / "portrait.png", final=False)
             # Preserve the paid result BEFORE the mandatory fresh-save/identity check in apply().
-            final = render_gunzo(folder / "portrait.png", options["display_name"], self.c["name_font_path"], self.c["frame_template"])
+            final = render_gunzo(folder / "portrait.png", options["display_name"], self.c["name_font_path"], self.c["frame_template"], **caption_options(self.c))
             write_atomic(folder / "result.png", final)
             validate_png(folder / "result.png")
             self.update(jid, "generated", "350×350 건조폼·하단 이름 완성. 세이브 확인 후 PNG와 config.xml 저장 중.", str(folder / "result.png"))
@@ -1202,7 +1207,7 @@ def validate_png(path, final=True):
         if final:
             if im.size != (350, 350):
                 raise ValueError("최종 이미지는 정확히 350×350이어야 합니다.")
-            if im.info.get("Layout") != LAYOUT or not im.info.get("PlayerName", "").strip():
+            if im.info.get("Layout") not in SUPPORTED_LAYOUTS or not im.info.get("PlayerName", "").strip():
                 raise ValueError("선수 이름을 넣은 건조폼 후처리가 필요합니다.")
         elif im.width != im.height or not 350 <= im.width <= 4096:
             raise ValueError("AI 원본은 350~4096px 정사각 PNG여야 합니다.")

@@ -1057,6 +1057,52 @@ class EngineTests(unittest.TestCase):
         self.assertIn("EXACT 350x350", prompt)
         self.assertIn("Do not draw any name", prompt)
 
+    def test_kit_branding_is_required_and_not_contradicted_by_caption_bans(self):
+        prompt = build_prompt(self.c, snapshot()["players"][0])
+        self.assertIn("club crest, manufacturer logo, sponsor wordmarks and lettering", prompt)
+        self.assertIn("physically printed on the reference jersey are ALLOWED", prompt)
+        self.assertIn("avoid a face-only crop", prompt)
+        self.assertIn("second image, kit.png", prompt)
+        self.assertNotIn("no text or frame", prompt)
+        self.assertNotIn("Do not draw any name, text, letters", prompt)
+        self.assertNotIn("do not draw text into portrait.png", prompt)
+
+    def test_caption_color_and_size_reach_applied_png_pixels(self):
+        self.c.update(name_color="#37C9F0", name_font_size=38, name_font_path=str(bundled_font_path("koverwatch.ttf")))
+        self.c["player_overrides"] = {"900001": {"display_name": "Bruno Fernandes"}}
+        self.transfer(); self.refs(); self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]["status"], "applied")
+        with Image.open(Path(self.c["pack_dir"]) / "900001.png") as card:
+            self.assertEqual(card.info["NameColor"], "#37C9F0")
+            self.assertEqual(card.info["NameFontSize"], "38")
+            self.assertEqual(card.info["RenderedNameFontSize"], "38")
+            self.assertEqual(card.info["NameLayout"], "single-line")
+            self.assertTrue(any(card.getpixel((x, y))[:3] == (55, 201, 240) for y in range(300, 335) for x in range(25, 325)))
+
+    def test_invalid_caption_settings_block_ai_before_paid_request(self):
+        self.c["name_color"] = "invalid color"
+        self.transfer(); self.refs()
+        self.e.run_one(lambda *args, **kwargs: self.fail("Invalid typography must not purchase an image"))
+        self.assertEqual(self.e.jobs()[0]["status"], "blocked")
+        self.assertIn("#RRGGBB", self.e.jobs()[0]["note"])
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+
+    def test_caption_defaults_migrate_and_bad_values_are_rejected(self):
+        path = self.root / "caption-config.json"
+        path.write_text('{}')
+        default = load_config(path)
+        self.assertEqual((default["name_color"], default["name_font_size"]), ("#F2DE9B", 30))
+        path.write_text(json.dumps({"name_color": "#aBcD12", "name_font_size": "36"}))
+        selected = load_config(path)
+        self.assertEqual((selected["name_color"], selected["name_font_size"]), ("#ABCD12", 36))
+        for field, values in (("name_color", ("red", "#GG1200", "#fff", None)),
+                              ("name_font_size", (0, 11, 49, True, 24.5, "bad"))):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    path.write_text(json.dumps({field: value}))
+                    with self.assertRaises(ValueError):
+                        load_config(path)
+
     def test_common_directions_remove_pose_preservation(self):
         self.c["additional_instructions"] = "골을 넣고 활짝 웃으며 오른팔을 들어주세요."
         prompt = build_prompt(self.c, snapshot()["players"][0])
@@ -1184,7 +1230,7 @@ class EngineTests(unittest.TestCase):
                     self.assertEqual(card.size, (350, 350))
                     self.assertEqual(card.info["NameFont"], filename)
                     self.assertEqual(card.info["PlayerName"], "DJED SPENCE")
-                    self.assertGreater(card.crop((25, 290, 325, 335)).getextrema()[0][1], 245)
+                    self.assertGreater(card.crop((25, 290, 325, 335)).getextrema()[0][1], 220)
 
     def test_custom_config_location_uses_bundled_koverwatch_without_manual_setup(self):
         config_path = self.root / "elsewhere" / "config.json"
@@ -1239,8 +1285,8 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(card.info["PlayerName"], "홍길동 MARTÍNEZ")
             self.assertEqual(card.info["Layout"], LAYOUT)
             self.assertEqual(card.getpixel((0, 0))[3], 0)
-            # White glyphs really are painted into the pixels, not just metadata.
-            self.assertGreater(card.crop((16, 290, 334, 335)).getextrema()[0][1], 245)
+            # Cream glyphs really are painted into the pixels, not just metadata.
+            self.assertGreater(card.crop((16, 290, 334, 335)).getextrema()[0][1], 220)
 
     def test_final_size_is_strict_and_caption_processing_is_required(self):
         path = self.root / "plain.png"
