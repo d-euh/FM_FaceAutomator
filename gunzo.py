@@ -15,6 +15,7 @@ LAYOUT = "gunzo-350-v2"
 SUPPORTED_LAYOUTS = frozenset({LAYOUT, "gunzo-350-v1"})
 DEFAULT_NAME_COLOR = "#F2DE9B"
 DEFAULT_NAME_FONT_SIZE = 30
+DEFAULT_NAME_BOLD = True
 DEFAULT_FONT_FILENAME = "koverwatch.ttf"
 DEFAULT_FONT_RELATIVE = "fonts/" + DEFAULT_FONT_FILENAME
 BUNDLED_FONTS = (DEFAULT_FONT_FILENAME, "BebasNeue.otf", "venus rising rg.ttf")
@@ -40,7 +41,7 @@ def name_font(path=""):
     return str(candidate)
 
 
-def caption_settings(color=DEFAULT_NAME_COLOR, font_size=DEFAULT_NAME_FONT_SIZE):
+def caption_settings(color=DEFAULT_NAME_COLOR, font_size=DEFAULT_NAME_FONT_SIZE, bold=DEFAULT_NAME_BOLD):
     if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color.strip()):
         raise ValueError("이름 색상은 #RRGGBB 형식으로 입력하거나 ‘색상 선택’을 사용하세요.")
     try:
@@ -49,14 +50,16 @@ def caption_settings(color=DEFAULT_NAME_COLOR, font_size=DEFAULT_NAME_FONT_SIZE)
             raise ValueError()
     except (ValueError, TypeError, OverflowError) as exc:
         raise ValueError("이름 글자 크기는 12~48px 사이의 정수로 입력하세요.") from exc
-    return {"name_color": color.strip().upper(), "name_font_size": size}
+    if not isinstance(bold, bool):
+        raise ValueError("이름 굵게 설정은 true/false여야 합니다.")
+    return {"name_color": color.strip().upper(), "name_font_size": size, "name_bold": bold}
 
 
 def caption_options(config):
-    return caption_settings(config.get("name_color", DEFAULT_NAME_COLOR), config.get("name_font_size", DEFAULT_NAME_FONT_SIZE))
+    return caption_settings(config.get("name_color", DEFAULT_NAME_COLOR), config.get("name_font_size", DEFAULT_NAME_FONT_SIZE), config.get("name_bold", DEFAULT_NAME_BOLD))
 
 
-def layout_name(name, font_path="", font_size=DEFAULT_NAME_FONT_SIZE):
+def layout_name(name, font_path="", font_size=DEFAULT_NAME_FONT_SIZE, bold=DEFAULT_NAME_BOLD):
     name = " ".join(str(name).split()).upper()
     if not name or len(name) > 200:
         raise ValueError("하단 선수 이름을 1~200자로 입력하세요.")
@@ -66,7 +69,7 @@ def layout_name(name, font_path="", font_size=DEFAULT_NAME_FONT_SIZE):
     # Match the reference's centered single line. Long names shrink without truncation.
     for size in range(font_size, 7, -1):
         font = ImageFont.truetype(path, size)
-        bounds = probe.textbbox((0, 0), name, font=font, stroke_width=1)
+        bounds = probe.textbbox((0, 0), name, font=font, stroke_width=2 if bold else 1)
         if bounds[2] - bounds[0] > NAME_WIDTH:
             continue
         if bounds[3] - bounds[1] <= 48:
@@ -85,16 +88,16 @@ def check_template(path):
             raise ValueError("템플릿 전체가 불투명하면 선수 얼굴이 가려집니다. 투명한 PNG를 선택하세요.")
 
 
-def check_options(name, font_path="", template_path="", *, name_color=DEFAULT_NAME_COLOR, name_font_size=DEFAULT_NAME_FONT_SIZE):
-    settings = caption_settings(name_color, name_font_size)
-    layout_name(name, font_path, settings["name_font_size"])
+def check_options(name, font_path="", template_path="", *, name_color=DEFAULT_NAME_COLOR, name_font_size=DEFAULT_NAME_FONT_SIZE, name_bold=DEFAULT_NAME_BOLD):
+    settings = caption_settings(name_color, name_font_size, name_bold)
+    layout_name(name, font_path, settings["name_font_size"], settings["name_bold"])
     check_template(template_path)
 
 
-def render_gunzo(source, name, font_path="", template_path="", *, name_color=DEFAULT_NAME_COLOR, name_font_size=DEFAULT_NAME_FONT_SIZE):
+def render_gunzo(source, name, font_path="", template_path="", *, name_color=DEFAULT_NAME_COLOR, name_font_size=DEFAULT_NAME_FONT_SIZE, name_bold=DEFAULT_NAME_BOLD):
     """Return a final PNG; never ask an image model to spell the caption."""
-    settings = caption_settings(name_color, name_font_size)
-    name, font, _, _ = layout_name(name, font_path, settings["name_font_size"])
+    settings = caption_settings(name_color, name_font_size, name_bold)
+    name, font, _, _ = layout_name(name, font_path, settings["name_font_size"], settings["name_bold"])
     check_template(template_path)
     with Image.open(source) as original:
         original.load()
@@ -114,11 +117,16 @@ def render_gunzo(source, name, font_path="", template_path="", *, name_color=DEF
     lettering = Image.new("RGBA", (SIZE * scale, SIZE * scale))
     drawing = ImageDraw.Draw(lettering)
     display_font = ImageFont.truetype(font.path, font.size * scale)
-    bounds = drawing.textbbox((0, 0), name, font=display_font, stroke_width=scale)
+    # Embolden the colored glyph itself, independently of the dark outer edge.
+    embolden = 3 if settings["name_bold"] else 0  # 0.75px after supersampling.
+    outline = scale + embolden
+    bounds = drawing.textbbox((0, 0), name, font=display_font, stroke_width=outline)
     x = (SIZE * scale - (bounds[2] - bounds[0])) / 2 - bounds[0]
     y = 334 * scale - bounds[3]
-    drawing.text((x + 2 * scale, y + 2 * scale), name, font=display_font, fill=(0, 0, 0, 160), stroke_width=scale, stroke_fill=(0, 0, 0, 160))
-    drawing.text((x, y), name, font=display_font, fill=settings["name_color"], stroke_width=scale, stroke_fill=(35, 29, 21, 255))
+    drawing.text((x + 2 * scale, y + 2 * scale), name, font=display_font, fill=(0, 0, 0, 160), stroke_width=outline, stroke_fill=(0, 0, 0, 160))
+    drawing.text((x, y), name, font=display_font, fill=settings["name_color"], stroke_width=outline, stroke_fill=(35, 29, 21, 255))
+    if embolden:
+        drawing.text((x, y), name, font=display_font, fill=settings["name_color"], stroke_width=embolden, stroke_fill=settings["name_color"])
     card = Image.alpha_composite(card, lettering.resize((SIZE, SIZE), Image.Resampling.LANCZOS))
     # Render the 60px outer radius at 4x for smooth transparent edges.
     scale = 4
@@ -133,6 +141,7 @@ def render_gunzo(source, name, font_path="", template_path="", *, name_color=DEF
     info.add_itxt("NameFont", Path(font.path).name)
     info.add_text("NameColor", settings["name_color"])
     info.add_text("NameFontSize", str(settings["name_font_size"]))
+    info.add_text("NameBold", str(settings["name_bold"]).lower())
     info.add_text("RenderedNameFontSize", str(font.size))
     info.add_text("NameLayout", "single-line")
     out = BytesIO()

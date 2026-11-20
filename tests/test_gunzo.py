@@ -43,6 +43,17 @@ class GunzoCaptionTests(unittest.TestCase):
         self.assertLessEqual(bounds[2] - bounds[0], 300)
         self.assertEqual(len(heights), 1)
 
+    def test_bold_thickens_the_colored_glyph_and_keeps_face_and_corners_unchanged(self):
+        with self.card(name_bold=False, name_color="#FFFFFF") as regular, self.card(name_bold=True, name_color="#FFFFFF") as bold:
+            def filled_pixels(card):
+                return sum(min(card.getpixel((x, y))[:3]) >= 248 for y in range(280, 340) for x in range(25, 325))
+            self.assertGreater(filled_pixels(bold), filled_pixels(regular) * 1.15)
+            self.assertEqual(regular.info["NameBold"], "false")
+            self.assertEqual(bold.info["NameBold"], "true")
+            self.assertIsNone(ImageChops.difference(regular.crop((0, 0, 350, 280)), bold.crop((0, 0, 350, 280))).getbbox())
+            self.assertIsNone(ImageChops.difference(regular.getchannel("A"), bold.getchannel("A")).getbbox())
+            self.assertEqual(bold.size, (350, 350))
+
     def test_old_completed_layout_remains_applicable_without_another_ai_call(self):
         with tempfile.TemporaryDirectory() as folder, self.card() as image:
             path = Path(folder) / "legacy.png"

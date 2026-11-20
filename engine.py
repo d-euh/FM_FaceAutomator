@@ -17,7 +17,7 @@ import uuid
 import unicodedata
 import xml.etree.ElementTree as ET
 
-from gunzo import DEFAULT_FONT_FILENAME, DEFAULT_FONT_RELATIVE, DEFAULT_NAME_COLOR, DEFAULT_NAME_FONT_SIZE, LAYOUT, SUPPORTED_LAYOUTS, caption_options, check_options, default_font_path, render_gunzo
+from gunzo import DEFAULT_FONT_FILENAME, DEFAULT_FONT_RELATIVE, DEFAULT_NAME_COLOR, DEFAULT_NAME_FONT_SIZE, DEFAULT_NAME_BOLD, LAYOUT, SUPPORTED_LAYOUTS, caption_options, check_options, default_font_path, render_gunzo
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 import facepack
 import scope_rules
@@ -66,7 +66,7 @@ DEFAULTS = {
     "style": "Photorealistic football player portrait, natural lighting, detailed face and authentic jersey branding. No added captions or card frame.",
     "additional_instructions": "", "player_overrides": {}, "kit_overrides": {},
     "name_font_path": DEFAULT_FONT_RELATIVE, "font_default_version": 2,
-    "name_color": DEFAULT_NAME_COLOR, "name_font_size": DEFAULT_NAME_FONT_SIZE,
+    "name_color": DEFAULT_NAME_COLOR, "name_font_size": DEFAULT_NAME_FONT_SIZE, "name_bold": DEFAULT_NAME_BOLD,
     "frame_template": "", "graphics_root": "", "kit_variant": "home",
     "scope_rules": None,
     "live_refresh_enabled": False,

@@ -1068,7 +1068,7 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("do not draw text into portrait.png", prompt)
 
     def test_caption_color_and_size_reach_applied_png_pixels(self):
-        self.c.update(name_color="#37C9F0", name_font_size=38, name_font_path=str(bundled_font_path("koverwatch.ttf")))
+        self.c.update(name_color="#37C9F0", name_font_size=38, name_bold=False, name_font_path=str(bundled_font_path("koverwatch.ttf")))
         self.c["player_overrides"] = {"900001": {"display_name": "Bruno Fernandes"}}
         self.transfer(); self.refs(); self.e.run_one(self.good_runner)
         self.assertEqual(self.e.jobs()[0]["status"], "applied")
@@ -1077,6 +1077,7 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(card.info["NameFontSize"], "38")
             self.assertEqual(card.info["RenderedNameFontSize"], "38")
             self.assertEqual(card.info["NameLayout"], "single-line")
+            self.assertEqual(card.info["NameBold"], "false")
             self.assertTrue(any(card.getpixel((x, y))[:3] == (55, 201, 240) for y in range(300, 335) for x in range(25, 325)))
 
     def test_invalid_caption_settings_block_ai_before_paid_request(self):
@@ -1092,11 +1093,14 @@ class EngineTests(unittest.TestCase):
         path.write_text('{}')
         default = load_config(path)
         self.assertEqual((default["name_color"], default["name_font_size"]), ("#F2DE9B", 30))
-        path.write_text(json.dumps({"name_color": "#aBcD12", "name_font_size": "36"}))
+        self.assertIs(default["name_bold"], True)
+        path.write_text(json.dumps({"name_color": "#aBcD12", "name_font_size": "36", "name_bold": False}))
         selected = load_config(path)
         self.assertEqual((selected["name_color"], selected["name_font_size"]), ("#ABCD12", 36))
+        self.assertIs(selected["name_bold"], False)
         for field, values in (("name_color", ("red", "#GG1200", "#fff", None)),
-                              ("name_font_size", (0, 11, 49, True, 24.5, "bad"))):
+                              ("name_font_size", (0, 11, 49, True, 24.5, "bad")),
+                              ("name_bold", ("false", 0, 1, None))):
             for value in values:
                 with self.subTest(field=field, value=value):
                     path.write_text(json.dumps({field: value}))

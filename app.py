@@ -23,7 +23,7 @@ from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
 import scope_rules
 from scope_ui import AdvancedPanel, ScopePanel
-from gunzo import BUNDLED_FONTS, DEFAULT_NAME_COLOR, DEFAULT_NAME_FONT_SIZE, bundled_font_path, caption_settings, default_font_path, name_font, render_gunzo
+from gunzo import BUNDLED_FONTS, DEFAULT_NAME_COLOR, DEFAULT_NAME_FONT_SIZE, DEFAULT_NAME_BOLD, bundled_font_path, caption_settings, default_font_path, name_font, render_gunzo
 from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, PURPLE, apply_theme
 from diagnostics import APP_VERSION, export_bundle
 from codex_login import STATUS_TEXT, browser_login, login_status, resolve_codex
@@ -374,18 +374,20 @@ class App:
         panel.grid(row=8, column=0, columnspan=3, sticky="ew")
         self.vars["name_color"] = tk.StringVar(value=DEFAULT_NAME_COLOR)
         self.vars["name_font_size"] = tk.StringVar(value=str(DEFAULT_NAME_FONT_SIZE))
+        self.vars["name_bold"] = tk.BooleanVar(value=DEFAULT_NAME_BOLD)
         ttk.Label(panel, text="이름 색상", style="CardText.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
         ttk.Entry(panel, textvariable=self.vars["name_color"], width=10).grid(row=0, column=1)
         ttk.Button(panel, text="색상 선택", command=self.choose_name_color).grid(row=0, column=2, padx=(8, 18))
         ttk.Label(panel, text="크기 · px", style="CardText.TLabel").grid(row=0, column=3, padx=(0, 10))
         ttk.Spinbox(panel, from_=12, to=48, textvariable=self.vars["name_font_size"], width=5).grid(row=0, column=4)
         panel.columnconfigure(5, weight=1)
+        ttk.Checkbutton(panel, text="굵게 (Bold)", variable=self.vars["name_bold"], style="Card.TCheckbutton").grid(row=0, column=5, sticky="w", padx=(16, 8))
         self.name_preview = tk.Canvas(panel, width=350, height=80, highlightthickness=0, background=PREVIEW_BACKGROUND)
         self.name_preview.grid(row=0, column=6, rowspan=2, padx=(20, 0))
         ttk.Label(panel, text="한 줄 영문 대문자 · 어두운 외곽선·그림자\n긴 이름은 한 줄에 맞춰 자동 축소됩니다.", style="CardMuted.TLabel").grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0))
         self.name_preview_note = tk.StringVar(value="미리보기 · AI 호출 없음. 설정 저장 후 다음 생성부터 반영됩니다.")
         ttk.Label(panel, textvariable=self.name_preview_note, style="CardMuted.TLabel", wraplength=900).grid(row=2, column=0, columnspan=7, sticky="w", pady=(8, 0))
-        for key in ("name_font_path", "name_color", "name_font_size"):
+        for key in ("name_font_path", "name_color", "name_font_size", "name_bold"):
             self.vars[key].trace_add("write", self.queue_name_preview)
 
     def choose_name_color(self):
@@ -405,7 +407,7 @@ class App:
     def draw_name_preview(self):
         self.name_preview_timer = None
         try:
-            settings = caption_settings(self.vars["name_color"].get(), self.vars["name_font_size"].get())
+            settings = caption_settings(self.vars["name_color"].get(), self.vars["name_font_size"].get(), self.vars["name_bold"].get())
             sample = BytesIO()
             Image.new("RGB", (350, 350), (90, 95, 110)).save(sample, format="PNG")
             sample.seek(0)
