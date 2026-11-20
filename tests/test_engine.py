@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -92,6 +93,136 @@ class EngineTests(unittest.TestCase):
     def test_first_read_is_baseline(self):
         self.assertEqual(self.e.ingest(snapshot()), 0)
         self.assertEqual(self.e.jobs(), [])
+
+    def test_local_render_failure_retry_reuses_paid_raw_image(self):
+        jid = self.transfer()
+        self.refs()
+        with patch('engine.render_gunzo', side_effect=OSError('local renderer unavailable')):
+            self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]['status'], 'apply_failed')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM paid_results').fetchone()[0], 1)
+        self.e.retry(jid)
+        self.e.run_one(lambda *a, **k: self.fail('Local retry must not purchase another image'))
+        self.assertEqual(self.e.jobs()[0]['status'], 'applied')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
+
+    def test_raw_receipt_survives_a_restart_before_rendering(self):
+        jid = self.transfer()
+        self.refs()
+        with patch('engine.render_gunzo', side_effect=OSError('disk full')):
+            self.e.run_one(self.good_runner)
+        self.e.close()
+        self.e = Engine(self.c)
+        self.e.recover()
+        self.e.retry(jid)
+        self.e.run_one(lambda *a, **k: self.fail('Restart must reuse original'))
+        self.assertEqual(self.e.jobs()[0]['status'], 'applied')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
+
+    def test_repeated_local_failure_then_kit_change_never_applies_old_uniform(self):
+        jid = self.transfer()
+        self.refs()
+        with patch('engine.render_gunzo', side_effect=OSError('disk full')):
+            self.e.run_one(self.good_runner)
+            self.e.retry(jid)
+            self.e.run_one(lambda *a, **k: self.fail('Local failure must not repeat AI'))
+        self.assertEqual(self.e.jobs()[0]['status'], 'apply_failed')
+        self.c['kit_variant'] = 'away'
+        self.e.retry(jid)
+        self.e.run_one(lambda *a, **k: self.fail('Changed kit requires an explicit synthesis retry'))
+        self.assertEqual(self.e.jobs()[0]['status'], 'failed')
+        self.assertFalse((Path(self.c['pack_dir']) / '900001.png').exists())
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
+
+    def test_cancel_during_local_render_preserves_result_without_applying(self):
+        jid = self.transfer()
+        self.refs()
+        cancel = threading.Event()
+        def render(*args, **kwargs):
+            result = render_gunzo(*args, **kwargs)
+            cancel.set()
+            return result
+        with patch('engine.render_gunzo', side_effect=render):
+            self.e.run_one(self.good_runner, cancel_event=cancel)
+        self.assertEqual(self.e.jobs()[0]['status'], 'interrupted')
+        self.assertTrue(Path(self.e.jobs()[0]['artifact']).is_file())
+        self.assertFalse((Path(self.c['pack_dir']) / '900001.png').exists())
+        self.e.retry(jid)
+        self.e.run_one(lambda *a, **k: self.fail('Finished render must be reused'))
+        self.assertEqual(self.e.jobs()[0]['status'], 'applied')
+
+    def test_unavailable_reply_does_not_revive_superseded_transfer(self):
+        jid = self.transfer()
+        self.refs()
+        def runner(cmd, **kwargs):
+            self.source(snapshot('30', date='2027-07-03'))
+            os.utime(self.c['source'], (time.time()-10, time.time()-10))
+            kwargs['heartbeat']()
+            folder = Path(cmd[cmd.index('--cd') + 1])
+            (folder / 'reply.json').write_text(json.dumps({'status':'unavailable','reason':'tool unavailable'}))
+            return SimpleNamespace(returncode=0)
+        with patch('engine.run_codex', side_effect=runner):
+            self.e.run_one()
+        self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?', (jid,)).fetchone()[0], 'superseded')
+
+    def test_save_updates_are_ingested_during_generation_without_overwriting_superseded_status(self):
+        self.c['save_update_interval'] = 3
+        jid = self.transfer()
+        self.refs()
+        seen = []
+        def runner(cmd, **kwargs):
+            for club, date in [('30','2027-07-03'),('40','2027-07-04')]:
+                self.source(snapshot(club,date=date))
+                os.utime(self.c['source'],(time.time()-10,time.time()-10))
+                kwargs['heartbeat']()
+                self.assertEqual(json.loads(self.e.db.execute('SELECT data FROM people').fetchone()[0])['club_id'],club)
+            return self.good_runner(cmd, **kwargs)
+        with patch('engine.run_codex',side_effect=runner):
+            self.e.run_one(on_change=lambda added, summary:seen.append(summary['game_date']))
+        self.assertEqual(seen,['2027-07-03','2027-07-04'])
+        self.assertEqual(self.e.meta('save_updates_pending'),'2')  # Both saves were counted while generating.
+        self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?',(jid,)).fetchone()[0],'superseded')
+        self.assertFalse((Path(self.c['pack_dir'])/'900001.png').exists())
+
+    def test_save_busy_heartbeat_does_not_abort_paid_generation(self):
+        self.transfer()
+        self.refs()
+        def runner(cmd, **kwargs):
+            os.utime(self.c['source'],(time.time()-10,time.time()-10))
+            with patch.object(self.e,'refresh',side_effect=SaveBusyError(SAVE_BUSY_NOTES[0])):
+                kwargs['heartbeat']()
+            return self.good_runner(cmd, **kwargs)
+        with patch('engine.run_codex',side_effect=runner):
+            self.e.run_one()
+        self.assertEqual(self.e.jobs()[0]['status'],'applied')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0],1)
+
+    def test_cancel_preserves_completed_raw_image_until_explicit_resume(self):
+        jid = self.transfer()
+        self.refs()
+        cancel = threading.Event()
+        def runner(cmd, **kwargs):
+            result = self.good_runner(cmd, **kwargs)
+            cancel.set()
+            return result
+        self.e.run_one(runner,cancel_event=cancel)
+        self.assertEqual(self.e.jobs()[0]['status'],'interrupted')
+        self.assertFalse((Path(self.c['pack_dir'])/'900001.png').exists())
+        self.assertFalse(self.e.run_one(lambda *a,**k:self.fail('Cancelled'),cancel_event=cancel))
+        cancel.clear()
+        self.e.retry(jid)
+        self.e.run_one(lambda *a,**k:self.fail('Resume must not buy another image'))
+        self.assertEqual(self.e.jobs()[0]['status'],'applied')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0],1)
+
+    def test_large_queue_keeps_newly_added_jobs_accessible(self):
+        self.transfer()
+        row = self.e.db.execute('SELECT data FROM people').fetchone()[0]
+        with self.e.db:
+            self.e.db.executemany("INSERT INTO jobs(player_id,data,status,created) VALUES ('900001',?,'pending',?)",[(row,time.time()) for _ in range(350)])
+        jobs = self.e.jobs()
+        self.assertEqual(len(jobs),351)
+        self.assertIn(351,{job['id'] for job in jobs})
 
     def test_save_race_after_custom_generation_retains_result_and_never_rebills(self):
         jid = self.transfer()

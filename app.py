@@ -40,6 +40,10 @@ class App:
         self.window, self.path = window, Path(config_path).resolve()
         self.events = queue.Queue()
         self.stop = threading.Event()
+        self.cancel_current = threading.Event()
+        self.start_buttons, self.cancel_buttons, self.pause_buttons, self.retry_all_buttons = [], [], [], []
+        self.activity = tk.StringVar(value='정지')
+        self.queue_signature = None
         self.thread = None
         self.watching = False
         self.request_thread = None
@@ -60,7 +64,6 @@ class App:
         self.recent_index = 0
         self.recent_state = None
         self.catalog_key = None
-        self.job_choices = {}
         self.job_records = {}
         self.queue_buttons = {}
         self.queue_drag = None
@@ -77,18 +80,18 @@ class App:
             tkfont.nametofont(name).configure(family=family, size=10)
         apply_theme(window, family)
         tk.Frame(window, height=4, background=PURPLE).pack(fill="x")
-        header = ttk.Frame(window, padding=(24, 20, 24, 16))
+        header = ttk.Frame(window, padding=(20, 12, 20, 10))
         header.pack(fill="x")
         title = ttk.Frame(header)
         title.pack(side="left")
         ttk.Label(title, text="FM Face Automator", style="Title.TLabel").pack(anchor="w")
         self.tabs = ttk.Notebook(window)
         self.tabs.pack(fill="both", expand=True, padx=20)
-        self.home_tab, home = self.page(scroll=True)
-        self.manual_tab, manual = self.page(scroll=True)
+        self.home_tab, home = self.page()
+        self.manual_tab, manual = self.page()
         self.scope_tab, scope = self.page()
         self.jobs_tab, jobs = self.page()
-        self.prompts_tab, prompts = self.page(scroll=True)
+        self.prompts_tab, prompts = self.page()
         for host, label in ((self.home_tab, "홈"), (self.manual_tab, "직접 생성"), (self.scope_tab, "이적 감지 범위"), (self.jobs_tab, "작업 대기열"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
         ttk.Button(header, text="폴더 · 연결", command=self.open_settings).pack(side='right')
@@ -112,22 +115,20 @@ class App:
         self.settings_window.withdraw()
         self.settings_window.title('폴더 · 연결 · FM Face Automator')
         self.settings_window.transient(window)
-        self.settings_window.geometry('1180x760')
-        self.settings_window.minsize(1060, 600)
+        self.settings_window.geometry('1180x740')
+        self.settings_window.minsize(1060, 700)
         self.settings_window.protocol('WM_DELETE_WINDOW', self.settings_window.withdraw)
         self.settings_window.bind('<Escape>', lambda event: self.settings_window.withdraw())
-        settings_host, settings = self.page(scroll=True, parent=self.settings_window)
+        settings_host, settings = self.page(parent=self.settings_window)
         settings_host.pack(fill='both', expand=True)
-        settings.columnconfigure(1, weight=1)
         self.fields(settings)
         self.prompt_fields(prompts)
         jobs.columnconfigure(0, weight=1)
         jobs.rowconfigure(2, weight=1)
         toolbar = ttk.Frame(jobs)
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        for title, callback in [("자동 생성 시작", self.start), ("전체 재시도", self.retry_all), ("작업 종료 후 멈춤", self.pause)]:
-            ttk.Button(toolbar, text=title, command=callback, style="Primary.TButton" if callback == self.start else "TButton").pack(side="left", padx=(0, 8))
-        ttk.Label(jobs, textvariable=self.status, wraplength=1000, style="Muted.TLabel").grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        self.build_controls(toolbar)
+        ttk.Label(jobs, textvariable=self.activity, style='Badge.TLabel').grid(row=1, column=0, sticky='w', pady=(0, 8))
         table = ttk.Frame(jobs)
         table.grid(row=2, column=0, sticky="nsew")
         table.columnconfigure(0, weight=1)
@@ -150,20 +151,32 @@ class App:
         self.tree.tag_configure('queue-drop', background=PURPLE, foreground='white')
         actions = ttk.Frame(jobs)
         actions.grid(row=3, column=0, sticky="ew", pady=12)
-        for title, callback in [("선택 재시도", self.retry), ("⋯ 작업 메뉴", self.show_job_menu)]:
+        retry_all = ttk.Button(actions, text='전체 재시도', command=self.retry_all)
+        retry_all.pack(side='left', padx=(0, 6))
+        self.retry_all_buttons.append(retry_all)
+        for title, callback in [('⋯ 작업 메뉴', self.show_job_menu)]:
             button = ttk.Button(actions, text=title, command=callback, state="disabled")
             button.pack(side="left", padx=(0, 6))
             self.queue_buttons[title] = button
         self.clear_queue_button = ttk.Button(actions, text='모든 대기열 삭제', command=self.clear_queue)
         self.clear_queue_button.pack(side='right')
         self.detail = tk.StringVar(value="더블클릭: 개별 지시 · 결과 보기")
-        ttk.Label(jobs, textvariable=self.detail, wraplength=1000, style="Muted.TLabel").grid(row=5, column=0, sticky="ew", pady=(0, 6))
+        detail_host = ttk.Frame(jobs)
+        detail_host.grid(row=4, column=0, sticky='ew')
+        detail_host.columnconfigure(0, weight=1)
+        self.detail_box = tk.Text(detail_host, height=3, wrap='word', state='disabled', font='TkTextFont', relief='flat', padx=8, pady=5)
+        self.detail_box.grid(row=0, column=0, sticky='ew')
+        detail_bar = ttk.Scrollbar(detail_host, orient='vertical', command=self.detail_box.yview)
+        detail_bar.grid(row=0, column=1, sticky='ns')
+        self.detail_box.configure(yscrollcommand=detail_bar.set)
+        self.detail.trace_add('write', self.update_detail)
+        self.update_detail()
         log_host = ttk.Frame(window, padding=(20, 10, 20, 16))
         log_host.pack(side="bottom", fill="x", before=self.tabs)
         log_bar = ttk.Frame(log_host)
         log_bar.pack(fill="x")
         ttk.Label(log_bar, text="최근 작업", style="Muted.TLabel").pack(side="left", padx=(0, 12))
-        ttk.Label(log_bar, textvariable=self.status, style="Muted.TLabel", wraplength=820).pack(side="left", fill="x", expand=True)
+        ttk.Label(log_bar, textvariable=self.status, style="Muted.TLabel", wraplength=720).pack(side="left", fill="x", expand=True)
         self.log_toggle = ttk.Button(log_bar, text="작업 기록 펼치기", style="Compact.TButton", command=self.toggle_log)
         self.log_toggle.pack(side="right")
         self.log = tk.Text(log_host, height=4, font=(family, 9), state="disabled", background=LOG_BACKGROUND, foreground=MUTED, relief="flat", padx=10, pady=8)
@@ -183,6 +196,70 @@ class App:
         self.settings_window.deiconify()
         self.settings_window.lift()
         self.settings_window.focus_set()
+
+    def build_controls(self, parent, compact=False):
+        for label, callback, bucket in (
+                ('자동 생성 시작', self.start, self.start_buttons),
+                ('현재 작업 중단', self.cancel_work, self.cancel_buttons),
+                ('작업 종료 후 멈춤', self.pause, self.pause_buttons)):
+            button = ttk.Button(parent, text=label, command=callback, style='Compact.TButton' if compact else 'TButton')
+            button.pack(side='left', padx=(0, 6))
+            bucket.append(button)
+
+    def update_controls(self):
+        active = self.active()
+        for button in self.start_buttons:
+            button.configure(state='disabled' if active or self.request_active() or self.auth_active() else 'normal')
+        for button in self.cancel_buttons:
+            button.configure(state='normal' if active and not self.cancel_current.is_set() else 'disabled')
+        for button in self.pause_buttons:
+            button.configure(state='normal' if active and not self.stop.is_set() else 'disabled')
+        available = any(job['status'] in ('failed','blocked','interrupted','apply_failed','generated') for job in self.job_records.values())
+        for button in self.retry_all_buttons:
+            button.configure(state='normal' if available and not (active and self.cancel_current.is_set()) else 'disabled')
+        if not active:
+            self.activity.set('정지')
+        elif self.cancel_current.is_set():
+            self.activity.set('현재 작업 중단 중 · 자동 생성 정지')
+        elif self.stop.is_set():
+            self.activity.set('현재 작업 종료 후 정지')
+        elif any(job['status'] == 'running' for job in self.job_records.values()):
+            self.activity.set('합성 중 · 이적 감지 유지' if self.watching else '합성 중')
+        else:
+            self.activity.set('이적 감지 중' if self.watching else '작업 처리 중')
+
+    def cancel_work(self):
+        if self.active():
+            self.start_after_discovery = False
+            self.stop.set()
+            self.cancel_current.set()
+            self.status.set('현재 요청 중단 · 완료된 파일은 보존하고 다음 작업은 실행하지 않습니다.')
+            self.update_controls()
+
+    def report_detection(self, added, summary):
+        self.events.put(f'합성 중 세이브 변경 확인 · 신규 작업 {added}개')
+        if summary:
+            for message in detection_messages(summary):
+                self.events.put(message)
+
+    def report_job(self, engine, jid):
+        if jid is None:
+            return
+        job = engine.db.execute('SELECT status,note,data FROM jobs WHERE id=?', (jid,)).fetchone()
+        if job:
+            name = json.loads(job['data'])['name']
+            self.events.put(f'{name} · {job["note"] or job["status"]}')
+
+    def process_one(self, engine, **kwargs):
+        result = engine.run_one(cancel_event=self.cancel_current, on_change=self.report_detection, **kwargs)
+        self.report_job(engine, engine.last_job_id)
+        return result
+
+    def update_detail(self, *args):
+        self.detail_box.configure(state='normal')
+        self.detail_box.delete('1.0', 'end')
+        self.detail_box.insert('1.0', self.detail.get())
+        self.detail_box.configure(state='disabled')
 
     def toggle_log(self):
         if self.log.winfo_manager():
@@ -228,28 +305,27 @@ class App:
         parent.rowconfigure(0, weight=1)
         left = ttk.Frame(parent)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
-        hero = ttk.Frame(left, style="Panel.Card.TFrame", padding=24)
+        hero = ttk.Frame(left, style="Panel.Card.TFrame", padding=16)
         hero.pack(fill="both", expand=True)
         ttk.Label(hero, text="자동 생성", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(hero, text="이적 감지 범위", style="CardMuted.TLabel").pack(anchor="w")
-        ttk.Label(hero, textvariable=self.scope_summary, style="CardTitle.TLabel", wraplength=540).pack(anchor="w", pady=(6, 14))
-        ttk.Label(hero, textvariable=self.status, style="CardMuted.TLabel", wraplength=540).pack(anchor="w", pady=(0, 12))
+        ttk.Label(hero, textvariable=self.scope_summary, style="CardTitle.TLabel", wraplength=460).pack(anchor="w", pady=(6, 14))
+        ttk.Label(hero, textvariable=self.status, style="CardMuted.TLabel", wraplength=460).pack(anchor="w", pady=(0, 12))
         controls = ttk.Frame(hero, style="Card.TFrame")
         controls.pack(fill="x")
-        ttk.Button(controls, text="자동 생성 시작", style="Primary.TButton", command=self.start).pack(side="left", padx=(0, 8))
-        ttk.Button(controls, text="전체 재시도", command=self.retry_all).pack(side="left", padx=(0, 8))
-        ttk.Button(controls, text="작업 종료 후 멈춤", command=self.pause).pack(side="left")
+        self.build_controls(controls, compact=True)
+        ttk.Label(hero, textvariable=self.activity, style='CardTitle.TLabel').pack(anchor='w', pady=(10, 0))
         refresh = ttk.Frame(hero, style="Card.TFrame")
-        refresh.pack(fill="x", pady=(22, 0))
+        refresh.pack(fill="x", pady=(12, 0))
         ttk.Button(refresh, text="페이스온 새로고침", command=self.test_live_refresh).pack(anchor="w")
-        ttk.Label(refresh, text="누르면 게임 내에 페이스온 변경사항이 적용됩니다.", style="CardMuted.TLabel", wraplength=500).pack(anchor="w", pady=(8, 0))
+        ttk.Label(refresh, text="누르면 게임 내에 페이스온 변경사항이 적용됩니다.", style="CardMuted.TLabel", wraplength=440).pack(anchor="w", pady=(8, 0))
         self.live_status = tk.StringVar(value="게임 연결 확인 대기")
-        ttk.Label(refresh, textvariable=self.live_status, style="CardMuted.TLabel", wraplength=500).pack(anchor="w", pady=(8, 0))
+        ttk.Label(refresh, textvariable=self.live_status, style="CardMuted.TLabel", wraplength=440).pack(anchor="w", pady=(8, 0))
         stats = ttk.Frame(left)
         stats.pack(side="bottom", fill="x", pady=(16, 0), before=hero)
         self.metric_vars = {}
         for key, label in (("pending", "대기 중"), ("running", "생성 중"), ("applied", "저장 완료")):
-            card = ttk.Frame(stats, style="Panel.Card.TFrame", padding=16)
+            card = ttk.Frame(stats, style="Panel.Card.TFrame", padding=10)
             card.pack(side="left", fill="both", expand=True, padx=(0, 10) if key != "applied" else 0)
             ttk.Label(card, text=label, style="CardMuted.TLabel").pack(anchor="w")
             self.metric_vars[key] = tk.StringVar(value="0")
@@ -338,89 +414,99 @@ class App:
         self.recent_name.set("350 × 350 · 영문 이름 · ID 파일명")
 
     def fields(self, parent):
-        ttk.Label(parent, text="폴더 · Codex · 글꼴 연결", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 18))
-        form = ttk.Frame(parent, style="Panel.Card.TFrame", padding=22)
-        form.grid(row=1, column=0, columnspan=3, sticky="ew")
-        parent.columnconfigure(0, weight=1)
-        parent = form
-        parent.columnconfigure(1, weight=1)
-        rows = [("source", "연결할 세이브 파일", "file"),
-                ("portraits_dir", "기존 페이스팩 폴더", "dir"), ("kits_dir", "유니폼 키트 폴더", "dir"),
-                ("pack_dir", "생성 페이스팩 저장 위치", "dir"), ("codex", "Codex 실행 파일", "exe"),
-                ("graphics_root", "자료 검색 위치 · 선택", "dir"),
-                ("name_font_path", "이름 글꼴 · TTF/OTF/TTC", "font")]
-        for index, (key, label, chooser) in enumerate(rows, 1):
-            ttk.Label(parent, text=label, style="CardText.TLabel").grid(row=index, column=0, sticky="w", padx=(0, 18), pady=10)
+        parent.configure(padding=14)
+        parent.columnconfigure(0,weight=1)
+        parent.rowconfigure(1,weight=1)
+        ttk.Label(parent,text='폴더 · 연결',style='Section.TLabel').grid(row=0,column=0,sticky='w',pady=(0,8))
+        body = ttk.Frame(parent)
+        body.grid(row=1,column=0,sticky='nsew')
+        body.columnconfigure(0,weight=3)
+        body.columnconfigure(1,weight=2)
+        body.rowconfigure(0,weight=1)
+        left = ttk.Frame(body,style='Panel.Card.TFrame',padding=12)
+        left.grid(row=0,column=0,sticky='nsew',padx=(0,12))
+        left.columnconfigure(1,weight=1)
+        right = ttk.Frame(body,style='Panel.Card.TFrame',padding=12)
+        right.grid(row=0,column=1,sticky='nsew')
+        right.columnconfigure(0,weight=1)
+        ttk.Label(left,text='파일 · Codex',style='CardTitle.TLabel').grid(row=0,column=0,columnspan=3,sticky='w',pady=(0,6))
+        rows = [('source','연결할 세이브 파일','file'),('portraits_dir','기존 페이스팩 폴더','dir'),
+                ('kits_dir','유니폼 키트 폴더','dir'),('pack_dir','생성 페이스팩 저장 위치','dir'),('codex','Codex 실행 파일','exe')]
+        for index,(key,label,chooser) in enumerate(rows,1):
             self.vars[key] = tk.StringVar()
-            if chooser == "font":
-                entry = ttk.Combobox(parent, textvariable=self.vars[key], values=[str(bundled_font_path(font)) for font in BUNDLED_FONTS])
-                entry.bind("<<ComboboxSelected>>", lambda event: event.widget.xview_moveto(1))
-            else:
-                field = ttk.Frame(parent, style="Card.TFrame") if key == "codex" else parent
-                entry = ttk.Entry(field, textvariable=self.vars[key])
-            if key == "codex":
-                field.grid(row=index, column=1, sticky="ew", pady=10)
-                entry.pack(fill="x")
-                self.auth_status = tk.StringVar(value="로그인 상태 확인 중…")
-                ttk.Label(field, textvariable=self.auth_status, style="CardMuted.TLabel", wraplength=420).pack(anchor="w", pady=(5, 0))
-            else:
-                entry.grid(row=index, column=1, sticky="ew", pady=10)
-            buttons = ttk.Frame(parent, style="Card.TFrame")
-            buttons.grid(row=index, column=2, padx=(10, 0))
-            ttk.Button(buttons, text="폰트 불러오기" if chooser == "font" else "선택", command=lambda k=key, c=chooser: self.choose(k, c)).pack(side="left")
-            if chooser == "font":
-                ttk.Button(buttons, text="기본값으로 초기화", command=self.reset_name_style).pack(side="left", padx=(8, 0))
-            if key == "codex":
-                self.login_button = ttk.Button(buttons, text="ChatGPT 로그인", command=self.login_chatgpt)
-                self.login_button.pack(side="left", padx=(8, 0))
-        self.name_style_fields(parent)
-        ttk.Label(parent, text="합성에 사용할 유니폼", style="CardText.TLabel").grid(row=10, column=0, sticky="w", pady=12)
-        self.vars["kit_variant"] = tk.StringVar()
-        ttk.Combobox(parent, textvariable=self.vars["kit_variant"], values=list(KIT_LABELS.values()), state="readonly", width=14).grid(row=10, column=1, sticky="w")
-        self.path_status = tk.StringVar(value="폴더와 Codex 경로를 자동 확인합니다. 다른 항목만 직접 바꾸세요.")
-        ttk.Label(parent, textvariable=self.path_status, style="CardMuted.TLabel", wraplength=1000).grid(row=11, column=0, columnspan=3, sticky="w", pady=20)
-        ttk.Button(parent, text="설정 저장", style="Primary.TButton", command=self.save).grid(row=14, column=0, sticky="w")
-        self.vars["live_refresh_enabled"] = tk.BooleanVar()
-        ttk.Checkbutton(parent, text="생성 후 자동 새로고침", variable=self.vars["live_refresh_enabled"],
-                        style="Card.TCheckbutton").grid(row=15, column=0, columnspan=3, sticky="w", pady=(22, 8))
-        self.support_toggle = ttk.Button(parent, text='문제 해결 펼치기', command=self.toggle_support)
-        self.support_toggle.grid(row=17, column=0, columnspan=3, sticky='w', pady=(16, 0))
-        self.support_frame = ttk.Frame(parent, style='Card.TFrame')
-        for index, (label, callback, explanation) in enumerate((
-                ('문제 진단 저장', self.export_diagnostics, '오류 분석용 작업 상태와 게임 갱신 보고서 저장'),
-                ('선수 목록 저장', self.export, '현재 세이브의 선수·구단 ID 목록을 CSV로 저장'),
-                ('백업 복원', self.restore, '선택 작업의 페이스온·config.xml 매핑 복원'))):
-            ttk.Button(self.support_frame, text=label, command=callback).grid(row=index, column=0, sticky='w', pady=4)
-            ttk.Label(self.support_frame, text=explanation, style='CardMuted.TLabel').grid(row=index, column=1, sticky='w', padx=16)
+            ttk.Label(left,text=label,style='CardText.TLabel').grid(row=index,column=0,sticky='w',padx=(0,8),pady=4)
+            ttk.Entry(left,textvariable=self.vars[key],width=22).grid(row=index,column=1,sticky='ew',pady=4)
+            ttk.Button(left,text='선택',style='Compact.TButton',command=lambda k=key,c=chooser:self.choose(k,c)).grid(row=index,column=2,padx=(6,0))
+        login = ttk.Frame(left,style='Card.TFrame')
+        login.grid(row=6,column=0,columnspan=3,sticky='ew',pady=6)
+        self.auth_status = tk.StringVar(value='로그인 상태 확인 중…')
+        self.login_button = ttk.Button(login,text='ChatGPT 로그인',style='Compact.TButton',command=self.login_chatgpt)
+        self.login_button.pack(side='left',padx=(0,10))
+        ttk.Label(login,textvariable=self.auth_status,style='CardMuted.TLabel',wraplength=330).pack(side='left',fill='x',expand=True)
+        ttk.Label(left,text='합성에 사용할 유니폼',style='CardText.TLabel').grid(row=7,column=0,sticky='w',pady=6)
+        self.vars['kit_variant'] = tk.StringVar()
+        ttk.Combobox(left,textvariable=self.vars['kit_variant'],values=list(KIT_LABELS.values()),state='readonly',width=12).grid(row=7,column=1,sticky='w')
+        self.vars['live_refresh_enabled'] = tk.BooleanVar()
+        ttk.Checkbutton(left,text='생성 후 자동 새로고침',variable=self.vars['live_refresh_enabled'],style='Card.TCheckbutton').grid(row=8,column=0,columnspan=3,sticky='w',pady=6)
+        self.path_status = tk.StringVar(value='경로를 자동 확인합니다. 다른 항목만 직접 바꾸세요.')
+        ttk.Label(left,textvariable=self.path_status,style='CardMuted.TLabel',wraplength=500).grid(row=9,column=0,columnspan=3,sticky='w',pady=(6,0))
+
+        ttk.Label(right,text='이름 스타일',style='CardTitle.TLabel').grid(row=0,column=0,sticky='w')
+        ttk.Label(right,text='글꼴 · TTF/OTF/TTC',style='CardText.TLabel').grid(row=1,column=0,sticky='w',pady=(10,4))
+        self.vars['name_font_path'] = tk.StringVar()
+        entry = ttk.Combobox(right,textvariable=self.vars['name_font_path'],values=[str(bundled_font_path(font)) for font in BUNDLED_FONTS],width=25)
+        entry.grid(row=2,column=0,sticky='ew')
+        entry.bind('<<ComboboxSelected>>',lambda event:event.widget.xview_moveto(1))
+        buttons = ttk.Frame(right,style='Card.TFrame')
+        buttons.grid(row=3,column=0,sticky='w',pady=6)
+        ttk.Button(buttons,text='폰트 불러오기',style='Compact.TButton',command=lambda:self.choose('name_font_path','font')).pack(side='left',padx=(0,6))
+        ttk.Button(buttons,text='기본값으로 초기화',style='Compact.TButton',command=self.reset_name_style).pack(side='left')
+        self.name_style_fields(right)
+
+        self.support_toggle = ttk.Button(parent,text='문제 해결 펼치기',style='Compact.TButton',command=self.toggle_support)
+        self.support_toggle.grid(row=2,column=0,sticky='w',pady=(8,0))
+        self.support_frame = ttk.Frame(parent,style='Panel.Card.TFrame',padding=10)
+        self.support_frame.columnconfigure(1,weight=1)
+        self.vars['graphics_root'] = tk.StringVar()
+        ttk.Label(self.support_frame,text='자료 검색 위치 · 선택',style='CardText.TLabel').grid(row=0,column=0,sticky='w',padx=(0,10))
+        ttk.Entry(self.support_frame,textvariable=self.vars['graphics_root']).grid(row=0,column=1,sticky='ew')
+        ttk.Button(self.support_frame,text='선택',style='Compact.TButton',command=lambda:self.choose('graphics_root','dir')).grid(row=0,column=2,padx=(8,0))
+        tools = ttk.Frame(self.support_frame,style='Card.TFrame')
+        tools.grid(row=1,column=0,columnspan=3,sticky='ew',pady=(6,0))
+        for label,callback in (('문제 진단 저장',self.export_diagnostics),('선수 목록 저장',self.export),('백업 복원',self.restore)):
+            ttk.Button(tools,text=label,style='Compact.TButton',command=callback).pack(side='left',padx=(0,8))
+        ttk.Label(tools,text='진단 보고서 · ID 목록 · 사진/매핑 복구',style='CardMuted.TLabel').pack(side='left')
+        footer = ttk.Frame(parent)
+        footer.grid(row=4,column=0,sticky='ew',pady=(8,0))
+        ttk.Button(footer,text='설정 저장',style='Primary.TButton',command=self.save).pack(side='left')
+        ttk.Button(footer,text='창 닫기',style='Compact.TButton',command=self.settings_window.withdraw).pack(side='right')
 
     def toggle_support(self):
         if self.support_frame.winfo_manager():
             self.support_frame.grid_remove()
             self.support_toggle.configure(text='문제 해결 펼치기')
         else:
-            self.support_frame.grid(row=18, column=0, columnspan=3, sticky='ew', pady=(8, 0))
+            self.support_frame.grid(row=3,column=0,sticky='ew',pady=(6,0))
             self.support_toggle.configure(text='문제 해결 접기')
 
     def name_style_fields(self, parent):
-        panel = ttk.Frame(parent, style="Card.TFrame", padding=(0, 10))
-        panel.grid(row=8, column=0, columnspan=3, sticky="ew")
-        self.vars["name_color"] = tk.StringVar(value=DEFAULT_NAME_COLOR)
-        self.vars["name_font_size"] = tk.StringVar(value=str(DEFAULT_NAME_FONT_SIZE))
-        self.vars["name_bold"] = tk.BooleanVar(value=DEFAULT_NAME_BOLD)
-        ttk.Label(panel, text="이름 색상", style="CardText.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
-        ttk.Entry(panel, textvariable=self.vars["name_color"], width=10).grid(row=0, column=1)
-        ttk.Button(panel, text="색상 선택", command=self.choose_name_color).grid(row=0, column=2, padx=(8, 18))
-        ttk.Label(panel, text="크기 · px", style="CardText.TLabel").grid(row=0, column=3, padx=(0, 10))
-        ttk.Spinbox(panel, from_=12, to=48, textvariable=self.vars["name_font_size"], width=5).grid(row=0, column=4)
-        panel.columnconfigure(5, weight=1)
-        ttk.Checkbutton(panel, text="굵게 (Bold)", variable=self.vars["name_bold"], style="Card.TCheckbutton").grid(row=0, column=5, sticky="w", padx=(16, 8))
-        self.name_preview = tk.Canvas(panel, width=350, height=80, highlightthickness=0, background=PREVIEW_BACKGROUND)
-        self.name_preview.grid(row=0, column=6, rowspan=2, padx=(20, 0))
-        ttk.Label(panel, text="한 줄 영문 대문자 · 어두운 외곽선·그림자\n긴 이름은 한 줄에 맞춰 자동 축소됩니다.", style="CardMuted.TLabel").grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0))
-        self.name_preview_note = tk.StringVar(value="미리보기 · AI 호출 없음. 설정 저장 후 다음 생성부터 반영됩니다.")
-        ttk.Label(panel, textvariable=self.name_preview_note, style="CardMuted.TLabel", wraplength=900).grid(row=2, column=0, columnspan=7, sticky="w", pady=(8, 0))
-        for key in ("name_font_path", "name_color", "name_font_size", "name_bold"):
-            self.vars[key].trace_add("write", self.queue_name_preview)
+        panel = ttk.Frame(parent,style='Card.TFrame')
+        panel.grid(row=4,column=0,sticky='ew',pady=(4,0))
+        self.vars['name_color'] = tk.StringVar(value=DEFAULT_NAME_COLOR)
+        self.vars['name_font_size'] = tk.StringVar(value=str(DEFAULT_NAME_FONT_SIZE))
+        self.vars['name_bold'] = tk.BooleanVar(value=DEFAULT_NAME_BOLD)
+        ttk.Label(panel,text='색상',style='CardText.TLabel').grid(row=0,column=0,sticky='w',padx=(0,8))
+        ttk.Entry(panel,textvariable=self.vars['name_color'],width=9).grid(row=0,column=1)
+        ttk.Button(panel,text='색상 선택',style='Compact.TButton',command=self.choose_name_color).grid(row=0,column=2,padx=6)
+        ttk.Label(panel,text='크기 · px',style='CardText.TLabel').grid(row=1,column=0,sticky='w',pady=8)
+        ttk.Spinbox(panel,from_=12,to=48,textvariable=self.vars['name_font_size'],width=5).grid(row=1,column=1,sticky='w')
+        ttk.Checkbutton(panel,text='굵게 (Bold)',variable=self.vars['name_bold'],style='Card.TCheckbutton').grid(row=1,column=2,sticky='w')
+        self.name_preview = tk.Canvas(panel,width=350,height=80,highlightthickness=0,background=PREVIEW_BACKGROUND)
+        self.name_preview.grid(row=2,column=0,columnspan=3,sticky='w',pady=6)
+        self.name_preview_note = tk.StringVar(value='미리보기 · AI 호출 없음')
+        ttk.Label(panel,textvariable=self.name_preview_note,style='CardMuted.TLabel',wraplength=350).grid(row=3,column=0,columnspan=3,sticky='w')
+        for key in ('name_font_path','name_color','name_font_size','name_bold'):
+            self.vars[key].trace_add('write',self.queue_name_preview)
 
     def choose_name_color(self):
         try:
@@ -448,7 +534,7 @@ class App:
                 self.name_preview_photo = ImageTk.PhotoImage(image.crop((0, 270, 350, 350)), master=self.window)
             self.name_preview.delete("all")
             self.name_preview.create_image(0, 0, anchor="nw", image=self.name_preview_photo)
-            self.name_preview_note.set("미리보기 · AI 호출 없음. 설정 저장 후 다음 생성부터 반영됩니다.")
+            self.name_preview_note.set('미리보기 · 저장 후 다음 생성부터 반영')
         except (OSError, ValueError) as exc:
             self.name_preview.delete("all")
             self.name_preview_note.set(str(exc))
@@ -548,19 +634,8 @@ class App:
         ttk.Button(heading, text="공통 지시 저장", command=self.save).pack(side="right")
         ttk.Label(parent, text="예: 비 오는 경기장에서 골을 넣고 활짝 웃는 모습. 앞머리는 뒤로 넘기고 한 손을 들어주세요.", wraplength=980).pack(anchor="w", pady=(8, 6))
         self.additional_text = tk.Text(parent, height=5, wrap="word", font="TkTextFont")
-        self.additional_text.pack(fill="x")
+        self.additional_text.pack(fill="both", expand=True)
         ttk.Label(parent, text="공통 지시는 정지 후 저장 · 개별 지시는 생성 중에도 편집 가능", foreground=MUTED, wraplength=980).pack(anchor="w", pady=10)
-        personal = ttk.Frame(parent, style="Card.TFrame", padding=20)
-        personal.pack(fill="x", pady=(8, 18))
-        ttk.Label(personal, text="대기 작업에만 적용할 개별 지시", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 10))
-        self.personal_job = tk.StringVar()
-        row = ttk.Frame(personal, style="Card.TFrame")
-        row.pack(fill="x")
-        self.personal_selector = ttk.Combobox(row, textvariable=self.personal_job, state="readonly")
-        self.personal_selector.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self.personal_edit_button = ttk.Button(row, text="개별 지시 편집", command=self.edit_chosen_job, state="disabled")
-        self.personal_edit_button.pack(side="right")
-        ttk.Label(personal, text="개별 지시는 선택한 작업에만 적용됩니다.", style="CardMuted.TLabel", wraplength=900).pack(anchor="w", pady=(10, 0))
 
     def reset_name_style(self):
         self.vars["name_font_path"].set(str(default_font_path()))
@@ -710,6 +785,7 @@ class App:
         if self.active() or self.request_active() or not self.save():
             return
         self.stop.clear()
+        self.cancel_current.clear()
         config = dict(self.config)
         self.watching = watching
         def run():
@@ -736,7 +812,7 @@ class App:
             finally:
                 if engine:
                     engine.close()
-                self.events.put("작업 종료")
+                self.events.put({"worker_done": True})
         self.thread = threading.Thread(target=run, daemon=True)
         self.thread.start()
 
@@ -788,8 +864,7 @@ class App:
             def task(engine):
                 engine.refresh()
                 jid = enqueue(engine)
-                engine.run_one(job_id=jid)
-                self.events.put('직접 생성 작업 처리 · 대기열에서 결과를 확인하세요.')
+                self.process_one(engine, job_id=jid)
             self.background(task)
 
     def start(self):
@@ -813,7 +888,7 @@ class App:
             last_wait_message = None
             while not self.stop.is_set():
                 try:
-                    result = e.watch_step()
+                    result = e.watch_step(cancel_event=self.cancel_current, on_change=self.report_detection)
                     refresh_status = e.meta("live_refresh_status")
                     if refresh_status and refresh_status != getattr(e, "_shown_live_status", None):
                         self.events.put(refresh_status)
@@ -823,7 +898,7 @@ class App:
                         for message in detection_messages(result["detection"]):
                             self.events.put(message)
                     if result["processed"]:
-                        self.events.put("합성 작업 1개 처리 · 대기열에서 상태를 확인하세요.")
+                        self.report_job(e, result.get('job_id'))
                         last_wait_message = None
                     elif result.get("waiting"):
                         if result.get("save_updates_pending"):
@@ -906,7 +981,8 @@ class App:
         jid = self.selected()
         if jid:
             values = self.tree.item(str(jid), "values")
-            self.detail.set(values[-1])
+            if self.detail.get() != values[-1]:
+                self.detail.set(values[-1])
         self.update_job_actions()
 
     def queue_action_states(self):
@@ -922,9 +998,9 @@ class App:
 
     def update_job_actions(self):
         states = self.queue_action_states()
-        self.queue_buttons['선택 재시도'].configure(state='normal' if states['재시도'] else 'disabled')
         self.queue_buttons['⋯ 작업 메뉴'].configure(state='normal' if any(states.values()) else 'disabled')
         self.clear_queue_button.configure(state='normal' if self.job_records else 'disabled')
+        self.update_controls()
 
     def open_job(self, event=None):
         if event is not None:
@@ -1081,8 +1157,7 @@ class App:
         else:
             def task(engine):
                 if engine.retry(jid):
-                    engine.run_one(job_id=jid)
-                self.events.put('재시도 요청 완료 · 대기열에서 상태를 확인하세요.')
+                    self.process_one(engine, job_id=jid)
             self.background(task)
 
     def retry_all(self):
@@ -1093,7 +1168,7 @@ class App:
                 for jid in ids:
                     if self.stop.is_set():
                         break
-                    engine.run_one(job_id=jid)
+                    self.process_one(engine, job_id=jid)
         if self.active():
             engine = Engine(self.config)
             try:
@@ -1262,13 +1337,6 @@ class App:
         threading.Thread(target=scan, daemon=True).start()
         editor.after(100, poll)
 
-    def edit_chosen_job(self):
-        jid = self.job_choices.get(self.personal_job.get())
-        if jid:
-            self.edit_player(jid)
-        else:
-            messagebox.showinfo("개별 지시", "편집할 대기 작업을 먼저 선택하세요.")
-
     def edit_player(self, job_id=None):
         jid = job_id or self.selected()
         if not jid:
@@ -1370,42 +1438,58 @@ class App:
                 self.cancel_queue_drag()
             else:
                 return
-        selected = self.tree.selection()
-        self.tree.delete(*self.tree.get_children())
-        labels = {"pending": "대기", "running": "합성 중", "generated": "자동 저장 대기", "apply_failed": "저장 실패", "applied": "완료", "blocked": "보류", "failed": "실패", "superseded": "이전 상태", "interrupted": "중단됨"}
-        choices = {}
-        self.job_records = {}
-        for position, job in enumerate(engine.jobs(), 1):
-            self.job_records[job["id"]] = job
-            row = json.loads(job["data"])
-            movement = row["club_name"]
+        jobs = engine.jobs()
+        signature = (engine.c['state_dir'], tuple((job['id'],job['data'],job['status'],job['note'],job['editing'],job['has_custom']) for job in jobs))
+        if signature == self.queue_signature:
+            self.update_job_actions()
+            return
+        selected, view = self.tree.selection(), self.tree.yview()
+        if self.queue_signature and self.queue_signature[0] != engine.c['state_dir']:
+            self.tree.delete(*self.tree.get_children())
+            selected, view = (), (0,1)
+        self.queue_signature = signature
+        labels = {'pending':'대기','running':'합성 중','generated':'후처리·저장 대기','apply_failed':'후처리·저장 실패','applied':'완료','blocked':'보류','failed':'실패','superseded':'이전 상태','interrupted':'중단됨'}
+        self.job_records = {job['id']: job for job in jobs}
+        wanted = {str(job['id']) for job in jobs}
+        for old in set(self.tree.get_children()) - wanted:
+            self.tree.delete(old)
+        order = list(self.tree.get_children())
+        for position, job in enumerate(jobs, 1):
+            row = json.loads(job['data'])
+            movement = row['club_name']
             if row.get('manual_request'):
                 movement = '직접 생성 · ' + row['requested_club_name']
-            elif row.get("from_club_id") and row["from_club_id"] != row["club_id"]:
-                source = self.scope_panel.catalog.get(row["from_club_id"], {})
-                destination = self.scope_panel.catalog.get(row["club_id"], {})
-                movement = (source.get("short_name") or row.get("from_club_name") or row["from_club_id"]) + " → " + (destination.get("short_name") or row["club_name"])
-            if job["status"] in ("pending", "blocked", "failed", "interrupted"):
-                choices[f'{row["name"]} · {portrait_player(row)["club_name"]} · 작업 {job["id"]}'] = job["id"]
-            status = "지시 편집 중" if job["editing"] else labels.get(job["status"], job["status"])
-            note = "생성 완료" if job["status"] == "applied" else (
-                ("개별 지시 · " if job["has_custom"] else "") +
-                ("골키퍼 · " if row.get("is_goalkeeper") is True else "") + job["note"])
-            self.tree.insert("", "end", iid=str(job["id"]), values=(position if job["status"] not in ("applied", "superseded") else "", row["name"], movement, status, note))
-        self.job_choices = choices
-        self.personal_selector.configure(values=list(choices))
-        self.personal_edit_button.configure(state="normal" if choices else "disabled")
-        if self.personal_job.get() not in choices:
-            self.personal_job.set(next(iter(choices), "편집할 대기 작업이 없습니다"))
+            elif row.get('from_club_id') and row['from_club_id'] != row['club_id']:
+                source = self.scope_panel.catalog.get(row['from_club_id'], {})
+                destination = self.scope_panel.catalog.get(row['club_id'], {})
+                movement = (source.get('short_name') or row.get('from_club_name') or row['from_club_id']) + ' → ' + (destination.get('short_name') or row['club_name'])
+            status = '지시 편집 중' if job['editing'] else labels.get(job['status'],job['status'])
+            note = '생성 완료' if job['status']=='applied' else (('개별 지시 · ' if job['has_custom'] else '') + ('골키퍼 · ' if row.get('is_goalkeeper') is True else '') + job['note'])
+            values = (str(position) if job['status'] not in ('applied','superseded') else '',row['name'],movement,status,note)
+            key = str(job['id'])
+            if not self.tree.exists(key):
+                self.tree.insert('', 'end', iid=key, values=values)
+                order.append(key)
+            elif tuple(self.tree.item(key,'values')) != values:
+                self.tree.item(key,values=values)
+            if order[position-1] != key:
+                self.tree.move(key,'',position-1)
+                order.remove(key)
+                order.insert(position-1,key)
         if selected and self.tree.exists(selected[0]):
             self.tree.selection_set(selected)
-        else:
+            self.select()
+        elif self.detail.get() != '더블클릭: 개별 지시 · 결과 보기':
             self.detail.set('더블클릭: 개별 지시 · 결과 보기')
+        if view:
+            self.tree.yview_moveto(view[0])
         self.update_job_actions()
 
     def drain(self):
         while not self.events.empty():
             text = self.events.get()
+            if isinstance(text, dict) and 'worker_done' in text:
+                continue
             if isinstance(text, dict) and 'manual_job' in text:
                 if text['workspace_id'] == self.config['state_dir']:
                     self.tabs.select(self.jobs_tab)
@@ -1437,6 +1521,7 @@ class App:
             self.log.see("end")
             self.log.configure(state="disabled")
         self.login_button.configure(state="disabled" if self.active() or self.auth_active() else "normal")
+        self.update_controls()
         self.manual_panel.set_available(not self.request_active() and not (self.auth_active() and self.auth_logging_in) and
                                         (not self.active() or (self.watching and not self.stop.is_set())))
         database = Path(self.config["state_dir"]) / "queue.sqlite"
@@ -1455,12 +1540,8 @@ class App:
                 if engine:
                     engine.close()
         else:
-            self.job_choices = {}
             self.job_records = {}
             self.update_job_actions()
-            self.personal_selector.configure(values=[])
-            self.personal_job.set("편집할 대기 작업이 없습니다")
-            self.personal_edit_button.configure(state="disabled")
             if self.dashboard_key is not None:
                 self.clear_preview()
             for variable in self.metric_vars.values():

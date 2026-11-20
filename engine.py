@@ -25,6 +25,7 @@ import scope_rules
 import live_refresh
 from league_catalog import read_catalog
 from workspaces import select_workspace, source_key
+from generation import GenerationCancelled, run_codex
 
 
 class PastSaveError(ValueError):
@@ -457,6 +458,7 @@ class Engine:
         self._asset_catalogs = {}
         self._last_preflight_retry = 0
         self._last_apply_retry = 0
+        self.last_job_id = None
         state = Path(config["state_dir"])
         state.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(state / "queue.sqlite", timeout=20)
@@ -472,6 +474,7 @@ class Engine:
             filename TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS job_custom(job_id INTEGER PRIMARY KEY, options TEXT NOT NULL DEFAULT '{}', editing INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS job_order(job_id INTEGER PRIMARY KEY, position INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS paid_results(job_id INTEGER PRIMARY KEY, folder TEXT NOT NULL, options TEXT NOT NULL);
         """)
         original = self.meta("source")
         if original and source_key(original) != source_key(config["source"]):
@@ -541,7 +544,7 @@ class Engine:
                 if (job["started"] is None or row.get("preflight_blocked")) and self.latest(row):
                     self.update(job["id"], "pending")
 
-    def watch_step(self, runner=subprocess.run, now=None):
+    def watch_step(self, runner=None, now=None, cancel_event=None, on_change=None):
         now = time.time() if now is None else now
         self.pump_live_refresh()
         if now - Path(self.c["source"]).stat().st_mtime < 3:
@@ -561,11 +564,11 @@ class Engine:
                 except SaveBusyError:
                     self.update(job["id"], "generated", "세이브 저장 중 · 합성 결과 보관, 저장 완료 후 추가 AI 호출 없이 자동 적용")
                 except Exception as exc:
-                    if self.db.execute("SELECT status FROM jobs WHERE id=?", (job["id"],)).fetchone()[0] != "superseded":
+                    if self.db.execute("SELECT status FROM jobs WHERE id=?", (job["id"],)).fetchone()[0] in ('generated','apply_failed'):
                         self.update(job["id"], "apply_failed", "자동 저장 재시도 대기: " + str(exc))
-        processed = self.run_one(runner, save_gated=True)
+        processed = self.run_one(runner, save_gated=True, cancel_event=cancel_event, on_change=on_change)
         waiting = self.db.execute("SELECT count(*) FROM jobs WHERE status='pending'").fetchone()[0]
-        return {"saving": False, "changed": changed, "added": added, "processed": processed, "waiting": waiting,
+        return {"saving": False, "changed": changed, "added": added, "processed": processed, "waiting": waiting, 'job_id': self.last_job_id,
                 "save_updates_pending": int(self.meta("save_updates_pending") or 0),
                 "save_update_interval": self.c["save_update_interval"],
                 "detection": json.loads(self.meta("detection_summary") or "null") if changed else None}
@@ -740,7 +743,7 @@ class Engine:
                     "FROM jobs LEFT JOIN job_custom ON job_custom.job_id=jobs.id LEFT JOIN job_order ON job_order.job_id=jobs.id "
                     "WHERE jobs.status<>'deleted' ORDER BY CASE WHEN status='running' THEN 0 WHEN status='generated' THEN 1 WHEN status='apply_failed' THEN 2 "
                     "WHEN status IN ('pending','blocked','failed','interrupted') THEN 3 ELSE 4 END, "
-                    "CASE WHEN status IN ('applied','superseded') THEN -jobs.id ELSE COALESCE(job_order.position,jobs.id) END,jobs.id LIMIT 300")]
+                    "CASE WHEN status IN ('applied','superseded') THEN -jobs.id ELSE COALESCE(job_order.position,jobs.id) END,jobs.id")]
 
     def reorder_job(self, job_id, action, target_id=None):
         if action not in ('up', 'down', 'first', 'before', 'after'):
@@ -880,55 +883,104 @@ class Engine:
                         self.db.execute("UPDATE job_custom SET editing=0 WHERE job_id=?", (row[0],))
                 except OSError:
                     pass  # Another app still owns this editor; leave it protected.
-        for job in self.db.execute("SELECT id FROM jobs WHERE status='failed' AND note IN (?,?)", SAVE_BUSY_NOTES).fetchall():
+        for job in self.db.execute("SELECT id FROM jobs WHERE status IN ('failed','interrupted')").fetchall():
             self.recover_busy_result(job[0])
 
+    @staticmethod
+    def validate_web_face(folder):
+        origin = read_json(folder / 'face-source.json')
+        if not isinstance(origin, dict) or not isinstance(origin.get('verified_name'), str) or not origin['verified_name'].strip():
+            raise ValueError('웹 사진의 인물 확인 기록이 없습니다.')
+        for key in ('source_url', 'image_url'):
+            parsed = urlsplit(origin[key])
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError('웹 사진의 HTTPS 출처가 없습니다.')
+        if (folder / 'original.png').is_symlink():
+            raise ValueError('잘못된 얼굴 참조 파일입니다.')
+        reference_png(folder / 'original.png')
+
     def recover_busy_result(self, job_id):
-        """Rescue the old post-generation snapshot bug without another Codex request."""
-        job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if not job or job["status"] != "failed" or job["note"] not in SAVE_BUSY_NOTES or job["started"] is None:
+        """Recover a completed paid image; never purchase it again for local failures."""
+        job = self.db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+        if not job or job['status'] not in ('failed', 'interrupted') or job['started'] is None:
             return False
-        custom = self.db.execute("SELECT editing FROM job_custom WHERE job_id=?", (job_id,)).fetchone()
+        custom = self.db.execute('SELECT editing FROM job_custom WHERE job_id=?', (job_id,)).fetchone()
         if custom and custom[0]:
             return False
         folders = []
-        for folder in (Path(self.c["state_dir"]) / "jobs").glob(f"{job_id}-*"):
-            reply = folder / "reply.json"
-            if folder.is_symlink() or not re.fullmatch(rf"{job_id}-[a-f0-9]{{8}}", folder.name) or not reply.is_file():
+        for folder in (Path(self.c['state_dir']) / 'jobs').glob(f'{job_id}-*'):
+            reply = folder / 'reply.json'
+            if folder.is_symlink() or not re.fullmatch(rf'{job_id}-[a-f0-9]{{8}}', folder.name) or not reply.is_file():
                 continue
             try:
-                modified = reply.stat().st_mtime
-                if modified >= job["started"] - 2:
-                    folders.append((modified, folder))
+                if reply.stat().st_mtime >= job['started'] - 2:
+                    folders.append((reply.stat().st_mtime, folder))
             except OSError:
                 continue
         for _, folder in sorted(folders, reverse=True):
             try:
-                reply = read_json(folder / "reply.json")
-                saved = read_json(folder / "request.json")
-                row = json.loads(job["data"])
+                reply, saved = read_json(folder / 'reply.json'), read_json(folder / 'request.json')
+                row = json.loads(job['data'])
                 current = request_options(self.c, row, self.job_options(job_id))
-                if reply.get("status") != "generated" or not latin_name(saved.get("display_name", "")):
+                if reply.get('status') != 'generated':
                     continue
-                if any(saved.get(key) != current.get(key) for key in ("original_name", "general", "personal")):
-                    continue  # The user edited appearance directions after the failed request.
-                if current["display_name"] and current["display_name"] != saved["display_name"]:
+                if any(saved.get(key) != current.get(key) for key in ('original_name', 'general', 'personal')):
                     continue
-                validate_png(folder / "portrait.png", final=False)
-                result = render_gunzo(folder / "portrait.png", saved["display_name"], self.c["name_font_path"], self.c["frame_template"], **caption_options(self.c))
-                write_atomic(folder / "result.png", result)
-                validate_png(folder / "result.png")
+                variant = player_kit_variant(self.c, row)
+                fixed = self.c.get('kit_overrides', {}).get(f"{portrait_player(row)['club_id']}:{variant}")
+                if row.get('kit_variant', variant) != variant or (fixed and Path(fixed).resolve() != Path(row.get('kit_reference', '')).resolve()):
+                    continue
+                name = saved.get('display_name') or reply.get('english_name', '').strip()
+                if not latin_name(name) or (current['display_name'] and current['display_name'] != name):
+                    continue
+                validate_png(folder / 'portrait.png', final=False)
+                if row.get('face_reference') == 'web':
+                    self.validate_web_face(folder)
+                saved['display_name'] = name
+                # Persist the receipt before rendering. A second local failure is
+                # still a save retry and can never fall through to an AI request.
                 with self.db:
-                    self.db.execute("BEGIN IMMEDIATE")
-                    custom = self.db.execute("SELECT editing FROM job_custom WHERE job_id=?", (job_id,)).fetchone()
-                    if ((custom and custom[0]) or request_options(self.c, row, self.job_options(job_id)) != current):
+                    self.db.execute('BEGIN IMMEDIATE')
+                    custom = self.db.execute('SELECT editing FROM job_custom WHERE job_id=?', (job_id,)).fetchone()
+                    if (custom and custom[0]) or request_options(self.c, row, self.job_options(job_id)) != current:
                         return False
-                    changed = self.db.execute("UPDATE jobs SET status='generated',artifact=?,note=? WHERE id=? AND status='failed' AND note IN (?,?)",
-                        (str(folder / "result.png"), "보관된 합성 결과 복구 · 추가 AI 호출 없이 세이브 확인 후 자동 저장", job_id, *SAVE_BUSY_NOTES))
+                    self.db.execute('INSERT OR REPLACE INTO paid_results VALUES (?,?,?)', (job_id, str(folder), json.dumps(saved, ensure_ascii=False)))
+                    changed = self.db.execute("UPDATE jobs SET status='generated',note='보관된 합성 결과 복구 · 추가 AI 호출 없이 후처리·저장' WHERE id=? AND status IN ('failed','interrupted')", (job_id,))
+                if changed.rowcount:
+                    try:
+                        self.render_paid_result(self.db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
+                    except (OSError, ValueError) as exc:
+                        self.update(job_id, 'apply_failed', '합성 원본 보관 · 후처리 재시도: ' + str(exc))
                 return bool(changed.rowcount)
             except (OSError, ValueError, KeyError, TypeError):
                 continue
         return False
+
+    def render_paid_result(self, job):
+        paid = self.db.execute('SELECT folder,options FROM paid_results WHERE job_id=?', (job['id'],)).fetchone()
+        if not paid:
+            return
+        row, saved = json.loads(job['data']), json.loads(paid['options'])
+        current = request_options(self.c, row, self.job_options(job['id']))
+        if any(saved.get(key) != current.get(key) for key in ('original_name', 'general', 'personal')):
+            self.update(job['id'], 'failed', '합성 지시가 바뀌었습니다. 보관된 결과는 유지하며 새 합성은 수동 재시도하세요.')
+            raise ValueError('합성 지시 변경 · 기존 원본 재사용 불가')
+        rendering = portrait_player(row)
+        variant = player_kit_variant(self.c, row)
+        fixed = self.c.get('kit_overrides', {}).get(f"{rendering['club_id']}:{variant}")
+        if row.get('kit_variant', variant) != variant or (fixed and Path(fixed).resolve() != Path(row.get('kit_reference', '')).resolve()):
+            self.update(job['id'], 'failed', '유니폼 선택이 바뀌었습니다. 새 합성은 수동 재시도하세요.')
+            raise ValueError('유니폼 선택 변경 · 기존 원본 재사용 불가')
+        folder = Path(paid['folder'])
+        validate_png(folder / 'portrait.png', final=False)
+        name = current['display_name'] or saved['display_name']
+        result = render_gunzo(folder / 'portrait.png', name, self.c['name_font_path'], self.c['frame_template'], **caption_options(self.c))
+        write_atomic(folder / 'result.png', result)
+        validate_png(folder / 'result.png')
+        self.update(job['id'], 'generated', '후처리 완료 · 페이스팩 저장 중', str(folder / 'result.png'))
+        with self.db:
+            self.setmeta('latest_result', json.dumps({'id': job['id'], 'artifact': str(folder / 'result.png'), 'name': name,
+                         'club_name': rendering['club_name'], 'created': time.time()}, ensure_ascii=False))
 
     def job_options(self, job_id):
         record = self.db.execute("SELECT options FROM job_custom WHERE job_id=?", (job_id,)).fetchone()
@@ -995,10 +1047,14 @@ class Engine:
             return job
         return None
 
-    def run_one(self, runner=subprocess.run, save_gated=False, job_id=None):
+    def run_one(self, runner=None, save_gated=False, job_id=None, cancel_event=None, on_change=None):
+        self.last_job_id = None
+        if cancel_event is not None and cancel_event.is_set():
+            return False
         # Resume a fully rendered image after a crash without buying another image.
         ready = self.db.execute("SELECT id FROM jobs WHERE status='generated' AND (? IS NULL OR id=?) ORDER BY id LIMIT 1", (job_id, job_id)).fetchone()
         if ready:
+            self.last_job_id = ready[0]
             try:
                 self.apply(ready[0])
             except SaveBusyError:
@@ -1006,7 +1062,7 @@ class Engine:
                 return False
             except Exception as exc:
                 current = self.db.execute("SELECT status FROM jobs WHERE id=?", (ready[0],)).fetchone()[0]
-                if current != "superseded":
+                if current in ("generated", "apply_failed"):
                     self.update(ready[0], "apply_failed", "이미지는 보관됨. 저장 재시도 필요: " + str(exc))
             return True
         if not self.db.execute("SELECT 1 FROM jobs WHERE status='pending' AND (? IS NULL OR id=?) LIMIT 1", (job_id, job_id)).fetchone():
@@ -1017,6 +1073,7 @@ class Engine:
         if job is None:
             return False
         jid, row = job["id"], json.loads(job["data"])
+        self.last_job_id = jid
         current = self.db.execute("SELECT data FROM people WHERE id=?", (row["id"],)).fetchone()
         if current:
             row.update(json.loads(current[0]))
@@ -1051,6 +1108,7 @@ class Engine:
         row.pop("preflight_blocked", None)
         row["face_target"] = face_target
         row["kit_reference"] = str(kit)
+        row['kit_variant'] = player_kit_variant(self.c, row)
         row['portrait_reference'] = str(portrait) if portrait else ''
         row['face_reference'] = 'local' if portrait else 'web'
         with self.db:
@@ -1079,6 +1137,8 @@ class Engine:
         started = time.time()
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
+            if cancel_event is not None and cancel_event.is_set():
+                return False
             if job_id is None and self.meta("queue_revision") != queue_revision:
                 return False
             custom = self.db.execute("SELECT editing FROM job_custom WHERE job_id=?", (jid,)).fetchone()
@@ -1090,26 +1150,35 @@ class Engine:
             self.db.execute("INSERT INTO attempts VALUES (?,?)", (started, jid))
         try:
             with open(folder / "events.jsonl", "w", encoding="utf-8") as out, open(folder / "stderr.log", "w", encoding="utf-8") as err:
-                result = runner(cmd, input=prompt, text=True, encoding="utf-8", stdout=out, stderr=err,
-                                timeout=self.c["timeout_seconds"], shell=False)
+                def heartbeat():
+                    self.pump_live_refresh()
+                    try:
+                        if time.time() - Path(self.c['source']).stat().st_mtime < 3:
+                            return
+                        before = self.meta('source_stamp')
+                        added = self.refresh()
+                    except PastSaveError:
+                        raise
+                    except Exception:
+                        return  # A save being written must not cancel a paid generation.
+                    if on_change and before != self.meta('source_stamp'):
+                        on_change(added, json.loads(self.meta('detection_summary') or 'null'))
+                execute = runner or run_codex
+                extra = {'cancel_event': cancel_event, 'heartbeat': heartbeat} if execute is run_codex else {}
+                result = execute(cmd, input=prompt, text=True, encoding="utf-8", stdout=out, stderr=err,
+                                 timeout=self.c['timeout_seconds'], shell=False, **extra)
             if result.returncode:
                 raise ValueError(f"Codex 종료 코드 {result.returncode}. 작업 폴더의 stderr.log를 확인하세요.")
+            current = self.db.execute('SELECT status FROM jobs WHERE id=?', (jid,)).fetchone()[0]
+            if current != 'running':
+                return True  # Preserve superseded/deleted state even for an unavailable reply.
             reply = read_json(folder / "reply.json")
             if reply.get("status") != "generated":
                 self.update(jid, "blocked", str(reply.get("reason", "이미지 생성 도구 사용 불가")))
                 return True
             if portrait is None:
                 try:
-                    origin = read_json(folder / 'face-source.json')
-                    if not isinstance(origin, dict) or not isinstance(origin.get('verified_name'), str) or not origin['verified_name'].strip():
-                        raise ValueError('identity missing')
-                    for key in ('source_url', 'image_url'):
-                        parsed = urlsplit(origin[key])
-                        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
-                            raise ValueError('invalid source URL')
-                    if (folder / 'original.png').is_symlink():
-                        raise ValueError('invalid reference')
-                    reference_png(folder / 'original.png')
+                    self.validate_web_face(folder)
                 except Exception:
                     self.update(jid, 'blocked', '웹에서 찾은 얼굴 사진과 출처를 확인하지 못했습니다. 원본 사진을 추가한 뒤 재시도하세요.')
                     return True
@@ -1120,24 +1189,35 @@ class Engine:
             options["name_source"] = "game_or_user" if request_options(self.c, row, job_options)["display_name"] else "codex_romanized"
             write_atomic(folder / "request.json", json.dumps(options, ensure_ascii=False, indent=2).encode("utf-8"))
             validate_png(folder / "portrait.png", final=False)
-            # Preserve the paid result BEFORE the mandatory fresh-save/identity check in apply().
-            final = render_gunzo(folder / "portrait.png", options["display_name"], self.c["name_font_path"], self.c["frame_template"], **caption_options(self.c))
-            write_atomic(folder / "result.png", final)
-            validate_png(folder / "result.png")
-            self.update(jid, "generated", "350×350 건조폼·하단 이름 완성. 세이브 확인 후 PNG와 config.xml 저장 중.", str(folder / "result.png"))
+            # Receipt and raw image are durable before any local rendering.
             with self.db:
-                self.setmeta("latest_result", json.dumps({"id": jid, "artifact": str(folder / "result.png"),
-                    "name": options["display_name"], "club_name": rendering["club_name"], "created": time.time()}, ensure_ascii=False))
+                self.db.execute('INSERT OR REPLACE INTO paid_results VALUES (?,?,?)', (jid, str(folder), json.dumps(options, ensure_ascii=False)))
+                claimed = self.db.execute("UPDATE jobs SET status='generated',note='합성 원본 보관 · 후처리·저장 중' WHERE id=? AND status='running'", (jid,))
+            if not claimed.rowcount:
+                return True  # A newer save superseded this result during generation.
+            if cancel_event is not None and cancel_event.is_set():
+                raise GenerationCancelled()
             try:
+                self.render_paid_result(self.db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
+                if cancel_event is not None and cancel_event.is_set():
+                    raise GenerationCancelled()
                 self.apply(jid)
             except SaveBusyError:
                 self.update(jid, "generated", "세이브 저장 중 · 합성 결과 보관, 저장 완료 후 추가 AI 호출 없이 자동 적용")
+            except (GenerationCancelled, PastSaveError):
+                raise
             except Exception as exc:
                 current = self.db.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()[0]
-                if current != "superseded":
-                    self.update(jid, "apply_failed", "이미지는 보관됨. 저장 재시도 필요: " + str(exc))
+                if current in ('generated', 'apply_failed'):
+                    self.update(jid, 'apply_failed', '합성 원본 보관 · 후처리·저장 재시도: ' + str(exc))
+        except (GenerationCancelled, PastSaveError) as exc:
+            with self.db:
+                self.db.execute("UPDATE jobs SET status='interrupted',note='사용자 중단 · 재시도/다시 시작 전까지 정지' WHERE id=? AND status IN ('running','generated')", (jid,))
+            if isinstance(exc, PastSaveError):
+                raise
         except Exception as exc:
-            self.update(jid, "failed", str(exc))
+            with self.db:
+                self.db.execute("UPDATE jobs SET status='failed',note=? WHERE id=? AND status NOT IN ('superseded','deleted','applied')", (str(exc), jid))
         return True
 
     def block_preflight(self, jid, row, note):
@@ -1248,7 +1328,10 @@ class Engine:
         if not self.latest(row):
             self.update(job_id, "superseded", "적용 전 소속/범위 변경")
             raise ValueError("현재 소속/범위와 맞지 않는 결과입니다.")
-        validate_png(job["artifact"])
+        if not job['artifact'] or not Path(job['artifact']).is_file():
+            self.render_paid_result(job)
+        job = self.db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+        validate_png(job['artifact'])
         self.check_pack(row["id"])
         pack = Path(self.c["pack_dir"])
         pack.mkdir(parents=True, exist_ok=True)

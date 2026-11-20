@@ -9,6 +9,7 @@ TEXT = "#28252F"
 MUTED = "#625F6A"
 PURPLE = "#633078"
 PURPLE_HOVER = "#512563"
+PURPLE_DISABLED = "#9987A1"
 BORDER = "#ADB0BA"
 SELECTED = "#DED2E5"
 HOVER = "#D7D8DF"
@@ -41,10 +42,10 @@ def apply_theme(window, family):
     style.configure("TButton", padding=(13, 9), background=PURPLE, foreground=BUTTON_TEXT, bordercolor=PURPLE, relief="flat")
     style.configure("Compact.TButton", padding=(11, 5))
     style.configure("Badge.TLabel", background=SELECTED, foreground=PURPLE, padding=(12, 7), font=(family, 10, "bold"))
-    style.map("TButton", background=[("disabled", PURPLE), ("pressed", PURPLE_HOVER), ("active", PURPLE_HOVER)],
+    style.map("TButton", background=[("disabled", PURPLE_DISABLED), ("pressed", PURPLE_HOVER), ("active", PURPLE_HOVER)],
               foreground=[("disabled", BUTTON_TEXT), ("!disabled", BUTTON_TEXT)], bordercolor=[("focus", PURPLE_HOVER), ("active", PURPLE_HOVER)])
     style.configure("Primary.TButton", background=PURPLE, foreground=BUTTON_TEXT, bordercolor=PURPLE_HOVER, borderwidth=2, relief="solid")
-    style.map("Primary.TButton", background=[("disabled", PURPLE), ("pressed", PURPLE_HOVER), ("active", PURPLE_HOVER)],
+    style.map("Primary.TButton", background=[("disabled", PURPLE_DISABLED), ("pressed", PURPLE_HOVER), ("active", PURPLE_HOVER)],
               foreground=[("disabled", BUTTON_TEXT), ("!disabled", BUTTON_TEXT)],
               bordercolor=[("disabled", PURPLE_HOVER), ("!disabled", PURPLE_HOVER)])
     style.configure("Title.TLabel", font=(family, 22, "bold"))
