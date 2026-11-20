@@ -36,6 +36,12 @@ class AssetError(ValueError):
         self.candidates = tuple(candidates)
 
 
+class MissingFaceError(AssetError):
+    def __init__(self, message, target):
+        super().__init__(message)
+        self.target = target
+
+
 def _under(path, root):
     return path == root or path.is_relative_to(root)
 
@@ -223,14 +229,17 @@ class AssetCatalog:
         key = ("r-" if regen else "") + pid
         # An existing r- mapping is positive evidence; never infer from ID size.
         regen_key = "r-" + pid
-        regen_evidence = self.faces.get(regen_key) or (self.direct.get(regen_key) and not self.direct.get(pid) and regen_key not in self.missing_faces)
+        regen_evidence = regen_key in self.faces or regen_key in self.missing_faces or (self.direct.get(regen_key) and not self.direct.get(pid))
         if not regen and pid not in self.missing_faces and not self.faces.get(pid) and regen_evidence:
             key = "r-" + pid
         if key in self.faces:
-            return self._choose(self.faces[key], f"선수 {key}"), key
-        if key in self.missing_faces:
-            raise AssetError(f"선수 {key}: config.xml은 있지만 원본 이미지가 없습니다.")
-        paths = self.direct.get(key, set()) or self.direct.get(pid, set())
+            paths = self.faces[key]
+        elif key in self.missing_faces:
+            raise MissingFaceError(f"선수 {key}: config.xml은 있지만 원본 이미지가 없습니다.", key)
+        else:
+            paths = self.direct.get(key, set()) or self.direct.get(pid, set())
+        if not any(path.is_file() for path in paths):
+            raise MissingFaceError(f"선수 {key}: 연결된 이미지 파일이 없습니다.", key)
         return self._choose(paths, f"선수 {key}"), key
 
     def kit(self, club_id, variant="home"):

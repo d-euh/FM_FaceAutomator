@@ -17,7 +17,7 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from engine import DEFAULTS, WATCH_POLL_SECONDS, Engine, PastSaveError, detection_messages, load_config, player_kit_variant, process_lock, read_source, write_atomic
+from engine import DEFAULTS, WATCH_POLL_SECONDS, Engine, PastSaveError, detection_messages, load_config, player_kit_variant, portrait_player, process_lock, read_source, write_atomic
 from workspaces import select_workspace
 from assets import AssetCatalog, AssetError, reference_png, source_exclusions
 from discovery import discover_defaults
@@ -28,6 +28,7 @@ from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, PURPLE,
 from diagnostics import APP_VERSION, export_bundle
 from codex_login import STATUS_TEXT, browser_login, login_status, resolve_codex
 from player_catalog import find_players
+from manual_ui import ManualPanel
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
@@ -40,6 +41,8 @@ class App:
         self.events = queue.Queue()
         self.stop = threading.Event()
         self.thread = None
+        self.watching = False
+        self.request_thread = None
         self.auth_thread = None
         self.auth_logging_in = False
         self.auth_cancel = threading.Event()
@@ -62,6 +65,7 @@ class App:
         self.queue_buttons = {}
         self.queue_drag = None
         self.player_search_token = 0
+        self.manual_search_token = 0
         self.manual_refresh_requested = False
         self.status = tk.StringVar(value="경로와 범위를 확인하고 감시를 시작하세요.")
         self.scope_summary = tk.StringVar(value="내가 맡은 구단만 · 방출·영입 모두")
@@ -81,14 +85,16 @@ class App:
         self.tabs = ttk.Notebook(window)
         self.tabs.pack(fill="both", expand=True, padx=20)
         self.home_tab, home = self.page(scroll=True)
+        self.manual_tab, manual = self.page(scroll=True)
         self.scope_tab, scope = self.page(scroll=True)
         self.jobs_tab, jobs = self.page()
-        self.settings_tab, settings = self.page(scroll=True)
         self.prompts_tab, prompts = self.page(scroll=True)
-        for host, label in ((self.home_tab, "홈"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.settings_tab, "폴더 · 연결"), (self.prompts_tab, "커스텀 지시")):
+        for host, label in ((self.home_tab, "홈"), (self.manual_tab, "직접 생성"), (self.scope_tab, "생성 범위"), (self.jobs_tab, "작업 대기열"), (self.prompts_tab, "커스텀 지시")):
             self.tabs.add(host, text=label)
+        ttk.Button(header, text="폴더 · 연결", command=self.open_settings).pack(side='right')
         ttk.Label(header, text="v" + APP_VERSION, style="Badge.TLabel").pack(side="right", padx=12)
         self.build_home(home)
+        self.manual_panel = ManualPanel(manual, self.search_manual_players, self.scan, self.request_manual)
         self.scope_panel = ScopePanel(scope, self.vars, self.save, self.scan, self.update_scope_summary,
                                       self.open_advanced, self.search_scope_players, self.enqueue)
         self.advanced_window = tk.Toplevel(window)
@@ -102,6 +108,16 @@ class App:
         advanced_host, advanced = self.page(scroll=True, parent=self.advanced_window)
         advanced_host.pack(fill="both", expand=True)
         self.advanced_panel = AdvancedPanel(advanced, self.vars, self.save, self.advanced_window.withdraw)
+        self.settings_window = tk.Toplevel(window)
+        self.settings_window.withdraw()
+        self.settings_window.title('폴더 · 연결 · FM Face Automator')
+        self.settings_window.transient(window)
+        self.settings_window.geometry('1180x760')
+        self.settings_window.minsize(1060, 600)
+        self.settings_window.protocol('WM_DELETE_WINDOW', self.settings_window.withdraw)
+        self.settings_window.bind('<Escape>', lambda event: self.settings_window.withdraw())
+        settings_host, settings = self.page(scroll=True, parent=self.settings_window)
+        settings_host.pack(fill='both', expand=True)
         settings.columnconfigure(1, weight=1)
         self.fields(settings)
         self.prompt_fields(prompts)
@@ -162,6 +178,11 @@ class App:
         self.advanced_window.deiconify()
         self.advanced_window.lift()
         self.advanced_window.focus_set()
+
+    def open_settings(self):
+        self.settings_window.deiconify()
+        self.settings_window.lift()
+        self.settings_window.focus_set()
 
     def toggle_log(self):
         if self.log.winfo_manager():
@@ -264,6 +285,7 @@ class App:
             self.catalog_key = catalog_key
             self.scope_panel.set_catalog(json.loads(engine.meta("club_catalog") or "[]"),
                                          json.loads(engine.meta("managed") or "[]"), json.loads(engine.meta("league_status") or "{}"))
+            self.manual_panel.set_catalog(json.loads(engine.meta('club_catalog') or '[]'), self.config['state_dir'])
         state = self.config["state_dir"]
         selected = self.recent_results[self.recent_index]["id"] if self.recent_results and self.recent_index else None
         if state != self.recent_state:
@@ -361,10 +383,23 @@ class App:
         self.vars["live_refresh_enabled"] = tk.BooleanVar()
         ttk.Checkbutton(parent, text="생성 후 자동 새로고침", variable=self.vars["live_refresh_enabled"],
                         style="Card.TCheckbutton").grid(row=15, column=0, columnspan=3, sticky="w", pady=(22, 8))
-        support = ttk.Frame(parent, style="Card.TFrame")
-        support.grid(row=17, column=0, columnspan=3, sticky="w", pady=(16, 0))
-        for label, callback in (("문제 진단 저장", self.export_diagnostics), ("선수 목록 저장", self.export), ("백업 복원", self.restore)):
-            ttk.Button(support, text=label, command=callback).pack(side="left", padx=(0, 8))
+        self.support_toggle = ttk.Button(parent, text='문제 해결 펼치기', command=self.toggle_support)
+        self.support_toggle.grid(row=17, column=0, columnspan=3, sticky='w', pady=(16, 0))
+        self.support_frame = ttk.Frame(parent, style='Card.TFrame')
+        for index, (label, callback, explanation) in enumerate((
+                ('문제 진단 저장', self.export_diagnostics, '오류 분석용 작업 상태와 게임 갱신 보고서 저장'),
+                ('선수 목록 저장', self.export, '현재 세이브의 선수·구단 ID 목록을 CSV로 저장'),
+                ('백업 복원', self.restore, '선택 작업의 페이스온·config.xml 매핑 복원'))):
+            ttk.Button(self.support_frame, text=label, command=callback).grid(row=index, column=0, sticky='w', pady=4)
+            ttk.Label(self.support_frame, text=explanation, style='CardMuted.TLabel').grid(row=index, column=1, sticky='w', padx=16)
+
+    def toggle_support(self):
+        if self.support_frame.winfo_manager():
+            self.support_frame.grid_remove()
+            self.support_toggle.configure(text='문제 해결 펼치기')
+        else:
+            self.support_frame.grid(row=18, column=0, columnspan=3, sticky='ew', pady=(8, 0))
+            self.support_toggle.configure(text='문제 해결 접기')
 
     def name_style_fields(self, parent):
         panel = ttk.Frame(parent, style="Card.TFrame", padding=(0, 10))
@@ -618,8 +653,11 @@ class App:
     def active(self):
         return self.thread is not None and self.thread.is_alive()
 
+    def request_active(self):
+        return self.request_thread is not None and self.request_thread.is_alive()
+
     def save(self):
-        if self.active():
+        if self.active() or self.request_active():
             messagebox.showinfo("설정", "현재 작업 후 정지한 다음 설정을 저장하세요.")
             return False
         try:
@@ -665,14 +703,15 @@ class App:
             messagebox.showerror("설정 오류", str(exc))
             return False
 
-    def background(self, task):
+    def background(self, task, watching=False):
         if self.auth_active() and self.auth_logging_in:
             self.status.set("ChatGPT 로그인이 끝난 뒤 실행하세요.")
             return
-        if self.active() or not self.save():
+        if self.active() or self.request_active() or not self.save():
             return
         self.stop.clear()
         config = dict(self.config)
+        self.watching = watching
         def run():
             engine = None
             try:
@@ -714,6 +753,44 @@ class App:
             e.ingest(read_source(e.c))
             self.events.put(f"현재 범위에서 {e.enqueue_current()}개 작업 추가")
         self.background(task)
+
+    def request_manual(self, player_id, club_id, instructions, identity):
+        if self.request_active() or (self.active() and (not self.watching or self.stop.is_set())):
+            self.status.set('현재 작업이 끝난 뒤 생성 요청을 다시 누르세요.')
+            return
+        if self.auth_active() and self.auth_logging_in:
+            self.status.set('ChatGPT 로그인이 끝난 뒤 생성 요청을 누르세요.')
+            return
+        workspace = self.manual_panel.workspace
+        actual_club = self.manual_panel.player['club_id'] if self.manual_panel.player else None
+        def enqueue(engine):
+            if engine.c['state_dir'] != workspace:
+                raise ValueError('연결된 세이브가 바뀌었습니다. 선수를 다시 선택하세요.')
+            jid = engine.enqueue_manual(player_id, club_id, instructions, identity, expected_club_id=actual_club)
+            self.events.put({'manual_job': jid, 'workspace_id': workspace})
+            self.events.put(f'직접 생성 요청 · 작업 {jid} 추가')
+            return jid
+        if self.active():
+            config = dict(self.config)
+            def queue_request():
+                engine = None
+                try:
+                    engine = Engine(config)
+                    enqueue(engine)
+                except Exception as exc:
+                    self.events.put(f'직접 생성 요청 실패: {exc}')
+                finally:
+                    if engine:
+                        engine.close()
+            self.request_thread = threading.Thread(target=queue_request, daemon=True)
+            self.request_thread.start()
+        else:
+            def task(engine):
+                engine.refresh()
+                jid = enqueue(engine)
+                engine.run_one(job_id=jid)
+                self.events.put('직접 생성 작업 처리 · 대기열에서 결과를 확인하세요.')
+            self.background(task)
 
     def start(self):
         if self.auth_active() and self.auth_logging_in:
@@ -763,7 +840,7 @@ class App:
                 except Exception as exc:
                     self.events.put(f"점검 보류: {exc}")
                 self.stop.wait(WATCH_POLL_SECONDS)
-        self.background(task)
+        self.background(task, watching=True)
 
     def pause(self):
         self.start_after_discovery = False
@@ -810,6 +887,19 @@ class App:
             except Exception:
                 available, selected, note = [], [], '선수 목록을 불러오지 못했습니다.'
             self.events.put({'players': token, 'database': database, 'available': available, 'selected': selected, 'note': note})
+        threading.Thread(target=search, daemon=True).start()
+
+    def search_manual_players(self, query, ids):
+        self.manual_search_token += 1
+        token = self.manual_search_token
+        database = str(Path(self.config['state_dir']) / 'queue.sqlite')
+        def search():
+            try:
+                available, selected = find_players(database, query, ids)
+                note = None
+            except Exception:
+                available, selected, note = [], [], '선수 목록을 불러오지 못했습니다.'
+            self.events.put({'manual_players': token, 'database': database, 'available': available, 'selected': selected, 'note': note})
         threading.Thread(target=search, daemon=True).start()
 
     def select(self, event=None):
@@ -1028,7 +1118,7 @@ class App:
             job = e.db.execute("SELECT data,status FROM jobs WHERE id=?", (jid,)).fetchone()
             if not job:
                 return
-            player = json.loads(job["data"])
+            player = portrait_player(json.loads(job["data"]))
             if job["status"] not in ("pending", "blocked", "failed", "interrupted"):
                 messagebox.showinfo("유니폼 선택", "대기·보류·실패·중단 작업에서 선택하세요. 완성된 이미지는 이 선택으로 바뀌지 않습니다.")
                 return
@@ -1197,7 +1287,7 @@ class App:
         editor.transient(self.window)
         frame = ttk.Frame(editor, padding=18)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text=f'{player["name"]} · {player["club_name"]}', style="Section.TLabel").pack(anchor="w", pady=(0, 14))
+        ttk.Label(frame, text=f'{player["name"]} · {portrait_player(player)["club_name"]}', style="Section.TLabel").pack(anchor="w", pady=(0, 14))
         ttk.Label(frame, text="하단 영문 이름 · 비워두면 자동").pack(anchor="w")
         name = tk.StringVar(value=options.get("display_name", ""))
         ttk.Entry(frame, textvariable=name).pack(fill="x", pady=(6, 14))
@@ -1289,12 +1379,14 @@ class App:
             self.job_records[job["id"]] = job
             row = json.loads(job["data"])
             movement = row["club_name"]
-            if row.get("from_club_id") and row["from_club_id"] != row["club_id"]:
+            if row.get('manual_request'):
+                movement = '직접 생성 · ' + row['requested_club_name']
+            elif row.get("from_club_id") and row["from_club_id"] != row["club_id"]:
                 source = self.scope_panel.catalog.get(row["from_club_id"], {})
                 destination = self.scope_panel.catalog.get(row["club_id"], {})
                 movement = (source.get("short_name") or row.get("from_club_name") or row["from_club_id"]) + " → " + (destination.get("short_name") or row["club_name"])
             if job["status"] in ("pending", "blocked", "failed", "interrupted"):
-                choices[f'{row["name"]} · {row["club_name"]} · 작업 {job["id"]}'] = job["id"]
+                choices[f'{row["name"]} · {portrait_player(row)["club_name"]} · 작업 {job["id"]}'] = job["id"]
             status = "지시 편집 중" if job["editing"] else labels.get(job["status"], job["status"])
             note = "생성 완료" if job["status"] == "applied" else (
                 ("개별 지시 · " if job["has_custom"] else "") +
@@ -1314,6 +1406,14 @@ class App:
     def drain(self):
         while not self.events.empty():
             text = self.events.get()
+            if isinstance(text, dict) and 'manual_job' in text:
+                if text['workspace_id'] == self.config['state_dir']:
+                    self.tabs.select(self.jobs_tab)
+                continue
+            if isinstance(text, dict) and 'manual_players' in text:
+                if text['manual_players'] == self.manual_search_token and text['database'] == str(Path(self.config['state_dir']) / 'queue.sqlite'):
+                    self.manual_panel.set_players(text['available'], text['selected'], text['note'])
+                continue
             if isinstance(text, dict) and "players" in text:
                 if text['players'] == self.player_search_token and text['database'] == str(Path(self.config['state_dir']) / 'queue.sqlite'):
                     self.scope_panel.set_players(text['available'], text['selected'])
@@ -1337,6 +1437,8 @@ class App:
             self.log.see("end")
             self.log.configure(state="disabled")
         self.login_button.configure(state="disabled" if self.active() or self.auth_active() else "normal")
+        self.manual_panel.set_available(not self.request_active() and not (self.auth_active() and self.auth_logging_in) and
+                                        (not self.active() or (self.watching and not self.stop.is_set())))
         database = Path(self.config["state_dir"]) / "queue.sqlite"
         if database.exists():
             engine = None
@@ -1366,13 +1468,14 @@ class App:
             if self.catalog_key is not None:
                 self.catalog_key = None
                 self.scope_panel.set_catalog([], [], {})
+                self.manual_panel.set_catalog([], self.config['state_dir'])
         self.window.after(1500, self.drain)
 
     def close(self):
         self.cancel_queue_drag()
         self.discovery_stop.set()
         self.auth_cancel.set()
-        if self.active() or self.auth_active():
+        if self.active() or self.auth_active() or self.request_active():
             if self.active():
                 self.pause()
             self.status.set("종료 대기 · 현재 작업과 로그인 창을 정리한 뒤 닫습니다.")
@@ -1381,7 +1484,7 @@ class App:
             self.window.destroy()
 
     def finish_close(self):
-        if self.active() or self.auth_active():
+        if self.active() or self.auth_active() or self.request_active():
             self.window.after(500, self.finish_close)
         else:
             self.window.destroy()

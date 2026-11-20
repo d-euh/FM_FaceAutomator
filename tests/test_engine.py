@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from PIL import Image, ImageChops, ImageFont
 from engine import DEFAULTS, Engine, LEGACY_STYLE, build_prompt, detection_messages, game_english_name, goalkeeper_role, in_scope, latin_name, load_config, normalise, process_lock, read_source, request_options, validate_png, write_atomic
 from gunzo import BUNDLED_FONTS, LAYOUT, bundled_font_path, default_font_path, name_font, render_gunzo
+from assets import reference_png
 from scope_rules import DEFAULT_SCOPE
 from engine import SAVE_BUSY_NOTES, SaveBusyError
 
@@ -534,6 +535,190 @@ class EngineTests(unittest.TestCase):
         self.e.run_one(forbidden)
         self.assertEqual(self.e.jobs()[0]["status"], "blocked")
         self.assertEqual(self.e.db.execute("SELECT count(*) FROM attempts").fetchone()[0], 0)
+
+    def test_manual_generation_outside_scope_uses_requested_club_and_maps_same_player(self):
+        self.source(snapshot())
+        self.e.refresh()
+        self.refs()
+        self.c.update(all_players=False, my_club_only=True, exclude_player_ids=['900001'], max_age=1)
+        # The target club can be different from the actual club, but must be in the save catalog.
+        with self.e.db:
+            self.e.setmeta('club_catalog', json.dumps([{'id':'10','name':'Club 10'}, {'id':'20','name':'Arsenal'}]))
+        jid = self.e.enqueue_manual('900001', '20', 'Laugh with arms raised')
+        def runner(cmd, **kwargs):
+            self.assertIn('Arsenal', kwargs['input'])
+            self.assertIn('Laugh with arms raised', kwargs['input'])
+            self.assertNotIn('Preserve the original hair', kwargs['input'])
+            self.assertEqual((Path(cmd[cmd.index('--cd')+1])/'kit.png').read_bytes(), reference_png(Path(self.c['kits_dir'])/'20.png'))
+            return self.good_runner(cmd, **kwargs)
+        self.assertTrue(self.e.run_one(runner, job_id=jid))
+        job = self.e.db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone()
+        self.assertEqual(job['status'], 'applied')
+        self.assertTrue((Path(self.c['pack_dir'])/'900001.png').is_file())
+        self.assertIn('person/900001/portrait', (Path(self.c['pack_dir'])/'config.xml').read_text())
+        self.assertEqual(json.loads(self.e.db.execute('SELECT data FROM people').fetchone()[0])['club_id'], '10')
+        self.assertEqual(self.e.recent_results()[0]['club_name'], 'Arsenal')
+
+    def test_manual_request_defaults_to_current_club_and_replaces_waiting_job(self):
+        self.transfer()
+        jid = self.e.enqueue_manual('900001')
+        jobs = {job['id']: job for job in self.e.jobs()}
+        self.assertEqual(jobs[1]['status'], 'superseded')
+        self.assertEqual(json.loads(jobs[jid]['data'])['requested_club_id'], '20')
+        self.assertEqual(self.e.next_job(time.time())['id'], jid)
+
+    def test_manual_request_rejects_unknown_identity_club_and_busy_work(self):
+        self.transfer()
+        for args in [('missing',), ('900001','missing')]:
+            with self.assertRaises(ValueError):
+                self.e.enqueue_manual(*args)
+        with self.assertRaises(ValueError):
+            self.e.enqueue_manual('900001', expected_identity='different')
+        for status in ('running','generated','apply_failed'):
+            self.e.update(1, status)
+            with self.assertRaises(ValueError):
+                self.e.enqueue_manual('900001')
+        self.e.update(1, 'pending')
+        self.e.begin_job_edit(1)
+        with self.assertRaises(ValueError):
+            self.e.enqueue_manual('900001')
+        self.assertEqual(len(self.e.jobs()), 1)
+
+    def test_manual_request_skips_save_cadence_but_obeys_usage_limit(self):
+        self.transfer()
+        jid = self.e.enqueue_manual('900001')
+        with self.e.db:
+            self.e.setmeta('save_updates_pending', 1)
+        self.assertEqual(self.e.next_job(time.time(), save_gated=True)['id'], jid)
+        self.c['daily_limit'] = 1
+        with self.e.db:
+            self.e.db.execute('INSERT INTO attempts VALUES (?,?)', (time.time(),1))
+        self.assertIsNone(self.e.next_job(time.time(), save_gated=True))
+
+    def test_manual_request_transfer_during_generation_prevents_stale_apply(self):
+        self.transfer()
+        self.refs()
+        jid = self.e.enqueue_manual('900001')
+        def moved(cmd, **kwargs):
+            result = self.good_runner(cmd, **kwargs)
+            self.source(snapshot('30', date='2027-07-03'))
+            return result
+        self.e.run_one(moved, job_id=jid)
+        self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?', (jid,)).fetchone()[0], 'superseded')
+        self.assertFalse((Path(self.c['pack_dir'])/'900001.png').exists())
+
+    def test_missing_face_enables_live_search_with_only_jersey_attachment(self):
+        self.transfer()
+        self.refs()
+        (Path(self.c['portraits_dir'])/'900001.png').unlink()
+        def searched(cmd, **kwargs):
+            self.assertIn('--search',cmd)
+            self.assertEqual(cmd.count('--image'),1)
+            folder = Path(cmd[cmd.index('--cd')+1])
+            self.assertFalse((folder/'original.png').exists())
+            self.assertIn('NOT a face reference',kwargs['input'])
+            self.assertIn('live web search',kwargs['input'])
+            self.assertNotIn('Preserve the original hair',kwargs['input'])
+            Image.new('RGB',(300,400),'gray').save(folder/'original.png')
+            (folder/'face-source.json').write_text(json.dumps({'verified_name':'Player', 'source_url':'https://club.example/player', 'image_url':'https://club.example/photo.png'}))
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(searched)
+        self.assertEqual(self.e.jobs()[0]['status'], 'applied')
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
+
+    def test_web_face_without_verified_reference_or_source_cannot_apply(self):
+        self.transfer()
+        self.refs()
+        (Path(self.c['portraits_dir'])/'900001.png').unlink()
+        self.e.run_one(self.good_runner)
+        self.assertEqual(self.e.jobs()[0]['status'], 'blocked')
+        self.assertIn('출처',self.e.jobs()[0]['note'])
+        self.assertFalse((Path(self.c['pack_dir'])/'900001.png').exists())
+        self.e.retry_preflight()
+        self.assertEqual(self.e.jobs()[0]['status'], 'blocked')
+
+    def test_existing_local_face_does_not_enable_web_search(self):
+        self.transfer()
+        self.refs()
+        def local(cmd, **kwargs):
+            self.assertNotIn('--search',cmd)
+            self.assertEqual(cmd.count('--image'),2)
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(local)
+        self.assertEqual(self.e.jobs()[0]['status'], 'applied')
+
+    def test_newgen_missing_face_cannot_search_for_unrelated_real_person(self):
+        self.transfer()
+        self.refs()
+        (Path(self.c['portraits_dir'])/'900001.png').unlink()
+        (Path(self.c['portraits_dir'])/'config.xml').write_text('<record><record from="missing" to="graphics/pictures/person/r-900001/portrait"/></record>')
+        self.e.run_one(lambda *a, **k: self.fail('Must not search for a real face for a newgen'))
+        self.assertEqual(self.e.jobs()[0]['status'], 'blocked')
+        self.assertIn('생성선수',self.e.jobs()[0]['note'])
+
+    def test_ambiguous_local_faces_never_silently_fall_back_to_web(self):
+        self.transfer()
+        self.refs()
+        root = Path(self.c['portraits_dir'])
+        (root/'duplicate').mkdir()
+        Image.new('RGB',(256,256)).save(root/'duplicate'/'900001.png')
+        self.e.run_one(lambda *a, **k: self.fail('Ambiguity is not absence'))
+        self.assertIn('겹칩니다',self.e.jobs()[0]['note'])
+
+    def test_manual_request_added_during_preflight_cancels_old_candidate(self):
+        self.transfer()
+        self.refs()
+        original = self.e.kit_reference
+        def replace(club, row):
+            self.e.enqueue_manual('900001')
+            return original(club, row)
+        with patch.object(self.e,'kit_reference',side_effect=replace):
+            self.assertFalse(self.e.run_one(lambda *a, **k: self.fail('Must not charge superseded candidate')))
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
+        self.assertEqual(self.e.jobs()[-1]['status'],'superseded')
+
+    def test_manual_identity_reuse_does_not_apply_to_a_different_person(self):
+        self.transfer()
+        jid = self.e.enqueue_manual('900001')
+        row = json.loads(self.e.db.execute('SELECT data FROM jobs WHERE id=?',(jid,)).fetchone()[0])
+        self.e.ingest(snapshot('20',identity=999,date='2027-07-03'))
+        self.assertFalse(self.e.latest(row))
+
+    def test_manual_request_rejects_an_outdated_current_club_selection(self):
+        self.transfer()
+        identity = snapshot()['players'][0]['identity']
+        with self.assertRaisesRegex(ValueError, '소속이 바뀌었습니다'):
+            self.e.enqueue_manual('900001','10',expected_identity=identity,expected_club_id='10')
+        self.assertEqual(len(self.e.jobs()),1)
+
+    def test_missing_face_folder_can_request_search_when_kit_exists(self):
+        self.transfer()
+        kits = Path(self.c['kits_dir'])
+        kits.mkdir()
+        Image.new('RGB',(256,256)).save(kits/'20.png')
+        def unavailable(cmd, **kwargs):
+            self.assertIn('--search',cmd)
+            folder = Path(cmd[cmd.index('--cd')+1])
+            (folder/'reply.json').write_text(json.dumps({'status':'unavailable','reason':'No verified photograph','english_name':''}))
+            return SimpleNamespace(returncode=0)
+        self.e.run_one(unavailable)
+        self.assertEqual(self.e.jobs()[0]['status'],'blocked')
+        self.e.retry_preflight()
+        self.assertEqual(self.e.jobs()[0]['status'],'blocked')
+        self.assertFalse(self.e.run_one(lambda *a, **k: self.fail('Failed web search cannot repeat automatically')))
+
+    def test_web_face_rejects_non_https_source_without_applying(self):
+        self.transfer()
+        self.refs()
+        (Path(self.c['portraits_dir'])/'900001.png').unlink()
+        def invalid_source(cmd, **kwargs):
+            folder = Path(cmd[cmd.index('--cd')+1])
+            Image.new('RGB',(300,400)).save(folder/'original.png')
+            (folder/'face-source.json').write_text(json.dumps({'verified_name':'Player','source_url':'file:///private','image_url':'https://example.com/photo.png'}))
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(invalid_source)
+        self.assertEqual(self.e.jobs()[0]['status'],'blocked')
+        self.assertFalse((Path(self.c['pack_dir'])/'config.xml').exists())
 
     def test_generation_apply_backup_restore(self):
         jid = self.transfer()

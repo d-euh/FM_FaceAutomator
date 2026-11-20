@@ -10,7 +10,7 @@ def find_players(database, query="", selected_ids=(), limit=150):
     database = Path(database)
     if not database.is_file():
         return [], []
-    columns = "id,json_extract(data,'$.name') AS name,json_extract(data,'$.english_name') AS english_name,json_extract(data,'$.club_name') AS club_name"
+    columns = "id,json_extract(data,'$.name') AS name,json_extract(data,'$.english_name') AS english_name,json_extract(data,'$.club_name') AS club_name,json_extract(data,'$.club_id') AS club_id,json_extract(data,'$.identity') AS identity"
     with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
         db.row_factory = sqlite3.Row
         db.create_function("casefold", 1, lambda text: str(text or "").casefold())
