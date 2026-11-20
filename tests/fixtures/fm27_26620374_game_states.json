@@ -2,6 +2,8 @@
   "source": "FM27 Steam 26620374 runtime report; public enum names only",
   "observed_flags": "None",
   "observed_state": "CanContinue",
+  "observed_inbox_flags": "Messages",
+  "observed_inbox_state": "Messages",
   "flag_values": [
     {
       "name": "None",

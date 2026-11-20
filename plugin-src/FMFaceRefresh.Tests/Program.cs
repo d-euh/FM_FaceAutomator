@@ -26,11 +26,11 @@ var definedFlags = reported.GetProperty("flag_values").EnumerateArray().Select(v
 var definedStates = reported.GetProperty("state_names").EnumerateArray().Select(v => v.GetString()!).ToArray();
 var observed = GameStatePolicy.Check(reported.GetProperty("observed_flags").GetString()!, reported.GetProperty("observed_state").GetString()!, definedFlags, definedStates);
 Check(observed.Idle, "Regression: the user's actual None / CanContinue state must be idle");
-foreach (var state in new[] { "CanContinue", "NeedAction", "NeedHumanManager" })
+foreach (var state in new[] { "CanContinue", "NeedAction", "NeedHumanManager", "Messages" })
     Check(GameStatePolicy.Check("NeedAction, NeedHumanManager", state, definedFlags, definedStates).Idle, "Verified user-action idle states must be accepted");
-foreach (var state in definedStates.Except(new[] { "CanContinue", "NeedAction", "NeedHumanManager" }))
+foreach (var state in definedStates.Except(new[] { "CanContinue", "NeedAction", "NeedHumanManager", "Messages" }))
     Check(!GameStatePolicy.Check("None", state, definedFlags, definedStates).Idle, "Busy state must stay blocked: " + state);
-foreach (var flag in definedFlags.Except(new[] { "None", "NeedAction", "NeedHumanManager" }))
+foreach (var flag in definedFlags.Except(new[] { "None", "NeedAction", "NeedHumanManager", "Messages" }))
     Check(!GameStatePolicy.Check(flag, "CanContinue", definedFlags, definedStates).Idle, "Busy flag must stay blocked: " + flag);
 Check(GameStatePolicy.Check("128", "CanContinue", definedFlags, definedStates).Reason == "unrecognized_game_state", "Unknown flags must fail closed");
 Check(GameStatePolicy.Check("None", "FutureUnknownState", definedFlags, definedStates).Reason == "unrecognized_game_state", "Unknown states must fail closed");
@@ -38,6 +38,15 @@ var reportedGame = new FakeGame { ReportedState = observed };
 var reportedController = new Controller(reportedGame, () => true, (_, _) => { });
 reportedController.Begin(0); reportedController.Tick(0); reportedController.Tick(2);
 Check(reportedGame.Scans == 1 && reportedController.Guarded, "The reported real idle state must reach a scan, not expire before starting");
+var inbox = GameStatePolicy.Check(reported.GetProperty("observed_inbox_flags").GetString()!, reported.GetProperty("observed_inbox_state").GetString()!, definedFlags, definedStates);
+Check(inbox.Idle, "Regression: the actual Messages / Messages inbox must not expire as game_busy");
+foreach (var flag in new[] { "Saving", "Processing", "Match", "Waiting" })
+    Check(!GameStatePolicy.Check("Messages, " + flag, "Messages", definedFlags, definedStates).Idle, "Inbox must not bypass an active busy flag: " + flag);
+var inboxGame = new FakeGame { ReportedState = inbox };
+var inboxResults = new List<string>();
+var inboxController = new Controller(inboxGame, () => true, (status, _) => inboxResults.Add(status));
+inboxController.Begin(0); inboxController.Tick(0); inboxController.Tick(2); inboxGame.Complete!(); inboxController.Tick(3);
+Check(inboxGame.Scans == 1 && inboxGame.Reloads == 1 && inboxResults.Single() == "refreshed", "Inbox refresh requires the same callback and reload evidence");
 var game = new FakeGame();
 var results = new List<string>();
 var current = true;
@@ -87,7 +96,36 @@ game = new FakeGame(); results.Clear();
 controller = new Controller(game, () => true, (s, r) => results.Add(s));
 controller.Begin(100, 1); controller.Tick(100); controller.Tick(102);
 Check(game.Scans == 0 && results.Single() == "failed", "Claiming an old queued request must not extend its original expiry");
-Console.WriteLine("PASS: selected-pack registration, D: paths/file URLs/UNC/boundaries, actual FM27 states, callbacks, execution evidence and guards.");
+// A Windows sharing violation on config.xml must not lose a paid/saved result or restart a native scan.
+game = new FakeGame(); results.Clear();
+var locked = true;
+controller = new Controller(game, () => locked ? throw new IOException("sharing violation") : true, (s, _) => results.Add(s));
+controller.Begin(0); controller.Tick(0); controller.Tick(10);
+Check(game.Scans == 0 && controller.Reason == "pack_read_in_progress" && !controller.Faulted, "Temporary config locks must wait");
+locked = false; controller.Tick(11); controller.Tick(13);
+locked = true; game.Complete!(); controller.Tick(14);
+Check(game.Scans == 1 && game.Reloads == 0 && controller.Guarded, "A scan callback survives a temporary config lock");
+locked = false; controller.Tick(15);
+Check(game.Scans == 1 && game.Reloads == 1 && results.Single() == "refreshed", "Unlocking resumes the completed scan without another native call");
+
+// Delivery failures retry only the immutable response, never the native operation.
+var mailbox = new Mailbox();
+game = new FakeGame();
+var deliveryLocked = true;
+var delivered = 0;
+controller = new Controller(game, () => true, (s, _) => {
+    Check(s == "refreshed", "Successful scan result must survive delivery errors");
+    mailbox.QueueReply(() => { if (deliveryLocked) throw new UnauthorizedAccessException(); delivered++; });
+});
+controller.Begin(0); controller.Tick(0); controller.Tick(2); game.Complete!(); controller.Tick(3);
+mailbox.FlushReply(); mailbox.FlushReply();
+Check(mailbox.HasReply && mailbox.Failures == 2 && !controller.Guarded && !controller.Faulted, "A response sharing conflict must not disable graphics refresh or hold Continue");
+Check(mailbox.Try("write_status", () => { }), "Unrelated successful status delivery remains usable");
+deliveryLocked = false; mailbox.FlushReply(); mailbox.FlushReply();
+Check(!mailbox.HasReply && delivered == 1 && game.Scans == 1 && game.Reloads == 1, "Send exactly one final response without re-running graphics work");
+try { mailbox.Try("test", () => throw new InvalidOperationException()); throw new Exception("Unexpected runtime error was swallowed"); }
+catch (InvalidOperationException) { }
+Console.WriteLine("PASS: selected-pack registration, actual idle/inbox states, busy guards, callbacks, config locks, response delivery and execution evidence.");
 
 sealed class FakeGame : IGraphicsRuntime
 {

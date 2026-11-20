@@ -3,8 +3,8 @@ namespace FMFaceRefresh;
 /// <summary>Names confirmed by the Steam 26620374 runtime report; no guessed FM26 names.</summary>
 public static class GameStatePolicy
 {
-    private static readonly HashSet<string> IdleFlags = new(StringComparer.Ordinal) { "None", "NeedAction", "NeedHumanManager" };
-    private static readonly HashSet<string> IdleStates = new(StringComparer.Ordinal) { "CanContinue", "NeedAction", "NeedHumanManager" };
+    private static readonly HashSet<string> IdleFlags = new(StringComparer.Ordinal) { "None", "NeedAction", "NeedHumanManager", "Messages" };
+    private static readonly HashSet<string> IdleStates = new(StringComparer.Ordinal) { "CanContinue", "NeedAction", "NeedHumanManager", "Messages" };
 
     public static FrameState Check(string flags, string state, IEnumerable<string> definedFlags, IEnumerable<string> definedStates)
     {

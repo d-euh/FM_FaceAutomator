@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>FMFaceRefresh</AssemblyName>
-    <Version>0.2.2</Version>
+    <Version>0.2.3</Version>
     <Deterministic>true</Deterministic>
     <BepInExCoreDir Condition="'$(BepInExCoreDir)' == ''">$(MSBuildThisFileDirectory)../../references/BepInEx/core</BepInExCoreDir>
   </PropertyGroup>

@@ -4,6 +4,7 @@
   <ItemGroup>
     <Compile Include="../FMFaceRefresh/GameStatePolicy.cs" Link="GameStatePolicy.cs" />
     <Compile Include="../FMFaceRefresh/GraphicsPaths.cs" Link="GraphicsPaths.cs" />
+    <Compile Include="../FMFaceRefresh/Mailbox.cs" Link="Mailbox.cs" />
     <None Include="../../tests/fixtures/fm27_26620374_game_states.json" Link="game-states.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

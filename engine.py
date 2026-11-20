@@ -1125,6 +1125,10 @@ class Engine:
     def _pump_live_refresh(self):
         try:
             previous = self.meta("live_refresh_pending") or "null"
+            previous_request = json.loads(previous)
+            root = live_refresh.bridge_root()
+            connected, _ = live_refresh.connection(root, time.time()) if root is not None else (None, "")
+            session = connected[1]["session"] if connected else None
             pending, message = live_refresh.pump(json.loads(previous))
             with self.db:
                 self.db.execute("BEGIN IMMEDIATE")
@@ -1132,8 +1136,18 @@ class Engine:
                 if (self.meta("live_refresh_pending") or "null") != previous:
                     return
                 self.setmeta("live_refresh_pending", json.dumps(pending))
-                terminal = (self.meta("live_refresh_status") or "").startswith(("게임 그래픽 갱신 처리 완료", "게임 갱신 실패", "게임 갱신 실행 안 됨", "게임 갱신 응답 시간 초과", "더 최신 페이스팩", "FM27이 다시 시작"))
-                if json.loads(previous) is not None or not terminal:
+                old_status = self.meta("live_refresh_status") or ""
+                terminal = old_status.startswith(("게임 그래픽 갱신 처리 완료", "게임 갱신 실패", "게임 갱신 실행 안 됨", "게임 갱신 응답 시간 초과", "더 최신 페이스팩", "FM27이 다시 시작"))
+                changed_session = session is not None and session != self.meta("live_refresh_session")
+                if previous_request is not None and pending is None:
+                    self.setmeta("live_refresh_last_result", json.dumps({"status": message, "session": previous_request.get("session"),
+                        "request_id": previous_request.get("request_id"), "recorded_at": time.time()}, ensure_ascii=False))
+                elif terminal and not self.meta("live_refresh_last_result"):
+                    self.setmeta("live_refresh_last_result", json.dumps({"status": old_status,
+                        "session": self.meta("live_refresh_session"), "legacy": True}, ensure_ascii=False))
+                if session is not None:
+                    self.setmeta("live_refresh_session", session)
+                if previous_request is not None or not terminal or changed_session or not connected or connected[1].get("available") is not True:
                     self.setmeta("live_refresh_status", message)
         except Exception as exc:
             with self.db:

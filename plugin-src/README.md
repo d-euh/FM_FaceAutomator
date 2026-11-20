@@ -1,6 +1,6 @@
 # FM27 실시간 그래픽 갱신 사전 진단 · 0.1.0
 
-후속 **0.2.2 실험 갱신 플러그인**과 앱 연동은 [실험 기능 안내](FMFaceRefresh/README.md)에 있습니다. 아래 내용은 원래의 읽기 전용 진단 플러그인 설명입니다.
+후속 **0.2.3 실험 갱신 플러그인**과 앱 연동은 [실험 기능 안내](FMFaceRefresh/README.md)에 있습니다. 아래 내용은 원래의 읽기 전용 진단 플러그인 설명입니다.
 
 대상은 Windows Steam **26620374 / FM27 27.1.0 계열**입니다. 이 배포물은 **진단 전용**입니다. 페이스온 실시간 적용, 게임 함수 호출, 캐시 초기화, 후킹은 구현하지 않습니다. 일반 앱의 PNG·config.xml 저장 동작은 바꾸지 않습니다.
 
@@ -12,7 +12,7 @@ FM26용 [FM Graphics Reload](https://github.com/dev-junos/FM-Graphics-Reload)는
 2. **BepInEx 6 Unity IL2CPP win-x64, be.793 이상**이 필요합니다. 이미 설치되어 있으면 다시 설치하지 않습니다. 없으면 [BepInEx 공식 BE 페이지](https://builds.bepinex.dev/projects/bepinex_be)에서 해당 패키지를 받고 `fm.exe` 옆에 설치합니다. BepInEx 5, Mono, 구형 6.0.0-pre.2는 사용하지 않습니다. 기존 플러그인 배포물의 별도 로더 설치 안내가 있다면 함께 확인하세요.
 3. `install_refresh_diagnostics.bat`를 실행합니다. Steam 라이브러리와 FM27을 자동으로 찾으며 후보가 여러 개이거나 찾지 못하면 `fm.exe`를 선택합니다. 빌드 ID와 IL2CPP 로더를 확인한 뒤 **진단 DLL 하나만** 설치합니다. 로더·다른 플러그인·게임 파일을 교체하지 않습니다. 실행 중인 게임에는 설치하지 않습니다.
 4. FM27을 실행하고 메인 화면까지 기다립니다. BepInEx가 처음 설치되었으면 interop 생성으로 첫 실행이 오래 걸릴 수 있습니다. 세이브 로드는 필요하지 않습니다.
-5. `export_refresh_diagnostics.bat`를 실행합니다. `D:\FMFaceAutomator\diagnostics\refresh-diagnostic.json`을 만들고 폴더를 엽니다. 설치 경로가 다르면 해당 앱 폴더의 `diagnostics`입니다.
+5. `export_refresh_diagnostics.bat`를 실행합니다. `D:\FMFaceAutomator\diagnostics\live-refresh-report.json` 통합 보고서를 만들고 폴더를 엽니다. 설치 경로가 다르면 해당 앱 폴더의 `diagnostics`입니다.
 6. **JSON 하나만** 대화에 첨부합니다. FM 게임 DLL이나 세이브를 보낼 필요가 없습니다.
 
 진단이 없으면 게임 설치 폴더의 `BepInEx\LogOutput.log`에서 `FM Face Refresh Diagnostics`를 확인합니다. 이 플러그인이 로드되지 않았는지, 로더 초기화가 실패했는지 구분해야 합니다. 진단 플러그인의 최초 로드에는 게임 시작이 한 번 필요합니다.

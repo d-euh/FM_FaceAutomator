@@ -8,7 +8,7 @@ import sqlite3
 
 from live_refresh import bridge_root, read_json
 
-APP_VERSION = "0.10.4"
+APP_VERSION = "0.10.5"
 
 
 def recent_files(directory, pattern, limit):
@@ -55,7 +55,7 @@ def export_bundle(destination, *, config_path=None, config=None, root=None, brid
             try:
                 with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=2) as db:
                     db.row_factory = sqlite3.Row
-                    report["workspace"] = dict(db.execute("SELECT key,value FROM meta WHERE key IN ('live_refresh_pending','live_refresh_status','source_stamp','detection_summary')"))
+                    report["workspace"] = dict(db.execute("SELECT key,value FROM meta WHERE key IN ('live_refresh_pending','live_refresh_status','live_refresh_session','live_refresh_last_result','source_stamp','detection_summary')"))
                     for job in db.execute("SELECT id,player_id,status,note,created,started,artifact FROM jobs ORDER BY id DESC LIMIT 30"):
                         item = {key: job[key] for key in ("id", "player_id", "status", "note", "created", "started")}
                         item["artifact_exists"] = bool(job["artifact"] and Path(job["artifact"]).is_file())

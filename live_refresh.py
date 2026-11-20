@@ -11,7 +11,7 @@ import time
 import uuid
 
 PROFILE = "fm27-steam-26620374-v1"
-MIN_PLUGIN_VERSION = (0, 2, 2)
+MIN_PLUGIN_VERSION = (0, 2, 3)
 
 
 def plugin_is_current(session):
@@ -28,6 +28,10 @@ def wait_description(session):
         return "그래픽 경로 재검색 중 · 완료 응답을 기다립니다."
     if stage == "reloading":
         return "이미지 캐시·게임 화면 갱신 중"
+    if stage == "responding":
+        return "게임 갱신 결과 전달 재시도 중 · 통신 파일이 열려 있으면 닫아 주세요."
+    if reason == "pack_read_in_progress":
+        return "config.xml을 읽을 수 없어 잠시 기다립니다."
     if reason in ("unrecognized_or_busy_game_state", "unrecognized_game_state"):
         return "게임 대기 상태 판별 불가 · 갱신 진단을 내보내 주세요."
     if reason == "save_not_ready_or_multiple_managers":

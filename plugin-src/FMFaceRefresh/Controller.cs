@@ -50,7 +50,14 @@ public sealed class Controller
                 End("failed", Guarded ? "scan_timeout_restart_required" : "idle_wait_timeout", Guarded);
                 return;
             }
-            var current = stillCurrent();
+            bool current;
+            try { current = stillCurrent(); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Reason = "pack_read_in_progress";
+                stableSince = -1;
+                return; // Preserve the callback and original deadline while config.xml is locked.
+            }
             if (!current && !Guarded) { End("superseded", "pack_changed", false); return; }
             var frame = runtime.State();
             Reason = frame.Reason;

@@ -22,7 +22,7 @@ public sealed class RefreshRequest
     public double expires_at { get; set; }
 }
 
-[BepInPlugin("io.github.d_euh.fmface.refresh", "FM Face Refresh Experimental", "0.2.2")]
+[BepInPlugin("io.github.d_euh.fmface.refresh", "FM Face Refresh Experimental", "0.2.3")]
 public sealed class Plugin : BasePlugin
 {
     public const string Profile = "fm27-steam-26620374-v1";
@@ -30,6 +30,7 @@ public sealed class Plugin : BasePlugin
     private readonly string session = Guid.NewGuid().ToString("N");
     private readonly string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FMFaceAutomator", "live-refresh");
     private readonly Stopwatch clock = Stopwatch.StartNew();
+    private readonly Mailbox mailbox = new();
     private GameRuntime? runtime;
     private Controller? controller;
     private Harmony? harmony;
@@ -84,7 +85,7 @@ public sealed class Plugin : BasePlugin
             problem = exception.GetBaseException().Message;
             Log.LogError("Live refresh unavailable: " + problem);
         }
-        Status();
+        mailbox.Try("write_status", Status);
     }
 
     private static bool ContinuePrefix() => !(instance?.enabled == true && instance.controller?.Guarded == true);
@@ -99,12 +100,15 @@ public sealed class Plugin : BasePlugin
         pulsing = true; lastPulse = clock.Elapsed.TotalSeconds;
         try
         {
-            if (enabled && controller is { Faulted: false })
-            {
-                if (active is null) Accept();
-                controller.Tick(clock.Elapsed.TotalSeconds);
-            }
-            Status();
+            mailbox.Try("read_request_or_config", () => {
+                if (!mailbox.HasReply && enabled && controller is { Faulted: false })
+                {
+                    if (active is null) Accept();
+                    controller.Tick(clock.Elapsed.TotalSeconds);
+                }
+                mailbox.FlushReply();
+            });
+            mailbox.Try("write_status", Status);
         }
         catch (Exception exception)
         {
@@ -112,7 +116,7 @@ public sealed class Plugin : BasePlugin
             problem = exception.GetBaseException().Message;
             try { if (active is not null) Reply("failed", "bridge_io_or_runtime_error:" + exception.GetType().Name); } catch { }
             Log.LogError("Live refresh stopped: " + problem);
-            try { Status(); } catch { /* Never throw back into the game tick. */ }
+            try { mailbox.FlushReply(); mailbox.Try("write_status", Status); } catch { /* Never throw back into the game tick. */ }
         }
         finally { pulsing = false; }
     }
@@ -135,16 +139,16 @@ public sealed class Plugin : BasePlugin
             var response = Path.Combine(SessionDir, "responses", request.id + ".json");
             if (File.Exists(response)) { File.Delete(file); continue; }
             if (request.protocol != 1 || request.profile != Profile || request.created_at > Now + 5 || request.expires_at > Now + 240)
-            { active = request; Reply("failed", "invalid_request"); File.Delete(file); continue; }
+            { active = request; Reply("failed", "invalid_request"); File.Delete(file); return; }
             if (request.expires_at < Now)
-            { active = request; Reply("failed", state.Idle ? "request_expired" : "idle_wait_timeout:" + state.Reason); File.Delete(file); continue; }
-            if (!Current(request)) { active = request; Reply("superseded", "pack_changed"); File.Delete(file); continue; }
+            { active = request; Reply("failed", state.Idle ? "request_expired" : "idle_wait_timeout:" + state.Reason); File.Delete(file); return; }
+            if (!Current(request)) { active = request; Reply("superseded", "pack_changed"); File.Delete(file); return; }
             if (state.Reason == "unrecognized_game_state")
-            { active = request; Reply("failed", "unsupported_game_state"); File.Delete(file); continue; }
+            { active = request; Reply("failed", "unsupported_game_state"); File.Delete(file); return; }
             if (!state.Idle) return; // Saving, processing, matches and unknown states remain queued.
-            active = request;
             runtime.SelectedPack = request.pack_dir;
             File.Delete(file); // A unique request ID is never automatically replayed after claiming.
+            active = request;
             controller!.Begin(clock.Elapsed.TotalSeconds, request.expires_at - Now);
             activeStarted = true;
             return;
@@ -161,10 +165,12 @@ public sealed class Plugin : BasePlugin
     private void Reply(string status, string reason)
     {
         if (active is null) return;
-        Write(Path.Combine(SessionDir, "responses", active.id + ".json"), new {
+        var destination = Path.Combine(SessionDir, "responses", active.id + ".json");
+        var payload = JsonSerializer.SerializeToElement(new {
             protocol = 1, id = active.id, session, profile = Profile, status, reason, completed_at = Now,
             visual_result_verified = false, observations = runtime?.Observations, execution = Execution()
         });
+        mailbox.QueueReply(() => Write(destination, payload));
         Log.LogInfo("Graphics refresh " + active.id + ": " + status + " / " + reason);
         active = null;
         activeStarted = false;
@@ -180,15 +186,16 @@ public sealed class Plugin : BasePlugin
 
     private void Status() => Write(Path.Combine(SessionDir, "status.json"), new {
         protocol = 1, profile = Profile, session, pid = Environment.ProcessId, heartbeat = Now,
-        plugin_version = "0.2.2", experimental = true, visual_result_verified = false,
-        available = enabled && controller?.Faulted == false, stage = controller?.Stage ?? "unavailable",
-        request_id = active?.id, reason = controller?.Faulted == true || activeStarted ? controller?.Reason : problem,
+        plugin_version = "0.2.3", experimental = true, visual_result_verified = false,
+        available = enabled && controller?.Faulted == false, stage = mailbox.HasReply ? "responding" : controller?.Stage ?? "unavailable",
+        request_id = active?.id, reason = mailbox.HasReply ? "response_delivery_retry" : controller?.Faulted == true || activeStarted ? controller?.Reason : problem,
+        mailbox = new { retry_failures = mailbox.Failures, last_error = mailbox.LastError, last_failure_utc = mailbox.LastFailureUtc },
         observations = runtime?.Observations, execution = Execution()
     });
 
     public override bool Unload()
     {
         if (controller?.Guarded == true) return false;
-        enabled = false; problem = "unloaded"; harmony?.UnpatchSelf(); Status(); instance = null; return true;
+        enabled = false; problem = "unloaded"; harmony?.UnpatchSelf(); mailbox.Try("write_status", Status); instance = null; return true;
     }
 }
