@@ -125,15 +125,84 @@ class AssetTests(unittest.TestCase):
         catalog = AssetCatalog(self.root)
         self.assertEqual(catalog.suggestions(), [])
 
-    def test_conflicting_packs_are_not_chosen_arbitrarily(self):
+    def test_explicit_face_search_includes_managed_subpacks_but_not_backups(self):
+        winner = self.image('zOutput/123.png')
+        self.xml('zOutput',[('123','graphics/pictures/person/123/portrait')])
+        (self.root/'zOutput'/'.fm-face-owner').write_text('managed')
+        self.image('zOutput/backups/123.png')
+        self.xml('zOutput/backups',[('123','graphics/pictures/person/123/portrait')])
+        self.assertEqual(AssetCatalog(self.root,allow_managed=True).face('123')[0],winner)
+
+    def test_duplicate_faces_choose_later_pack_and_can_still_use_specific_pack(self):
         for name in ("packA", "packB"):
             self.image(f"{name}/photo.png")
             self.xml(name, [("photo", "graphics/pictures/person/123/portrait")])
-        with self.assertRaisesRegex(AssetError, "후보 2개") as error:
-            AssetCatalog(self.root).face("123")
-        self.assertEqual(set(error.exception.candidates), {self.root / name / "photo.png" for name in ("packA", "packB")})
+        self.assertEqual(AssetCatalog(self.root).face('123'), (self.root/'packB'/'photo.png', '123'))
         self.assertEqual(len(AssetCatalog(self.root).suggestions()), 2)
         self.assertEqual(AssetCatalog(self.root / "packA").face("123")[0].parent.name, "packA")
+
+    def test_config_folder_priority_ignores_image_filename_and_image_subfolder(self):
+        first = self.image('aPack/zPhotos/zPhoto.png')
+        second = self.image('ZPack/aPhotos/aPhoto.png')
+        self.xml('aPack', [('zPhotos/zPhoto','graphics/pictures/person/123/portrait')])
+        self.xml('ZPack', [('aPhotos/aPhoto','graphics/pictures/person/123/portrait')])
+        os.utime(first, (2000000000,2000000000))
+        self.assertEqual(AssetCatalog(self.root).face('123')[0],second)
+
+    def test_folder_priority_is_case_insensitive_lexical_not_natural_numeric(self):
+        self.image('10Pack/a.png')
+        chosen = self.image('2Pack/b.png')
+        self.xml('10Pack',[('a','graphics/pictures/person/123/portrait')])
+        self.xml('2Pack',[('b','graphics/pictures/person/123/portrait')])
+        self.assertEqual(AssetCatalog(self.root).face('123')[0],chosen)
+        self.image('aPack/z.png')
+        winner = self.image('ZPack/a.png')
+        self.xml('aPack',[('z','graphics/pictures/person/123/portrait')])
+        self.xml('ZPack',[('a','graphics/pictures/person/123/portrait')])
+        self.assertEqual(AssetCatalog(self.root).face('123')[0],winner)
+
+    def test_nested_pack_priority_uses_parent_folder_before_leaf_folder(self):
+        self.image('aPack/zSub/photo.png')
+        winner = self.image('zPack/aSub/photo.png')
+        for folder in ('aPack/zSub','zPack/aSub'):
+            self.xml(folder,[('photo','graphics/pictures/person/123/portrait')])
+        self.assertEqual(AssetCatalog(self.root).face('123')[0],winner)
+
+    def test_numeric_fallback_also_prefers_later_folder(self):
+        self.image('aPack/123.png')
+        winner = self.image('zPack/123.jpg')
+        self.assertEqual(AssetCatalog(self.root).face('123')[0],winner)
+
+    def test_missing_higher_priority_mapping_never_uses_lower_priority_photo(self):
+        self.image('aPack/photo.png')
+        self.xml('aPack',[('photo','graphics/pictures/person/123/portrait')])
+        self.xml('zPack',[('missing','graphics/pictures/person/123/portrait')])
+        with self.assertRaisesRegex(AssetError,'우선순위가 높은 팩'):
+            AssetCatalog(self.root).face('123')
+
+    def test_xml_priority_wins_over_a_later_numeric_only_folder(self):
+        mapped = self.image('aPack/photo.png')
+        self.xml('aPack',[('photo','graphics/pictures/person/123/portrait')])
+        self.image('zPack/123.png')
+        self.assertEqual(AssetCatalog(self.root).face('123')[0],mapped)
+
+    def test_same_pack_conflict_does_not_block_a_higher_pack(self):
+        self.image('aPack/first.png')
+        self.image('aPack/second.png')
+        winner = self.image('zPack/winner.png')
+        target = 'graphics/pictures/person/123/portrait'
+        self.xml('aPack',[('first',target),('second',target)])
+        with self.assertRaisesRegex(AssetError,'같은 팩'):
+            AssetCatalog(self.root).face('123')
+        self.xml('zPack',[('winner',target)])
+        self.assertEqual(AssetCatalog(self.root).face('123')[0],winner)
+
+    def test_regen_mapping_uses_pack_priority_without_changing_target_id(self):
+        self.image('aPack/first.png')
+        winner = self.image('zPack/winner.png')
+        self.xml('aPack',[('first','graphics/pictures/person/r-123/portrait')])
+        self.xml('zPack',[('winner','graphics/pictures/person/r-123/portrait')])
+        self.assertEqual(AssetCatalog(self.root).face('123'),(winner,'r-123'))
 
     def test_duplicate_records_for_same_file_are_not_a_conflict(self):
         face = self.image("face.png")

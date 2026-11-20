@@ -494,8 +494,9 @@ class Engine:
     def asset_catalog(self, folder, refresh=False):
         cached = self._asset_catalogs.get(folder)
         if refresh or cached is None or time.monotonic() - cached[0] > 60:
-            catalog = AssetCatalog(folder, exclude=source_exclusions(self.c, folder),
-                                   allow_managed=Path(folder).resolve() == Path(self.c["pack_dir"]).resolve())
+            face_source = Path(folder).resolve() == Path(self.c['portraits_dir']).resolve()
+            catalog = AssetCatalog(folder, exclude=[self.c['state_dir']] if face_source else source_exclusions(self.c, folder),
+                                   allow_managed=face_source or Path(folder).resolve() == Path(self.c["pack_dir"]).resolve())
             cached = (time.monotonic(), catalog)
             self._asset_catalogs[folder] = cached
         return cached[1]
@@ -1050,6 +1051,7 @@ class Engine:
         row.pop("preflight_blocked", None)
         row["face_target"] = face_target
         row["kit_reference"] = str(kit)
+        row['portrait_reference'] = str(portrait) if portrait else ''
         row['face_reference'] = 'local' if portrait else 'web'
         with self.db:
             self.db.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(row, ensure_ascii=False), jid))

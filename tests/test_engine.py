@@ -656,14 +656,36 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.e.jobs()[0]['status'], 'blocked')
         self.assertIn('생성선수',self.e.jobs()[0]['note'])
 
-    def test_ambiguous_local_faces_never_silently_fall_back_to_web(self):
+    def test_duplicate_faces_stage_highest_priority_pack_without_web_search(self):
         self.transfer()
         self.refs()
         root = Path(self.c['portraits_dir'])
         (root/'duplicate').mkdir()
-        Image.new('RGB',(256,256)).save(root/'duplicate'/'900001.png')
-        self.e.run_one(lambda *a, **k: self.fail('Ambiguity is not absence'))
-        self.assertIn('겹칩니다',self.e.jobs()[0]['note'])
+        winner = root/'duplicate'/'900001.png'
+        Image.new('RGB',(256,256),'red').save(winner)
+        def runner(cmd, **kwargs):
+            self.assertNotIn('--search',cmd)
+            folder = Path(cmd[cmd.index('--cd')+1])
+            self.assertEqual((folder/'original.png').read_bytes(),reference_png(winner))
+            return self.good_runner(cmd, **kwargs)
+        self.e.run_one(runner)
+        self.assertEqual(self.e.jobs()[0]['status'],'applied')
+        self.assertEqual(json.loads(self.e.jobs()[0]['data'])['portrait_reference'],str(winner))
+
+    def test_face_search_includes_own_output_inside_selected_parent_folder(self):
+        faces = self.root/'all_faces'
+        self.c['portraits_dir'] = str(faces)
+        self.c['pack_dir'] = str(faces/'zGenerated')
+        pack = Path(self.c['pack_dir'])
+        pack.mkdir(parents=True)
+        (pack/'.fm-face-owner').write_text('managed')
+        Image.new('RGB',(256,256),'red').save(pack/'900001.png')
+        (pack/'config.xml').write_text('<record><record from="900001" to="graphics/pictures/person/900001/portrait"/></record>')
+        original = faces/'aOriginal'
+        original.mkdir()
+        Image.new('RGB',(256,256),'gray').save(original/'900001.png')
+        (original/'config.xml').write_text((pack/'config.xml').read_text())
+        self.assertEqual(self.e.lookup_asset(str(faces),'face','900001'),(pack/'900001.png','900001'))
 
     def test_manual_request_added_during_preflight_cancels_old_candidate(self):
         self.transfer()

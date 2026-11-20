@@ -103,6 +103,10 @@ class AssetCatalog:
         if any(_under(self.root, p) for p in self.exclude):
             raise AssetError("출력 페이스팩 또는 작업 폴더를 원본 자료로 사용할 수 없습니다.")
         self.faces = defaultdict(set)
+        # FM26/27 pack precedence is later folder names first. Keep the config's
+        # origin, because a mapped image can live in a differently named folder.
+        self.face_mappings = {}
+        self.face_conflicts = {}
         self.kits = defaultdict(set)
         self.direct = defaultdict(set)
         self.missing_faces = set()
@@ -122,7 +126,7 @@ class AssetCatalog:
             base = Path(folder)
             managed = (base / ".fm-face-owner").is_file()
             shared = (base / ".fm-face-shared").is_file()
-            if managed and not shared and not (allow_managed and base == self.root):
+            if managed and not shared and not allow_managed:
                 dirs[:] = []
                 continue
             dirs[:] = sorted(d for d in dirs if not (base / d).is_symlink()
@@ -155,6 +159,17 @@ class AssetCatalog:
 
     def _walk_error(self, error):
         self.warnings.append(f"폴더 읽기 실패: {error.filename}")
+
+    def _folder_priority(self, folder):
+        return tuple(part.casefold() for part in folder.relative_to(self.root).parts)
+
+    def _record_face(self, target, path, priority):
+        previous = self.face_mappings.get(target)
+        if previous is None or priority > previous[0]:
+            self.face_mappings[target] = (priority, path)
+            self.face_conflicts.pop(target, None)
+        elif priority == previous[0] and path != previous[1]:
+            self.face_conflicts.setdefault(target, {previous[1]}).add(path)
 
     def _source(self, xml, source):
         if not str(source).strip():
@@ -203,7 +218,10 @@ class AssetCatalog:
                 element.clear()
             self.textures += textures
             self.texture_paths.update(texture_paths)
+            priority = self._folder_priority(xml.parent)
             for face, kit, path in records:
+                if face:
+                    self._record_face(face, path, priority)
                 if path is None:
                     (self.missing_faces if face else self.missing_kits).add(face or kit)
                     continue
@@ -232,14 +250,19 @@ class AssetCatalog:
         regen_evidence = regen_key in self.faces or regen_key in self.missing_faces or (self.direct.get(regen_key) and not self.direct.get(pid))
         if not regen and pid not in self.missing_faces and not self.faces.get(pid) and regen_evidence:
             key = "r-" + pid
-        if key in self.faces:
-            paths = self.faces[key]
-        elif key in self.missing_faces:
-            raise MissingFaceError(f"선수 {key}: config.xml은 있지만 원본 이미지가 없습니다.", key)
-        else:
-            paths = self.direct.get(key, set()) or self.direct.get(pid, set())
+        if key in self.face_mappings:
+            if key in self.face_conflicts:
+                paths = self.face_conflicts[key]
+                raise AssetError(f"선수 {key}: 같은 팩의 config.xml에 서로 다른 사진 매핑이 겹칩니다. 해당 매핑을 확인하세요.", [p for p in paths if p is not None])
+            _, path = self.face_mappings[key]
+            if path is None or not path.is_file():
+                raise MissingFaceError(f"선수 {key}: 우선순위가 높은 팩의 config.xml은 있지만 원본 이미지가 없습니다.", key)
+            return path, key
+        paths = self.direct.get(key, set()) or self.direct.get(pid, set())
         if not any(path.is_file() for path in paths):
             raise MissingFaceError(f"선수 {key}: 연결된 이미지 파일이 없습니다.", key)
+        priority = max(self._folder_priority(path.parent) for path in paths if path.is_file())
+        paths = [path for path in paths if self._folder_priority(path.parent) == priority]
         return self._choose(paths, f"선수 {key}"), key
 
     def kit(self, club_id, variant="home"):
