@@ -60,6 +60,26 @@ class QueueControlTests(unittest.TestCase):
         finally:
             other.close()
 
+    def test_drag_moves_before_or_after_the_target_in_actual_queue_order(self):
+        e = self.engine
+        self.assertTrue(e.move_job(3, 1))
+        self.assertEqual([j['id'] for j in e.jobs()], [3,1,2])
+        self.assertEqual(e.next_job(time.time())['id'], 3)
+        self.assertTrue(e.move_job(3, 2, after=True))
+        self.assertEqual([j['id'] for j in e.jobs()], [1,2,3])
+        self.assertFalse(e.move_job(1, 2))
+        self.assertFalse(e.move_job(2, 2))
+
+    def test_drag_cannot_reorder_running_deleted_or_edited_jobs(self):
+        e = self.engine
+        e.update(1, 'running')
+        self.assertFalse(e.move_job(1, 2))
+        self.assertFalse(e.move_job(2, 1))
+        e.remove_job(3)
+        self.assertFalse(e.move_job(2, 3))
+        e.begin_job_edit(2)
+        self.assertFalse(e.move_job(2, 1))
+
     def test_priority_change_during_preflight_prevents_charging_the_old_candidate(self):
         e = self.engine
         original = e.kit_reference
@@ -89,6 +109,53 @@ class QueueControlTests(unittest.TestCase):
         self.assertFalse(e.retry(1))
         self.assertFalse(e.reorder_job(1, 'first'))
         self.assertFalse(e.remove_job(1))
+
+    def test_clear_queue_keeps_images_mappings_and_attempts_and_does_not_reuse_ids(self):
+        e = self.engine
+        e.run_one(self.runner, job_id=1)
+        pack = Path(self.c['pack_dir'])
+        before = ((pack/'config.xml').read_bytes(), (pack/'1.png').read_bytes())
+        self.assertEqual(e.clear_queue(), {'removed':3, 'retained':0})
+        self.assertEqual(e.jobs(), [])
+        self.assertEqual(((pack/'config.xml').read_bytes(), (pack/'1.png').read_bytes()), before)
+        self.assertEqual(e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
+        self.assertEqual(e.clear_queue(), {'removed':0, 'retained':0})
+        self.assertIsNone(e.next_job(time.time()))
+        self.assertFalse(e.run_one(lambda *a, **k: self.fail('Cleared jobs must not purchase images')))
+        self.assertEqual(e.enqueue_current(), 3)
+        self.assertEqual(e.db.execute('SELECT max(id) FROM jobs').fetchone()[0], 6)
+
+    def test_clear_queue_keeps_running_and_editing_jobs(self):
+        e = self.engine
+        e.update(1, 'running')
+        e.begin_job_edit(2)
+        self.assertEqual(e.clear_queue(), {'removed':1, 'retained':2})
+        self.assertEqual({j['id'] for j in e.jobs()}, {1,2})
+        self.assertEqual(e.db.execute('SELECT status FROM jobs WHERE id=1').fetchone()[0], 'running')
+        self.assertEqual(e.db.execute('SELECT editing FROM job_custom WHERE job_id=2').fetchone()[0], 1)
+
+    def test_clear_queue_leaves_saved_results_while_a_worker_owns_the_workspace(self):
+        e = self.engine
+        e.update(1, 'generated')
+        e.update(2, 'apply_failed')
+        with process_lock(Path(self.c['state_dir'])):
+            self.assertEqual(e.clear_queue(), {'removed':1, 'retained':2})
+        self.assertEqual(e.clear_queue(), {'removed':2, 'retained':0})
+
+    def test_clear_during_preflight_cannot_start_a_deleted_request(self):
+        e = self.engine
+        original = e.kit_reference
+        def clear(club, row):
+            other = Engine(self.c)
+            try:
+                other.clear_queue()
+            finally:
+                other.close()
+            return original(club, row)
+        with patch.object(e, 'kit_reference', side_effect=clear):
+            self.assertFalse(e.run_one(self.runner))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(e.jobs(), [])
 
     def test_deleting_pending_candidate_never_calls_ai_or_reuses_its_id(self):
         e = self.engine

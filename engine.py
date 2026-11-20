@@ -701,8 +701,8 @@ class Engine:
                     "WHEN status IN ('pending','blocked','failed','interrupted') THEN 3 ELSE 4 END, "
                     "CASE WHEN status IN ('applied','superseded') THEN -jobs.id ELSE COALESCE(job_order.position,jobs.id) END,jobs.id LIMIT 300")]
 
-    def reorder_job(self, job_id, action):
-        if action not in ('up', 'down', 'first'):
+    def reorder_job(self, job_id, action, target_id=None):
+        if action not in ('up', 'down', 'first', 'before', 'after'):
             raise ValueError("우선순위 변경 방향을 확인하세요.")
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
@@ -711,13 +711,24 @@ class Engine:
             if job_id not in ids or (editing and editing[0]):
                 return False
             index = ids.index(job_id)
-            target = 0 if action == 'first' else max(0, index - 1) if action == 'up' else min(len(ids) - 1, index + 1)
-            if target == index:
+            original = list(ids)
+            if action in ('before', 'after'):
+                if target_id not in ids or target_id == job_id:
+                    return False
+                ids.remove(job_id)
+                target = ids.index(target_id) + int(action == 'after')
+                ids.insert(target, job_id)
+            else:
+                target = 0 if action == 'first' else max(0, index - 1) if action == 'up' else min(len(ids) - 1, index + 1)
+                ids.insert(target, ids.pop(index))
+            if ids == original:
                 return False
-            ids.insert(target, ids.pop(index))
             self.db.executemany("INSERT OR REPLACE INTO job_order VALUES (?,?)", [(jid, pos) for pos, jid in enumerate(ids, 1)])
             self.setmeta("queue_revision", int(self.meta("queue_revision") or 0) + 1)
         return True
+
+    def move_job(self, job_id, target_id, after=False):
+        return self.reorder_job(job_id, 'after' if after else 'before', target_id)
 
     def remove_job(self, job_id):
         # Keep images, attempt accounting and ID history; never delete pack mappings.
@@ -741,6 +752,25 @@ class Engine:
                     raise ValueError("생성·저장·편집 중인 작업은 종료 후 삭제하세요.")
                 self.db.execute("UPDATE jobs SET status='deleted',note='대기열에서 삭제' WHERE id=?", (job_id,))
         return True
+
+    def clear_queue(self):
+        # A worker may already be saving a rendered image. Leave its rows alone.
+        with contextlib.ExitStack() as stack:
+            idle = False
+            try:
+                stack.enter_context(process_lock(Path(self.c['state_dir'])))
+                idle = True
+            except OSError:
+                pass
+            with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
+                changed = self.db.execute("UPDATE jobs SET status='deleted',note='대기열에서 삭제' WHERE status NOT IN ('deleted','running') "
+                    "AND (? OR status NOT IN ('generated','apply_failed')) AND NOT EXISTS (SELECT 1 FROM job_custom WHERE job_id=jobs.id AND editing=1)", (idle,))
+                removed = changed.rowcount
+                if removed:
+                    self.setmeta('queue_revision', int(self.meta('queue_revision') or 0) + 1)
+                retained = self.db.execute("SELECT count(*) FROM jobs WHERE status<>'deleted'").fetchone()[0]
+        return {'removed': removed, 'retained': retained}
 
     def recent_results(self):
         """The five most recently generated, readable cards in this workspace."""

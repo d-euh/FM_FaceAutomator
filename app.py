@@ -60,6 +60,7 @@ class App:
         self.job_choices = {}
         self.job_records = {}
         self.queue_buttons = {}
+        self.queue_drag = None
         self.player_search_token = 0
         self.manual_refresh_requested = False
         self.status = tk.StringVar(value="경로와 범위를 확인하고 감시를 시작하세요.")
@@ -126,12 +127,19 @@ class App:
         self.tree.bind("<<TreeviewSelect>>", self.select)
         self.tree.bind("<Double-1>", self.open_job)
         self.tree.bind("<Button-3>", self.queue_menu)
+        self.tree.bind('<ButtonPress-1>', self.begin_queue_drag)
+        self.tree.bind('<B1-Motion>', self.move_queue_drag)
+        self.tree.bind('<ButtonRelease-1>', self.finish_queue_drag)
+        self.tree.bind('<Escape>', self.cancel_queue_drag)
+        self.tree.tag_configure('queue-drop', background=PURPLE, foreground='white')
         actions = ttk.Frame(jobs)
         actions.grid(row=3, column=0, sticky="ew", pady=12)
-        for title, callback in [("선택 작업 재시도", self.retry), ("삭제", self.delete_job), ("우선순위 상승", lambda: self.reorder_job('up')), ("우선순위 하강", lambda: self.reorder_job('down')), ("최우선", lambda: self.reorder_job('first'))]:
+        for title, callback in [("선택 재시도", self.retry), ("⋯ 작업 메뉴", self.show_job_menu)]:
             button = ttk.Button(actions, text=title, command=callback, state="disabled")
             button.pack(side="left", padx=(0, 6))
             self.queue_buttons[title] = button
+        self.clear_queue_button = ttk.Button(actions, text='모든 대기열 삭제', command=self.clear_queue)
+        self.clear_queue_button.pack(side='right')
         self.detail = tk.StringVar(value="더블클릭: 개별 지시 · 결과 보기")
         ttk.Label(jobs, textvariable=self.detail, wraplength=1000, style="Muted.TLabel").grid(row=5, column=0, sticky="ew", pady=(0, 6))
         log_host = ttk.Frame(window, padding=(20, 10, 20, 16))
@@ -811,14 +819,22 @@ class App:
             self.detail.set(values[-1])
         self.update_job_actions()
 
-    def update_job_actions(self):
+    def queue_action_states(self):
         job = self.job_records.get(self.selected())
-        ranked = job and not job['editing'] and job['status'] in ('pending','blocked','failed','interrupted')
-        available = {"선택 작업 재시도": job and not job['editing'] and job['status'] in ('failed','blocked','interrupted','apply_failed'),
-                     "삭제": job and not job['editing'] and job['status'] != 'running' and (not self.active() or job['status'] not in ('generated','apply_failed')),
-                     "우선순위 상승": ranked, "우선순위 하강": ranked, "최우선": ranked}
-        for label, button in self.queue_buttons.items():
-            button.configure(state="normal" if available[label] else "disabled")
+        free = job and not job['editing']
+        ranked = free and job['status'] in ('pending','blocked','failed','interrupted')
+        return {
+            '재시도': free and job['status'] in ('failed','blocked','interrupted','apply_failed'),
+            '삭제': free and job['status'] != 'running' and (not self.active() or job['status'] not in ('generated','apply_failed')),
+            '위로 이동': ranked, '아래로 이동': ranked, '맨 위로': ranked,
+            '유니폼 변경': ranked and not self.active(),
+        }
+
+    def update_job_actions(self):
+        states = self.queue_action_states()
+        self.queue_buttons['선택 재시도'].configure(state='normal' if states['재시도'] else 'disabled')
+        self.queue_buttons['⋯ 작업 메뉴'].configure(state='normal' if any(states.values()) else 'disabled')
+        self.clear_queue_button.configure(state='normal' if self.job_records else 'disabled')
 
     def open_job(self, event=None):
         if event is not None:
@@ -835,11 +851,101 @@ class App:
         if not row:
             return
         self.tree.selection_set(row)
+        self.show_job_menu(event.x_root, event.y_root)
+
+    def show_job_menu(self, x=None, y=None):
+        self.cancel_queue_drag()
+        if self.selected() is None:
+            return
+        states = self.queue_action_states()
+        self.job_menu = tk.Menu(self.window, tearoff=False)
+        for label, command in (('재시도', self.retry), ('삭제', self.delete_job),
+                               ('위로 이동', lambda: self.reorder_job('up')),
+                               ('아래로 이동', lambda: self.reorder_job('down')),
+                               ('맨 위로', lambda: self.reorder_job('first')), ('유니폼 변경', self.choose_kit)):
+            if label in ('위로 이동', '유니폼 변경'):
+                self.job_menu.add_separator()
+            self.job_menu.add_command(label=label, command=command, state='normal' if states[label] else 'disabled')
+        button = self.queue_buttons['⋯ 작업 메뉴']
+        try:
+            self.job_menu.tk_popup(x if x is not None else button.winfo_rootx(),
+                                   y if y is not None else button.winfo_rooty() + button.winfo_height())
+        finally:
+            self.job_menu.grab_release()
+
+    def begin_queue_drag(self, event):
+        self.cancel_queue_drag()
+        row = self.tree.identify_row(event.y)
+        if not row or self.tree.identify_region(event.x, event.y) not in ('cell', 'tree'):
+            return
         job = self.job_records.get(int(row))
-        self.kit_menu = tk.Menu(self.window, tearoff=False)
-        allowed = job and not job['editing'] and job['status'] in ('pending','blocked','failed','interrupted') and not self.active()
-        self.kit_menu.add_command(label='유니폼 변경', command=self.choose_kit, state='normal' if allowed else 'disabled')
-        self.kit_menu.tk_popup(event.x_root, event.y_root)
+        if job and not job['editing'] and job['status'] in ('pending','blocked','failed','interrupted'):
+            self.queue_drag = {'id': int(row), 'x': event.x, 'y': event.y, 'active': False,
+                               'target': None, 'after': False, 'workspace': self.config['state_dir']}
+
+    def move_queue_drag(self, event):
+        drag = self.queue_drag
+        if not drag:
+            return
+        if not drag['active'] and max(abs(event.x - drag['x']), abs(event.y - drag['y'])) < 5:
+            return
+        drag['active'] = True
+        self.tree.configure(cursor='fleur')
+        old = drag['target']
+        if old is not None and self.tree.exists(str(old)):
+            self.tree.item(str(old), tags=())
+        drag['target'] = None
+        if not 0 <= event.x < self.tree.winfo_width() or not 0 <= event.y < self.tree.winfo_height():
+            return 'break'
+        row = self.tree.identify_row(event.y)
+        job = self.job_records.get(int(row)) if row else None
+        if job and not job['editing'] and job['status'] in ('pending','blocked','failed','interrupted') and int(row) != drag['id']:
+            bounds = self.tree.bbox(row)
+            if bounds:
+                drag['target'] = int(row)
+                drag['after'] = event.y >= bounds[1] + bounds[3] / 2
+                self.tree.item(row, tags=('queue-drop',))
+        if event.y < 30:
+            self.tree.yview_scroll(-1, 'units')
+        elif event.y > self.tree.winfo_height() - 20:
+            self.tree.yview_scroll(1, 'units')
+        return 'break'
+
+    def cancel_queue_drag(self, event=None):
+        drag = self.queue_drag
+        self.queue_drag = None
+        if drag and drag['target'] is not None and self.tree.exists(str(drag['target'])):
+            self.tree.item(str(drag['target']), tags=())
+        self.tree.configure(cursor='')
+        return 'break' if event is not None and drag else None
+
+    def finish_queue_drag(self, event):
+        drag = self.queue_drag
+        self.cancel_queue_drag()
+        if drag and drag['active']:
+            if drag['workspace'] == self.config['state_dir'] and 0 <= event.x < self.tree.winfo_width() and 0 <= event.y < self.tree.winfo_height():
+                row = self.tree.identify_row(event.y)
+                target = self.job_records.get(int(row)) if row else None
+                bounds = self.tree.bbox(row) if row else ()
+                if target and bounds and not target['editing'] and target['status'] in ('pending','blocked','failed','interrupted'):
+                    self.change_queue('move', job_id=drag['id'], target_id=int(row), after=event.y >= bounds[1] + bounds[3] / 2)
+            return 'break'
+
+    def clear_queue(self):
+        self.cancel_queue_drag()
+        engine = Engine(self.config)
+        try:
+            result = engine.clear_queue()
+            self.refresh_queue(engine)
+            self.update_dashboard(engine)
+            note = f"대기열 {result['removed']}개 삭제"
+            if result['retained']:
+                note += f" · 생성·저장·편집 중 {result['retained']}개 유지"
+            self.events.put(note)
+        except Exception as exc:
+            self.status.set(str(exc))
+        finally:
+            engine.close()
 
     def delete_job(self):
         self.change_queue('delete')
@@ -847,13 +953,16 @@ class App:
     def reorder_job(self, direction):
         self.change_queue(direction)
 
-    def change_queue(self, action):
-        jid = self.selected()
+    def change_queue(self, action, job_id=None, target_id=None, after=False):
+        jid = self.selected() if job_id is None else job_id
         if jid is None:
             return
         engine = Engine(self.config)
         try:
-            changed = engine.remove_job(jid) if action == 'delete' else engine.reorder_job(jid, action)
+            if action == 'move':
+                changed = engine.move_job(jid, target_id, after)
+            else:
+                changed = engine.remove_job(jid) if action == 'delete' else engine.reorder_job(jid, action)
             self.refresh_queue(engine)
             self.update_dashboard(engine)
             if changed:
@@ -1086,7 +1195,6 @@ class App:
         editor.title(f'개별 지시 · {player["name"]} · 작업 {jid}')
         editor.geometry("720x500")
         editor.transient(self.window)
-        editor.grab_set()
         frame = ttk.Frame(editor, padding=18)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text=f'{player["name"]} · {player["club_name"]}', style="Section.TLabel").pack(anchor="w", pady=(0, 14))
@@ -1126,6 +1234,9 @@ class App:
         buttons.pack(fill="x")
         ttk.Button(buttons, text="이 작업에 저장", command=commit).pack(side="left")
         ttk.Button(buttons, text="취소", command=cancel).pack(side="right")
+        editor.wait_visibility()
+        if editor.winfo_exists():
+            editor.grab_set()
 
     def export(self):
         if self.active():
@@ -1164,6 +1275,11 @@ class App:
             engine.close()
 
     def refresh_queue(self, engine):
+        if self.queue_drag is not None:
+            if self.queue_drag['workspace'] != engine.c['state_dir']:
+                self.cancel_queue_drag()
+            else:
+                return
         selected = self.tree.selection()
         self.tree.delete(*self.tree.get_children())
         labels = {"pending": "대기", "running": "합성 중", "generated": "자동 저장 대기", "apply_failed": "저장 실패", "applied": "완료", "blocked": "보류", "failed": "실패", "superseded": "이전 상태", "interrupted": "중단됨"}
@@ -1253,6 +1369,7 @@ class App:
         self.window.after(1500, self.drain)
 
     def close(self):
+        self.cancel_queue_drag()
         self.discovery_stop.set()
         self.auth_cancel.set()
         if self.active() or self.auth_active():
