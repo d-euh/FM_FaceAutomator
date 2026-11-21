@@ -20,8 +20,9 @@ PREVIEW_BACKGROUND = "#D4D6DD"
 DISABLED = "#A6A4AD"
 
 
-def button_image(window, radius, color, outline=None, *, background=None, outline_width=2):
-    size = 2 * radius + 1
+def button_image(window, radius, color, outline=None, *, background=None, outline_width=2,
+                 size=None):
+    size = size or 2 * radius + 1
     scale = 3
     image = Image.new("RGBA", (size * scale, size * scale), background)
     ImageDraw.Draw(image).rounded_rectangle(
@@ -110,7 +111,9 @@ def apply_theme(window, family):
     style.configure("Card.TFrame", background=SURFACE, borderwidth=0, relief="flat")
     style.configure("Panel.Card.TFrame", background=SURFACE, borderwidth=1, relief="solid", bordercolor=BORDER)
     panel_image = button_image(window, 8, SURFACE, BORDER,
-                               background=BACKGROUND, outline_width=1)
+                               background=BACKGROUND, outline_width=1, size=128)
+    # Tk 8.6 tiles the image center. A 1px center makes large panels expensive
+    # to repaint, so retain a wide solid center while keeping the 8px corners.
     style.element_create("Panel.rounded", "image", panel_image,
                          border=8, padding=1, width=0, height=0, sticky="nsew")
     style.layout("Rounded.Panel.Card.TFrame", [("Panel.rounded", {"sticky": "nsew"})])
