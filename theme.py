@@ -1,7 +1,7 @@
 """Muted silver-grey surfaces, neutral text, and plum accents."""
 from tkinter import ttk
 
-from PIL import Image, ImageColor, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 BACKGROUND = "#C8C9CF"
 SURFACE = "#E7E8EC"
@@ -20,53 +20,39 @@ PREVIEW_BACKGROUND = "#D4D6DD"
 DISABLED = "#A6A4AD"
 
 
-def button_image(window, height, center, edge, outline=None):
-    radius = 30
-    width = 2 * radius + 1
+def button_image(window, radius, color, outline=None):
+    size = 2 * radius + 1
     scale = 3
-    size = (width * scale, height * scale)
-    bounds = (0, 0, size[0] - 1, size[1] - 1)
-    curve = min(radius, height / 2) * scale
-    mask = Image.new("L", size)
-    ImageDraw.Draw(mask).rounded_rectangle(bounds, radius=curve, fill=255)
-
-    inner, outer = ImageColor.getrgb(center), ImageColor.getrgb(edge)
-    image = Image.new("RGB", size)
-    draw = ImageDraw.Draw(image)
-    for y in range(size[1]):
-        vertical = abs(2 * y / (size[1] - 1) - 1)
-        for x in range(size[0]):
-            horizontal = abs(2 * x / (size[0] - 1) - 1)
-            strength = max(vertical, horizontal)
-            draw.point((x, y), tuple(round(a + (b - a) * strength) for a, b in zip(inner, outer)))
-    if outline:
-        draw.rounded_rectangle(bounds, radius=curve, outline=outline, width=2 * scale)
-    image.putalpha(mask)
-    return ImageTk.PhotoImage(image.resize((width, height), Image.Resampling.LANCZOS), master=window)
+    image = Image.new("RGBA", (size * scale, size * scale))
+    ImageDraw.Draw(image).rounded_rectangle(
+        (0, 0, image.width - 1, image.height - 1), radius=radius * scale,
+        fill=color, outline=outline, width=2 * scale)
+    return ImageTk.PhotoImage(image.resize((size, size), Image.Resampling.LANCZOS), master=window)
 
 
 def configure_buttons(window, style):
-    # Stretch the middle of the image while keeping its rounded ends intact.
     images = []
-    for name, height, padding, palette in (
-        ("TButton", 38, (13, 9), (PURPLE, "#8D589E")),
-        ("Compact.TButton", 30, (11, 5), (PURPLE, "#8D589E")),
-        ("Primary.TButton", 38, (15, 9), ("#532366", "#805090")),
+    for name, radius, padding, outline in (
+        ("TButton", 18, (13, 9), None),
+        ("Compact.TButton", 14, (11, 5), None),
+        ("Primary.TButton", 18, (13, 9), PURPLE_HOVER),
     ):
-        normal = button_image(window, height, *palette)
-        disabled = button_image(window, height, "#76647F", PURPLE_DISABLED)
-        pressed = button_image(window, height, "#33123F", "#62316F", "#D7A7E4")
-        focused = button_image(window, height, *palette, "#E8C5F2")
-        hovered = button_image(window, height, PURPLE_HOVER, "#A06CB1")
+        normal = button_image(window, radius, PURPLE, outline)
+        disabled = button_image(window, radius, PURPLE_DISABLED, outline)
+        pressed = button_image(window, radius, "#33123F", "#D7A7E4")
+        focused = button_image(window, radius, PURPLE, "#E8C5F2")
+        hovered = button_image(window, radius, PURPLE_HOVER, outline)
         images.extend((normal, disabled, pressed, focused, hovered))
-        element = f"{name}.gradient"
+        element = f"{name}.rounded"
+        # The image supplies the shape, not the minimum size. Keep the same
+        # 3px inset as the original clam border and focus elements.
         style.element_create(element, "image", normal, ("disabled", disabled),
                              ("pressed", pressed), ("focus", focused), ("active", hovered),
-                             border=(30, height // 2, 30, height // 2 - 1), sticky="nsew")
+                             border=radius, padding=3, width=0, height=0, sticky="nsew")
         style.layout(name, [(element, {"sticky": "nsew", "children": [
             ("Button.padding", {"sticky": "nsew", "children": [
                 ("Button.label", {"sticky": "nsew"})]})]})])
-        style.configure(name, padding=padding, foreground=BUTTON_TEXT, anchor="center")
+        style.configure(name, padding=padding, foreground=BUTTON_TEXT)
         x, y = padding
         style.map(name, foreground=[("disabled", BUTTON_TEXT), ("!disabled", BUTTON_TEXT)],
                   padding=[("pressed", "!disabled", (x, y + 2, x, y - 2))])
