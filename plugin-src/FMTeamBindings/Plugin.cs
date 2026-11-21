@@ -9,12 +9,16 @@ using FMFaceRefresh.Diagnostics;
 
 namespace FMTeamBindings;
 
-[BepInPlugin("io.github.d_euh.fmface.teambindings", "FM Team Binding Diagnostics", "0.2.0")]
+[BepInPlugin("io.github.d_euh.fmface.teambindings", "FM Team Binding Diagnostics", "0.3.0")]
 public sealed class Plugin : BasePlugin
 {
     private static Plugin? instance;
     private Harmony? harmony, observerHarmony;
     private BindingObserver? observer;
+    private TeamQueryRuntime? teamRuntime;
+    private TeamProbe? teamProbe;
+    private QueryState? queryState;
+    private double lastQueryCheck;
     private string observerState = "initialising";
     private double lastSaved;
     private bool schemaSucceeded;
@@ -40,10 +44,18 @@ public sealed class Plugin : BasePlugin
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Output)!);
         var data = JsonSerializer.SerializeToUtf8Bytes(new {
-            kind = "fm_team_bindings", schema_version = 1, tool_version = "0.2.0", state,
-            mode = "runtime_schema_and_observed_values", generated_at_utc = DateTime.UtcNow,
+            kind = "fm_team_bindings", schema_version = 1, tool_version = "0.3.0", state,
+            mode = "runtime_schema_observed_and_targeted_probe", generated_at_utc = DateTime.UtcNow,
             detected_steam_build = Report.SteamBuild(Paths.GameRootPath),
-            game_data_queried = false, game_state_modified = false,
+            game_data_query_attempted = teamProbe?.queries_started > 0,
+            gameplay_state_modified = false, save_files_modified = false,
+            temporary_binding_tree_modified = teamRuntime?.temporary_roots_created > 0,
+            probe = new { state = teamProbe?.state ?? "unavailable", human_team_index = observer?.HumanTeamIndex,
+                binding_owner_observed = observer?.BindingOwner is not null, api_stage = TeamQueryRuntime.InitialisationStage, safe_game_state = queryState?.Reason,
+                queries_started = teamProbe?.queries_started ?? 0, groups_closed = teamProbe?.groups_closed ?? 0,
+                groups_created = teamRuntime?.groups_created ?? 0, groups_disposed = teamRuntime?.groups_disposed ?? 0,
+                roots_created = teamRuntime?.temporary_roots_created ?? 0, roots_removed = teamRuntime?.temporary_roots_removed ?? 0,
+                results = teamProbe?.results },
             schema_methods_invoked = descriptorCalls > 0, descriptor_call_attempts = descriptorCalls, schemas, types = shapes, errors,
             observations = new {
                 state = observerState, capture_limit_seconds = CaptureSeconds,
@@ -54,7 +66,7 @@ public sealed class Plugin : BasePlugin
                 skipped_for_frame_budget = observer?.skipped_for_frame_budget ?? 0,
                 read_errors = observer?.read_errors ?? 0, event_counts = observer?.event_counts
             },
-            notice = "Allowlisted schema descriptors and passive copies of existing UI binding values only. No channels opened, active player queries, game writes, portraits, prompts or authentication data. Observed names/record IDs may be included. Not a verified squad classification."
+            notice = "Schema descriptors, observed UI values and a bounded targeted team-read probe. Diagnostic native team indexes 540/28346/28347 are controlled examples, not universal squad meanings. Probe uses and removes a private temporary binding subtree; no existing UI values, gameplay/save files, portraits, prompts or authentication data are changed. Names/IDs may be included. Not a verified production squad filter."
         });
         if (data.Length > 8 * 1024 * 1024) throw new InvalidOperationException("report_too_large");
         var temporary = Output + ".tmp";
@@ -98,7 +110,19 @@ public sealed class Plugin : BasePlugin
             harmony = new Harmony("io.github.d_euh.fmface.teambindings");
             harmony.Patch(tick, postfix: new HarmonyMethod(typeof(Plugin), nameof(Tick)));
             InstallObserver();
-            Log.LogInfo("Team schema report and bounded UI observation enabled. No data channels will be opened.");
+            try
+            {
+                if (observer is null) throw new InvalidOperationException("observer_unavailable");
+                queryState = new QueryState(Resolve);
+                var createApi = Resolve("SI.Bindable.Bindings").GetMethods().Single(m => m.Name == "Create"
+                    && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType.FullName == "SI.Bindable.Bindings+NodeFlags");
+                var spanApi = createApi.GetParameters()[0].ParameterType.GetElementType()!;
+                shapes.Add(Descriptors.Shape(spanApi));
+                teamRuntime = new TeamQueryRuntime(Resolve, observer);
+                teamProbe = new TeamProbe(teamRuntime);
+            }
+            catch (Exception e) { errors.Add(new { stage = "probe_initialise", error = e.GetBaseException().GetType().Name }); }
+            Log.LogInfo("Team schema/value diagnostics enabled; bounded targeted queries wait for a safe loaded game.");
         }
         catch (Exception e)
         {
@@ -147,6 +171,13 @@ public sealed class Plugin : BasePlugin
         if (clock.Elapsed.TotalSeconds > CaptureSeconds && observerState == "capturing")
         { observerState = "capture_finished"; if (observer is not null) observer.Dirty = true; }
         Step();
+        if (finished && teamProbe is { Done: false } && clock.Elapsed.TotalSeconds - lastQueryCheck >= 0.25)
+        {
+            lastQueryCheck = clock.Elapsed.TotalSeconds;
+            teamProbe.Tick(lastQueryCheck, queryState?.Idle() is true);
+            if (teamProbe.Dirty)
+            { teamProbe.Dirty = false; Save(schemaSucceeded ? "complete" : "complete_with_errors"); }
+        }
         if (finished && observer is not null && clock.Elapsed.TotalSeconds - lastSaved >= 2
             && (observer.Dirty || observerState == "capturing" && clock.Elapsed.TotalSeconds - lastSaved >= 10))
             Save(schemaSucceeded ? "complete" : "complete_with_errors");

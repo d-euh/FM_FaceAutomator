@@ -24,6 +24,7 @@ public sealed class ValueObservations
         if (path.Length == 0 || path.Length > 512) return false;
         var parts = Regex.Split(path, @"[^A-Za-z0-9_]+").Where(s => s.Length > 0).ToArray();
         if (parts.Length == 0) return false;
+        if (parts[0].StartsWith("FMFaceProbe", StringComparison.Ordinal)) return false;
         var name = parts[^1];
         if (Specific.Contains(name)) return true;
         return (name.Equals("Name", StringComparison.OrdinalIgnoreCase)
@@ -55,6 +56,8 @@ public sealed class ObservedValue
     public string data_type { get; set; } = "";
     public object? scalar { get; set; }
     public bool is_null { get; set; }
+    public string? numeric_kind { get; set; }
+    public string? display_text { get; set; }
     public string? record_table { get; set; }
     public int? record_index { get; set; }
     public string? persistent_identity { get; set; }

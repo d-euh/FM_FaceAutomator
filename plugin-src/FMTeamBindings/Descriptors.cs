@@ -22,7 +22,8 @@ public static class Descriptors
         "SI.Bindable.DynamicReference", "SI.Bindable.PropertyHandler", "SI.Bindable.Bindings",
         "SI.Bindable.ReferenceUtils", "SI.Bindable.Bindings+Property", "SI.Bindable.Bindings+ContextMapping",
         "SI.Bindable.Bindings+ContextInfo", "SI.Bindable.PropertyHandler+GetContext", "SI.Bindable.PropertyHandler+OpenChannel",
-        "SI.Core.TypedValue", "SI.Core.ReferenceTypedValue",
+        "SI.Core.TypedValue", "SI.Core.ReferenceTypedValue", "SI.Core.DynamicNumber",
+        "SI.Core.DynamicNumber+NumberKind", "SI.Core.DynamicNumber+FloatToWholeConversion",
         "SI.Interop.InteropReference", "SI.Interop.IInteropReferenceFactory", "SI.Interop.InteropUtils",
         "FM.GamePlugin.GameRecordSerialisation", "FM.GamePlugin.UIRecordUtils", "FM.GamePlugin.UiRecordID",
         "FM.GamePlugin.GameInteropSubsystem", "FM.GamePlugin.GamePlugin", "FM.GamePlugin.IGamePlugin"
@@ -206,6 +207,8 @@ public static class Descriptors
         var methods = type.GetMethods(own).Where(m => !m.Name.StartsWith("Native", StringComparison.Ordinal)).ToArray();
         return new { name = type.FullName, assembly = type.Assembly.GetName().Name, base_type = type.BaseType?.FullName,
             is_enum = type.IsEnum, total_methods = methods.Length,
+            constructors = type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance).Take(40)
+                .Select(c => new { is_public = c.IsPublic, parameters = c.GetParameters().Select(p => new { name = p.Name, type = p.ParameterType.ToString() }).ToArray() }).ToArray(),
             methods = methods.Take(250).Select(m => new { name = m.Name, is_static = m.IsStatic,
                 return_type = m.ReturnType.ToString(), parameters = m.GetParameters().Select(p => new { name = p.Name, type = p.ParameterType.ToString() }).ToArray() }).ToArray(),
             fields = type.GetFields(own).Where(f => !f.Name.StartsWith("Native", StringComparison.Ordinal)).Take(100)

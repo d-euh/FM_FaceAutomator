@@ -20,9 +20,9 @@ class TeamBindingsTests(unittest.TestCase):
         self.source = self.game/'BepInEx'/'diagnostics'/FOLDER/'team-bindings.json'
         self.source.parent.mkdir(parents=True)
         self.output = self.root/'diagnostics'/'team-bindings.json'
-        self.report = dict(kind='fm_team_bindings', schema_version=1, mode='runtime_schema_and_observed_values',
-                           detected_steam_build='26620374', game_data_queried=False, game_state_modified=False,
-                           tool_version='0.2.0', state='complete', schemas=[], types=[], errors=[],
+        self.report = dict(kind='fm_team_bindings', schema_version=1, mode='runtime_schema_observed_and_targeted_probe',
+                           detected_steam_build='26620374', game_data_query_attempted=True, gameplay_state_modified=False, save_files_modified=False, probe={'state':'complete','results':[]},
+                           tool_version='0.3.0', state='complete', schemas=[], types=[], errors=[],
                            observations={'observed_existing_ui_values_only':True, 'state':'capturing', 'values':[]})
         self.validation = patch('team_bindings.validate_game', return_value=self.game)
         self.validation.start()
@@ -53,7 +53,7 @@ class TeamBindingsTests(unittest.TestCase):
         self.assertEqual(self.output.read_text(), 'old export')
 
     def test_rejects_modified_game_flags_build_and_untrusted_paths(self):
-        for key, value in [('game_state_modified',True), ('game_data_queried',True),
+        for key, value in [('gameplay_state_modified',True), ('save_files_modified',True), ('game_data_query_attempted',None), ('probe',None),
                            ('detected_steam_build','other'), ('mode','other'), ('types',None), ('observations',None)]:
             with self.subTest(key=key):
                 old = self.report[key]
@@ -99,3 +99,10 @@ class TeamBindingsTests(unittest.TestCase):
         self.write()
         export_report(self.game,self.output)
         self.assertEqual(json.loads(self.output.read_text())['observations']['values'],[])
+
+    def test_probe_failure_or_waiting_is_exported_without_claiming_success(self):
+        for state in ('failed','unavailable','waiting_for_safe_loaded_game','partial_team_tree'):
+            self.report['probe'] = {'state':state, 'results':[]}
+            self.write()
+            export_report(self.game,self.output)
+            self.assertEqual(json.loads(self.output.read_text())['probe']['state'],state)

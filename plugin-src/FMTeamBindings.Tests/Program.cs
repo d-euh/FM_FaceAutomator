@@ -62,6 +62,7 @@ Check(!TeamReference.SetterCalled, "Shape collection cannot invoke getters/sette
 Console.WriteLine("PASS: actual BindingKind structure, reference/scalar schemas, chunked 1500 rows, preserved partial data/counts, bounds, duplicates, exact signatures, no player data/state writes.");
 
 // Observation policy tests do not call the game or read unrelated UI values.
+Check(!ValueObservations.Relevant("FMFaceProbe123.IsFirstTeam"), "Keep targeted probe separate from existing UI observations");
 Check(ValueObservations.Relevant("context.person.Team.TeamType"), "Watch exact team-kind property");
 Check(ValueObservations.Relevant("context.club.YouthTeam.Name"), "Watch team names in a football context");
 Check(!ValueObservations.Relevant("Steam.Login.Name") && !ValueObservations.Relevant("account.Name")
@@ -108,10 +109,63 @@ Check(busyObserver.Values.rows.Count == 1 && busyObserver.Values.rows[0].value.s
     "Adaptive sampling must reach later UI events after a busy frame");
 Console.WriteLine("PASS: signature-compatible passive hooks, primitive decoding, opaque-type refusal, path filtering and frame bounds; no active data requests.");
 
+// Actual numeric wrapper conversions: retain precision and never truncate floats into IDs.
+var numberObserver = new BindingObserver(name => typeof(SI.Core.TypedValue).Assembly.GetType(name, true)!);
+foreach (var pair in new (SI.Core.DynamicNumber Input, object Expected)[] {
+    (new SI.Core.DynamicNumber(-123L), -123L), (new SI.Core.DynamicNumber(ulong.MaxValue), ulong.MaxValue),
+    (new SI.Core.DynamicNumber(2.75), 2.75) }) {
+    var decoded = numberObserver.DecodeSupplied(new SI.Core.TypedValue(pair.Input, "SI.Core.DynamicNumber"));
+    Check(decoded.error is null && Equals(decoded.scalar, pair.Expected), "Use explicit tagged conversion without precision loss");
+}
+var invalidNumber = numberObserver.DecodeSupplied(new SI.Core.TypedValue(new SI.Core.DynamicNumber(), "SI.Core.DynamicNumber"));
+Check(invalidNumber.scalar is null && invalidNumber.error == "invalid_dynamic_number", "Invalid numbers cannot become player ID zero");
+Check(BindingObserver.DisplayText("\u0001" + new string('x', 400) + "\u0002Manchester U18\u0001") == "Manchester U18", "Read rendered label without decoding embedded payload");
+
+var fake = new FakeProbeRuntime();
+var probe = new TeamProbe(fake);
+probe.Tick(0, true); probe.Tick(2.1, true); probe.Tick(2.2, true);
+probe.Tick(3, true); probe.Tick(5.1, true); probe.Tick(5.2, true);
+probe.Tick(6, true); probe.Tick(8.1, true); probe.Tick(8.2, true);
+Check(probe.state == "complete" && fake.Started.SequenceEqual(new[] { 540, 28346, 28347 }) && fake.Closed == 3, "Three bounded queries and cleanup");
+var paused = new FakeProbeRuntime(); var pausedProbe = new TeamProbe(paused);
+pausedProbe.Tick(0, false); pausedProbe.Tick(10, true); pausedProbe.Tick(11, true);
+Check(paused.Started.Count == 0, "Wait for two stable idle seconds");
+pausedProbe.Tick(12.1, true); pausedProbe.Tick(12.2, false);
+Check(pausedProbe.state == "failed" && paused.Closed == 1, "Abort and close when game starts processing");
+var stalled = new FakeProbeRuntime { Stall = true }; var stalledProbe = new TeamProbe(stalled);
+stalledProbe.Tick(0, true); stalledProbe.Tick(2.1, true); stalledProbe.Tick(18, true);
+Check(stalledProbe.Done && stalled.Closed == 1 && stalled.Started.Count == 1, "Timeout cannot retry or leak a read group");
+var wrong = new FakeProbeRuntime { WrongChildren = true }; var wrongProbe = new TeamProbe(wrong);
+wrongProbe.Tick(0, true); wrongProbe.Tick(2.1, true); wrongProbe.Tick(2.2, true);
+Check(wrongProbe.state == "partial_team_tree" && wrong.Started.Count == 1, "Never query assumed indexes not returned by the main-team query");
+
+var ownerObserver = new BindingObserver(name => typeof(SI.Core.TypedValue).Assembly.GetType(name, true)!);
+var ownerBindings = new SI.Bindable.Bindings();
+ownerObserver.Observe(ownerBindings, new SI.Bindable.Bindings.Key { Path = "Human.Team" }, new SI.Core.TypedValue(new FM.UI.TeamReference(540), "FM.UI.TeamReference"), "set", 20);
+Check(ownerObserver.HumanTeamIndex == 540, "Bind only to an observed current team");
+var query = new TeamQueryRuntime(name => typeof(SI.Core.TypedValue).Assembly.GetType(name, true)!, ownerObserver);
+query.Begin(540); var queryValues = query.Poll(); query.Close();
+Check(queryValues?.values.Count == TeamQueryRuntime.Properties.Length && query.groups_disposed == 1
+    && query.temporary_roots_created == query.temporary_roots_removed && ownerBindings.Roots == 0, "Owned temporary tree and group are removed");
+ownerBindings.ThrowDispose = true;
+query.Begin(540);
+try { query.Close(); throw new Exception("Expected Dispose error"); } catch (InvalidOperationException) { }
+Check(ownerBindings.Roots == 0, "Private root removal must still run when group Dispose throws");
+ownerBindings.ThrowDispose = false;
+ownerBindings.ThrowBuild = true;
+try { query.Begin(540); throw new Exception("Expected Build failure"); } catch (System.Reflection.TargetInvocationException) { }
+try { query.Close(); throw new Exception("Expected uncertain group cleanup report"); } catch (InvalidOperationException) { }
+Check(ownerBindings.Roots == 0, "Always try to remove private root when group Build fails");
+Console.WriteLine("PASS: tagged numeric conversion, stable-idle probe scheduling, bounded returned targets, timeout/busy cleanup, private binding ownership and partial-build cleanup reporting.");
+
 namespace Il2CppSystem {
     public class ValueType { }
     public class Type { private readonly string name; public Type(string name = "System.Int32") { this.name = name; } public string FullName => name; }
-    public class Object : Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase { }
+    public class Object : Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase { public object? Item; }
+    public class ReadOnlySpan<T> {
+        public readonly string Text;
+        public ReadOnlySpan(Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<T> array) { Text = new string(array.Values.Cast<char>().ToArray()); }
+    }
 }
 namespace SI.Bindable.Reference.Core {
     public struct PropertyID { public uint id; public uint ID => id; }
@@ -136,7 +190,13 @@ namespace SI.Bindable.Reference.Core {
     }
 }
 namespace FM.UI {
+    public enum DatabaseTableType { Team = 24, Club = 3 }
     public class TeamReference {
+        public TeamReference() { }
+        public TeamReference(int index) { Index = index; }
+        public TeamReference(IntPtr pointer) { Index = 540; }
+        public int Index { get; }
+        public DatabaseTableType Type => DatabaseTableType.Team;
         public static int Count, FillCount, FillCalls, ThrowKindFor;
         public static bool SetterCalled, AsValue, Duplicate;
         public static string Label = "";
@@ -162,7 +222,7 @@ namespace FM.UI {
 }
 
 namespace Il2CppInterop.Runtime.InteropTypes {
-    public class Il2CppObjectBase { public IntPtr Pointer => IntPtr.Zero; }
+    public class Il2CppObjectBase { public IntPtr Pointer => new(1); }
 }
 namespace SI.Core {
     public class TypedValue {
@@ -173,17 +233,73 @@ namespace SI.Core {
         public bool IsNull => scalar is null;
         public Il2CppSystem.Type DataType => new(type);
         public T Get<T>() { GetCalls++; if (ThrowGet) throw new InvalidOperationException("fixture_get_failure"); return (T)scalar!; }
-        public Il2CppSystem.Object Get() { GetCalls++; throw new Exception("Record not requested in this test"); }
+        public Il2CppSystem.Object Get() { GetCalls++; return new() { Item = scalar }; }
+        public static TypedValue Create<T>(T value) => new(value, typeof(T).FullName!);
         public string AsString() { GetCalls++; return (string)scalar!; }
     }
 }
 namespace SI.Bindable {
     public class Bindings {
-        public struct Key { public string Path; }
-        public enum SetFlags { None = 0 }
-        public int ActiveCalls;
+        public struct Key { public string Path; public bool IsValid() => !string.IsNullOrEmpty(Path); }
+        public enum SetFlags { None = 0, Default = 1 }
+        public int ActiveCalls, Roots;
+        public bool ThrowBuild, ThrowDispose;
+        public enum NodeFlags { Default = 0, Temporary = 1 }
+        public enum GroupFlags { None = 0 }
+        public delegate void GroupChangedCallback();
+        public Key Create(ref Il2CppSystem.ReadOnlySpan<char> path, NodeFlags flags) {
+            if (!path.Text.StartsWith("FMFaceProbe") || path.Text.Contains('.')) throw new Exception("Invalid private root");
+            Roots++; return new() { Path = path.Text };
+        }
+        public void Set(ref Key key, SI.Core.TypedValue value, SetFlags flags) { if (!key.Path.StartsWith("FMFaceProbe")) throw new Exception("Cannot change existing UI"); }
+        public void Remove(ref Key key) { if (!key.Path.StartsWith("FMFaceProbe")) throw new Exception("Cannot remove existing UI"); Roots--; }
+        public GroupBuilder CreateGroup(Key key, GroupFlags flags) => new(this);
+        public class GroupBuilder {
+            private readonly Bindings owner; private int size;
+            public GroupBuilder(Bindings owner) { this.owner = owner; }
+            public GroupBuilder Add(int index, ref Key key, ref Il2CppSystem.ReadOnlySpan<char> path) { size++; return this; }
+            public Group Build(GroupChangedCallback? callback) { if (owner.ThrowBuild) throw new Exception("fixture_build_failure"); return new(size, owner.ThrowDispose); }
+        }
+        public class Group {
+            public int Count { get; }
+            private readonly bool throwDispose;
+            public Group(int count, bool throwDispose = false) { Count = count; this.throwDispose = throwDispose; }
+            public bool IsDone => true;
+            public SI.Core.TypedValue Get(int index) => new(null, "System.String");
+            public void Dispose() { if (throwDispose) throw new Exception("fixture_dispose_failure"); }
+        }
         public string GetPathDebug(ref Key key) => key.Path;
         public SI.Core.TypedValue Get(ref Key key) { ActiveCalls++; throw new Exception("Do not query data"); }
         public void SetInternal(ref Key key, SI.Core.TypedValue value, SetFlags flags) { ActiveCalls++; throw new Exception("Do not write data"); }
     }
+}
+
+namespace Il2CppInterop.Runtime.InteropTypes.Arrays {
+    public class Il2CppStructArray<T> { public T[] Values; public Il2CppStructArray(T[] values) { Values = values; } }
+}
+namespace SI.Core {
+    public struct DynamicNumber {
+        public enum NumberKind : byte { SignedWhole, UnsignedWhole, FloatingPoint, Invalid }
+        public enum FloatToWholeConversion { Truncate, Floor, Round, Ceil }
+        private readonly long signed; private readonly ulong unsigned; private readonly double floating;
+        public NumberKind Kind => initialized ? tag : NumberKind.Invalid;
+        private readonly NumberKind tag; private readonly bool initialized;
+        public DynamicNumber(long value) { signed = value; unsigned = 0; floating = 0; tag = NumberKind.SignedWhole; initialized = true; }
+        public DynamicNumber(ulong value) { signed = 0; unsigned = value; floating = 0; tag = NumberKind.UnsignedWhole; initialized = true; }
+        public DynamicNumber(double value) { signed = 0; unsigned = 0; floating = value; tag = NumberKind.FloatingPoint; initialized = true; }
+        public long GetLong(FloatToWholeConversion mode) => Kind == NumberKind.SignedWhole ? signed : throw new Exception("Wrong numeric access");
+        public ulong GetULong(FloatToWholeConversion mode) => Kind == NumberKind.UnsignedWhole ? unsigned : throw new Exception("Wrong numeric access");
+        public double GetDouble() => Kind == NumberKind.FloatingPoint ? floating : throw new Exception("Wrong numeric access");
+    }
+}
+public sealed class FakeProbeRuntime : ITeamProbeRuntime {
+    public bool Ready => true;
+    public bool Stall, WrongChildren;
+    public List<int> Started = new(); public int Closed;
+    public void Begin(int teamIndex) { Started.Add(teamIndex); }
+    public TeamProbeResult? Poll() => Stall ? null : new() { values = new() {
+        ["TeamContainer.HighestLevelYouthTeam"] = new() { record_table = "Team", record_index = WrongChildren ? 999 : 28346 },
+        ["TeamContainer.SecondHighestLevelYouthTeam"] = new() { record_table = "Team", record_index = WrongChildren ? 998 : 28347 }
+    } };
+    public void Close() { Closed++; }
 }

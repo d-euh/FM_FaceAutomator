@@ -134,3 +134,33 @@ remain running; no plugin reinstall/restart, player movement or repeat UI visits
 The next implementation must validate numeric conversions and safe targeted read lifecycle
 against these types before claiming general automatic squad filtering. Existing diagnostic
 DLL 0.2.0 and refresh DLL 0.2.3 remain byte-for-byte unchanged in this release.
+
+## Numeric / query signatures received 2026-11-21
+
+Static 0.2.0 report has no assembly errors. DynamicNumber is a CLR value type, with
+NumberKind byte enum SignedWhole=0/UnsignedWhole=1/FloatingPoint=2/Invalid=3. Verified
+GetLong/GetULong take FloatToWholeConversion; GetDouble takes no argument. Truncate=0,
+Floor=1, Round=2, Ceil=3. Read whole numbers with matching signedness, never via double.
+TypedValue.Get<T>() has no generic constraints. TeamReference(int index), TypedValue.Create<T>,
+Bindings.Create/Set/Remove, CreateGroup, GroupBuilder.Add/Build, Group.IsDone/Get/Dispose
+signatures are now known. Channel structs/actions were also captured, but raw native
+channel IDs/keys are not allocated or guessed by the implementation.
+
+App 0.16.7 / diagnostic DLL 0.3.0 adds a bounded probe through a private temporary
+binding root on an existing observed game Binding owner. It requires human native team
+540 and two seconds of the same safe-game policy used by the working refresh bridge.
+Main team properties include the two native youth refs; only returned refs matching
+28346/28347 enter the next two bounded queries. This is a controlled diagnostic, not a
+production table assigning these IDs or slots global meanings.
+
+Reflection signatures are validated before creating nodes, including a span constructor
+accepting rooted Il2CppStructArray<char>. No unrooted native string spans/offsets are
+constructed. Full span shapes/constructors and initialisation stage are recorded if
+interop support differs. Group and private root cleanup run even after timeout/busy or
+partial Begin failure; uncertainty is reported and stops new queries. Native SDK
+lifecycle is mocked in tests; actual game behavior remains unverified.
+
+User action: close game, update and reinstall team diagnostic with install_team_bindings.bat,
+start game, load Manchester United save, do not advance and wait 1–2 minutes, then
+export_team_bindings.bat and attach team-bindings.json. No repeated squad/player UI
+navigation is required for this probe. Refresh DLL remains 0.2.3 unchanged.

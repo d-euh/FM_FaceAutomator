@@ -9,6 +9,9 @@ public sealed class BindingObserver
 {
     private const BindingFlags Instance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
     private readonly Func<string, Type> resolve;
+    private readonly DynamicNumbers numbers;
+    public object? BindingOwner { get; private set; }
+    public int? HumanTeamIndex { get; private set; }
     private readonly MethodInfo pathDebug, dataType, isNull, getValue, getObject;
     private readonly Dictionary<string, MethodInfo> primitive = new();
     private readonly Dictionary<string, MethodInfo> fullNames = new();
@@ -52,6 +55,7 @@ public sealed class BindingObserver
             catch (ArgumentException) { /* Unsupported generic instantiations are reported as opaque values. */ }
         }
         primitive["System.String"] = Method(value, "AsString", "System.String");
+        numbers = new DynamicNumbers(resolve("SI.Core.DynamicNumber"), getValue);
     }
     public void NextFrame()
     {
@@ -75,8 +79,10 @@ public sealed class BindingObserver
             inspected_events++;
             if (!ValueObservations.Relevant(path)) return;
             ObservedValue value;
-            try { value = Decode(typedValue); }
+            try { value = DecodeSupplied(typedValue); }
             catch (Exception e) { read_errors++; value = new() { error = e.GetBaseException().GetType().Name }; }
+            if (path is "Human.Team" or "game.GameCurrentManager.Team" && value.record_table == "Team" && value.error is null)
+            { BindingOwner = bindings; HumanTeamIndex = value.record_index; }
             if (Values.Add(source, path, value, elapsed)) Dirty = true;
         }
         catch { read_errors++; }
@@ -89,7 +95,16 @@ public sealed class BindingObserver
         var name = method.Invoke(type, null) as string ?? "";
         return name.Length <= 256 ? name : throw new InvalidOperationException("type_name_too_long");
     }
-    private ObservedValue Decode(object value)
+    public static string? DisplayText(string value)
+    {
+        if (!value.StartsWith("\u0001", StringComparison.Ordinal)) return value.Length <= 256 ? value : value[..256];
+        var start = value.LastIndexOf('\u0002');
+        if (start < 0) return null;
+        var end = value.IndexOf('\u0001', start + 1);
+        if (end < 0 || end - start - 1 > 256) return null;
+        return value.Substring(start + 1, end - start - 1);
+    }
+    public ObservedValue DecodeSupplied(object value)
     {
         var result = new ObservedValue { is_null = isNull.Invoke(value, null) is true };
         if (result.is_null) return result;
@@ -97,10 +112,16 @@ public sealed class BindingObserver
         result.data_type = TypeName(type);
         try
         {
-            if (primitive.TryGetValue(result.data_type, out var method))
+            if (result.data_type == "SI.Core.DynamicNumber") numbers.Read(value, result);
+            else if (result.data_type == "SI.Bindable.NullReference") result.is_null = true;
+            else if (primitive.TryGetValue(result.data_type, out var method))
             {
                 var scalar = method.Invoke(value, null);
-                if (scalar is string text && text.Length > 256) scalar = text[..256];
+                if (scalar is string text)
+                {
+                    result.display_text = DisplayText(text);
+                    if (text.Length > 256) scalar = text[..256];
+                }
                 if (scalar is float f && !float.IsFinite(f) || scalar is double d && !double.IsFinite(d))
                     result.error = "nonfinite_number";
                 else result.scalar = scalar;

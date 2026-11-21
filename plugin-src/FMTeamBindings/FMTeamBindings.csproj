@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
-    <Version>0.2.0</Version><Deterministic>true</Deterministic>
+    <Version>0.3.0</Version><Deterministic>true</Deterministic>
     <BepInExCoreDir Condition="'$(BepInExCoreDir)' == ''">$(MSBuildThisFileDirectory)../../references/BepInEx/core</BepInExCoreDir>
   </PropertyGroup>
   <ItemGroup>
@@ -9,6 +9,7 @@
     <Reference Include="BepInEx.Unity.IL2CPP"><HintPath>$(BepInExCoreDir)/BepInEx.Unity.IL2CPP.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Il2CppInterop.Runtime"><HintPath>$(BepInExCoreDir)/Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="0Harmony"><HintPath>$(BepInExCoreDir)/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Compile Include="../FMFaceRefresh/GameStatePolicy.cs" Link="GameStatePolicy.cs" />
     <Compile Include="../FMFaceRefresh.Diagnostics/Report.cs" Link="BuildReport.cs" />
   </ItemGroup>
 </Project>

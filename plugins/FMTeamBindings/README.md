@@ -1,11 +1,10 @@
-# FM Team Binding Diagnostics 0.2.0
+# FM Team Binding Diagnostics 0.3.0
 
 Separate BepInEx 6 Unity IL2CPP diagnostic for FM27 Steam build 26620374.
-Use `install_team_bindings.bat` with FM27 closed. Start the game and load a save.
-Within ten minutes of starting the game, open Manchester United first/U21/U18 squad
-pages and both controlled test-player profiles. Wait a few seconds per page.
-After at least 60 seconds from startup, run `export_team_bindings.bat`.
-No player move, AI request, image deletion or refresh test is required.
+Use `install_team_bindings.bat` with FM27 closed. Start the game and load the
+Manchester United save. Do not advance the game; wait 1–2 minutes, then run
+`export_team_bindings.bat`. No separate squad/profile screen visits, player moves,
+AI requests, image deletions or refresh tests are required.
 
 Output: `BepInEx/diagnostics/FMTeamBindings/team-bindings.json`, exported to the app's
 `diagnostics/team-bindings.json`. Error reports are useful too. Old reports from before
@@ -34,9 +33,26 @@ There are 512 unique path/value records maximum, 128 path inspections per tick a
 the schema scan. Values may include player/team names and native record IDs. Reports
 with zero observations are exportable and include hook/capture counters.
 
-It does not actively query players or open binding channels, change game data/context, edit
-saves/facepacks, or invoke Codex. The existing refresh plugin is not replaced. There is
-no automatic first/reserve/youth filter yet; actual native type values still need verification.
+The targeted probe uses a private temporary binding root, a TeamReference(index),
+and the game's normal binding group read API. It starts only for an observed human
+team index 540 and stable loaded-game state. Only the main result's native youth
+references matching the previously observed 28346/28347 are queried next (max 3 teams).
+These indexes are diagnostic examples, never universal squad categories.
+
+DynamicNumber uses its verified Kind/GetLong/GetULong/GetDouble API. No memory offsets,
+float-to-ID truncation or lossy double conversion for unsigned integers are used.
+Private native char arrays root path spans until cleanup. Missing signatures/span
+constructors fail before binding creation; no unverified string-pointer construction.
+
+Every query group has a 15-second deadline and is disposed with its private root
+removed on completion/failure/busy state. Partial-build cleanup uncertainty is reported
+and stops further queries. Results and root/group counters are exported even on error.
+No existing UI values, gameplay/continue events, save files or facepacks are changed,
+and no Codex calls are made. The temporary binding tree itself is changed, explicitly
+recorded in the report. The existing FMFaceRefresh DLL is not replaced.
+
+Actual native reads and classification still require verification on the user's PC.
+There is no production first/reserve/youth filter enabled yet.
 
 Source: `plugin-src/FMTeamBindings`. Host-only descriptor tests:
 
