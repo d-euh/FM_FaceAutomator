@@ -144,6 +144,10 @@ var ownerBindings = new SI.Bindable.Bindings();
 ownerObserver.Observe(ownerBindings, new SI.Bindable.Bindings.Key { Path = "Human.Team" }, new SI.Core.TypedValue(new FM.UI.TeamReference(540), "FM.UI.TeamReference"), "set", 20);
 Check(ownerObserver.HumanTeamIndex == 540, "Bind only to an observed current team");
 var query = new TeamQueryRuntime(name => typeof(SI.Core.TypedValue).Assembly.GetType(name, true)!, ownerObserver);
+SI.Bindable.Bindings.MaxGroupSize = 1;
+try { query.Begin(540); throw new Exception("Group limit must reject before allocation"); } catch (InvalidOperationException) { }
+Check(ownerBindings.Roots == 0, "Never exceed native group limit");
+SI.Bindable.Bindings.MaxGroupSize = 64;
 query.Begin(540); var queryValues = query.Poll(); query.Close();
 Check(queryValues?.values.Count == TeamQueryRuntime.Properties.Length && query.groups_disposed == 1
     && query.temporary_roots_created == query.temporary_roots_removed && ownerBindings.Roots == 0, "Owned temporary tree and group are removed");
@@ -242,6 +246,7 @@ namespace SI.Bindable {
     public class Bindings {
         public struct Key { public string Path; public bool IsValid() => !string.IsNullOrEmpty(Path); }
         public enum SetFlags { None = 0, Default = 1 }
+        public static int MaxGroupSize { get; set; } = 64;
         public int ActiveCalls, Roots;
         public bool ThrowBuild, ThrowDispose;
         public enum NodeFlags { Default = 0, Temporary = 1 }

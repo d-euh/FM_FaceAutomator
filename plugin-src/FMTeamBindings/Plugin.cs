@@ -53,6 +53,7 @@ public sealed class Plugin : BasePlugin
             probe = new { state = teamProbe?.state ?? "unavailable", human_team_index = observer?.HumanTeamIndex,
                 binding_owner_observed = observer?.BindingOwner is not null, api_stage = TeamQueryRuntime.InitialisationStage, safe_game_state = queryState?.Reason,
                 queries_started = teamProbe?.queries_started ?? 0, groups_closed = teamProbe?.groups_closed ?? 0,
+                maximum_group_size = teamRuntime?.maximum_group_size,
                 groups_created = teamRuntime?.groups_created ?? 0, groups_disposed = teamRuntime?.groups_disposed ?? 0,
                 roots_created = teamRuntime?.temporary_roots_created ?? 0, roots_removed = teamRuntime?.temporary_roots_removed ?? 0,
                 results = teamProbe?.results },

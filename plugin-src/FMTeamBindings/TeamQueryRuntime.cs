@@ -12,12 +12,13 @@ public sealed class TeamQueryRuntime : ITeamProbeRuntime
         "Club", "Club.UniqueId", "Club.Name", "Club.ReservesTeam", "Club.YouthTeam", "TeamContainer.HighestLevelYouthTeam", "TeamContainer.SecondHighestLevelYouthTeam" };
     private readonly BindingObserver observer;
     private readonly ConstructorInfo teamConstructor, spanConstructor;
-    private readonly MethodInfo create, set, remove, pathDebug, validKey, createGroup, add, build, isDone, read, dispose, count, makeValue;
+    private readonly MethodInfo create, set, remove, pathDebug, validKey, groupLimit, createGroup, add, build, isDone, read, dispose, count, makeValue;
     private readonly object temporary, setDefault, groupDefault;
     private readonly List<object> roots = new();
     private object? owner, key, group;
     private readonly string prefix = "FMFaceProbe" + Guid.NewGuid().ToString("N");
     private bool createAttempted, builderAllocated;
+    public int? maximum_group_size { get; private set; }
     public bool Ready => observer.BindingOwner is not null && observer.HumanTeamIndex == 540;
     public int groups_created { get; private set; }
     public int groups_disposed { get; private set; }
@@ -28,6 +29,10 @@ public sealed class TeamQueryRuntime : ITeamProbeRuntime
         InitialisationStage = "reference_and_value_signatures";
         this.observer = observer;
         var bindings = resolve("SI.Bindable.Bindings");
+        groupLimit = bindings.GetMethod("get_MaxGroupSize", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new MissingMethodException("Bindings.MaxGroupSize");
+        if (groupLimit.ReturnType != typeof(int) || groupLimit.GetParameters().Length != 0)
+            throw new InvalidOperationException("unexpected_group_limit_type");
         var keyType = resolve("SI.Bindable.Bindings+Key");
         var value = resolve("SI.Core.TypedValue");
         var team = resolve("FM.UI.TeamReference");
@@ -80,6 +85,8 @@ public sealed class TeamQueryRuntime : ITeamProbeRuntime
     public void Begin(int teamIndex)
     {
         if (!Ready || owner is not null) throw new InvalidOperationException("query_owner_not_ready");
+        maximum_group_size = (int)groupLimit.Invoke(null, null)!;
+        if (maximum_group_size < Properties.Length) throw new InvalidOperationException("probe_group_too_large");
         owner = observer.BindingOwner;
         var reference = teamConstructor.Invoke(new object[] { teamIndex }); roots.Add(reference);
         var actual = (int)BindingObserver.Method(reference.GetType(), "get_Index", "System.Int32").Invoke(reference, null)!;
