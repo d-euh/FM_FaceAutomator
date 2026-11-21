@@ -29,6 +29,7 @@ class SquadTests(unittest.TestCase):
         self.c['scope_rules']=copy.deepcopy(DEFAULT_SCOPE)
         self.c['scope_rules'].update(preset='custom',clubs={'680':'outgoing'},squad_types=['first'])
         self.row={'id':'1','club_id':'602','from_club_id':'680','age':20,
+                  'from_team_id':540,'from_registered_club_id':'680',
                   'squad_evidence':{'outgoing':{'kind':'first'},'incoming':{'kind':'youth'}}}
 
     def test_departure_uses_source_and_arrival_uses_destination(self):
@@ -165,18 +166,20 @@ class EngineSquadTests(unittest.TestCase):
         event = json.loads(self.e.db.execute('SELECT data FROM jobs ORDER BY id DESC LIMIT 1').fetchone()[0])
         self.assertEqual(event['from_team_id'], 901)
 
-    def test_missing_registration_stays_unknown_without_historical_evidence(self):
+    def test_missing_registration_is_not_queued_or_announced_without_historical_evidence(self):
         self.c['scope_rules']['clubs'] = {'602': 'outgoing'}
         with self.e.db:
             self.e.db.execute('DELETE FROM people')
         self.e.ingest(self.snap(602, None), now=3)
         self.e.ingest(self.snap(None, None), now=4)
         self.e.ingest(self.snap(680, 540), now=5)
-        job = self.e.db.execute('SELECT * FROM jobs ORDER BY id DESC LIMIT 1').fetchone()
-        self.e._team_reader.resolve = Mock(side_effect=AssertionError('Missing registration'))
-        row = self.e.enrich_squads(job)
-        self.assertIn('방출 전 선수단 기록 없음', row['squad_evidence']['outgoing']['reason'])
-        self.e._team_reader.resolve.assert_not_called()
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM jobs').fetchone()[0], 1)
+        self.assertFalse(any(job['status'] in ('pending', 'blocked') for job in self.e.jobs()))
+        summary = json.loads(self.e.meta('detection_summary'))
+        self.assertEqual((summary['club_changes'], summary['queued'], summary['changes']), (0, 0, []))
+        runner = Mock()
+        self.e.run_one(runner)
+        runner.assert_not_called()
 
     def test_free_agent_arrival_waits_for_new_team_then_recovers_existing_job(self):
         self.c['scope_rules']['clubs'] = {'680': 'incoming'}
@@ -200,9 +203,9 @@ class EngineSquadTests(unittest.TestCase):
         self.e.ingest(self.snap(700, None), now=3)
         self.e.ingest(self.snap(None, None), now=4)
         self.e.ingest(self.snap(680, 540), now=5)
-        event = json.loads(self.e.db.execute('SELECT data FROM jobs ORDER BY id DESC LIMIT 1').fetchone()[0])
-        self.assertIsNone(event['from_team_id'])
-        self.assertEqual(event['from_registered_club_id'], '700')
+        events = [json.loads(job['data']) for job in self.e.jobs()]
+        self.assertFalse(any(event['from_club_id'] == '700' for event in events))
+        self.assertEqual(json.loads(self.e.meta('detection_summary'))['queued'], 0)
 
     def test_registration_history_survives_restart_without_carrying_to_reused_identity(self):
         self.c['scope_rules']['clubs'] = {'602': 'outgoing'}
@@ -220,3 +223,55 @@ class EngineSquadTests(unittest.TestCase):
         self.e.ingest(replacement, now=6)
         person = json.loads(self.e.db.execute('SELECT data FROM people').fetchone()[0])
         self.assertNotIn('last_squad_registration', person)
+
+    def test_existing_unstarted_missing_departure_is_hidden_without_erasing_history(self):
+        job = self.e.jobs()[0]
+        row = json.loads(job['data'])
+        row['from_team_id'] = None
+        with self.e.db:
+            self.e.db.execute("UPDATE jobs SET data=?,status='blocked' WHERE id=?", (json.dumps(row), job['id']))
+        self.e.close()
+        self.e = Engine(self.c)
+        self.addCleanup(self.e.close)
+        self.assertEqual(self.e.jobs(), [])
+        saved = self.e.db.execute('SELECT status,data FROM jobs WHERE id=?', (job['id'],)).fetchone()
+        self.assertEqual(saved['status'], 'deleted')
+        self.assertEqual(json.loads(saved['data']), row)
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
+
+    def test_missing_departure_does_not_hide_paid_or_editing_jobs(self):
+        job = self.e.jobs()[0]
+        row = json.loads(job['data'])
+        row['from_team_id'] = None
+        with self.e.db:
+            self.e.db.execute("UPDATE jobs SET data=?,status='blocked',started=10 WHERE id=?", (json.dumps(row), job['id']))
+        self.e.discard_missing_departures()
+        self.assertEqual(self.e.jobs()[0]['status'], 'blocked')
+        with self.e.db:
+            self.e.db.execute('UPDATE jobs SET started=NULL WHERE id=?', (job['id'],))
+            self.e.db.execute('INSERT INTO job_custom(job_id,editing) VALUES (?,1)', (job['id'],))
+        self.e.discard_missing_departures()
+        self.assertEqual(self.e.jobs()[0]['status'], 'blocked')
+
+    def test_selected_incoming_side_can_still_run_without_departure_history(self):
+        job = self.e.jobs()[0]
+        row = json.loads(job['data'])
+        row['from_team_id'] = None
+        self.c['scope_rules']['clubs'] = {'680': 'outgoing', '602': 'incoming'}
+        with self.e.db:
+            self.e.db.execute('UPDATE jobs SET data=? WHERE id=?', (json.dumps(row), job['id']))
+        self.e._team_reader.resolve = Mock(return_value={900: native(900, 'first', 602)})
+        self.e.discard_missing_departures()
+        self.assertIsNotNone(self.e.next_job(time.time()))
+        self.assertEqual(json.loads(self.e.jobs()[0]['data'])['squad_evidence']['incoming']['kind'], 'first')
+
+    def test_all_squads_include_missing_departures_without_native_queries(self):
+        self.c['scope_rules']['squad_types'] = ['first', 'reserve', 'youth']
+        self.c['scope_rules']['clubs'] = {'602': 'outgoing'}
+        with self.e.db:
+            self.e.db.execute('DELETE FROM people')
+        self.e.ingest(self.snap(602, None), now=3)
+        self.e.ingest(self.snap(None, None), now=4)
+        self.assertEqual(self.e.ingest(self.snap(680, 540), now=5), 1)
+        self.e.discard_missing_departures()
+        self.assertTrue(any(job['status'] == 'pending' for job in self.e.jobs()))

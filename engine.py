@@ -503,6 +503,25 @@ class Engine:
             if self.meta("save_update_interval") != str(config["save_update_interval"]):
                 self.setmeta("save_update_interval", config["save_update_interval"])
                 self.setmeta("save_updates_pending", 0)
+        self.discard_missing_departures()
+
+    def discard_missing_departures(self):
+        if not squad_types.restricted(self.c):
+            return
+        managed = json.loads(self.meta('managed') or '[]')
+        with self.db:
+            jobs = self.db.execute(
+                "SELECT id,data FROM jobs WHERE status IN ('pending','blocked') AND started IS NULL AND artifact IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM paid_results WHERE job_id=jobs.id) "
+                "AND NOT EXISTS (SELECT 1 FROM job_custom WHERE job_id=jobs.id AND editing=1)").fetchall()
+            for job in jobs:
+                if scope_rules.missing_departure(json.loads(job['data']), self.c, managed):
+                    self.db.execute(
+                        "UPDATE jobs SET status='deleted',note=? WHERE id=? AND started IS NULL "
+                        "AND status IN ('pending','blocked') AND artifact IS NULL "
+                        "AND NOT EXISTS (SELECT 1 FROM paid_results WHERE job_id=jobs.id) "
+                        "AND NOT EXISTS (SELECT 1 FROM job_custom WHERE job_id=jobs.id AND editing=1)",
+                        (scope_rules.MISSING_DEPARTURE, job['id']))
 
     def close(self):
         for lock in self._editing_locks.values():
@@ -681,7 +700,8 @@ class Engine:
                 club_changed = before is not None and before["club_id"] != row["club_id"]
                 if club_changed and row['club_id']:
                     event['transfer_type'], event['transfer_type_reason'] = classify_transfer(before, row)
-                summary["club_changes"] += int(club_changed)
+                ignored_departure = scope_rules.missing_departure(event, self.c, snapshot.get("managed_club_ids", []))
+                summary["club_changes"] += int(club_changed and not ignored_departure)
                 added = before is None and self.c["initial_generation"]
                 reason = scope_reason(event, self.c, snapshot.get("managed_club_ids", []))
                 outcome = "소속 변화 없음" if before else "최초 기준 기록"
@@ -692,7 +712,7 @@ class Engine:
                         count += 1
                         outcome = "생성 대기열 추가"
                     else:
-                        summary["filtered"] += 1
+                        summary["filtered"] += int(not ignored_departure)
                         outcome = "생성 제외: " + reason
                 elif reason != "대상":
                     outcome += " · 생성 범위: " + reason
@@ -703,9 +723,9 @@ class Engine:
                             previous_contract_club_id=before.get("contract_club_id") if before else None, result=outcome)
                 if 'transfer_type' in event:
                     item.update(transfer_type=event['transfer_type'], transfer_type_reason=event['transfer_type_reason'])
-                if row["id"] in requested and len(summary["tracked"]) < 100:
+                if not ignored_departure and row["id"] in requested and len(summary["tracked"]) < 100:
                     summary["tracked"].append(item)
-                if changed and len(summary["changes"]) < 200:
+                if changed and not ignored_departure and len(summary["changes"]) < 200:
                     summary["changes"].append(item)
                 self.db.execute("INSERT OR REPLACE INTO people VALUES (?,?)", (row["id"], json.dumps(row, ensure_ascii=False)))
             # A deleted player must not get a stale portrait applied.
@@ -1183,6 +1203,7 @@ class Engine:
         self.last_job_id = None
         if cancel_event is not None and cancel_event.is_set():
             return False
+        self.discard_missing_departures()
         # Resume a fully rendered image after a crash without buying another image.
         ready = self.db.execute("SELECT id FROM jobs WHERE status='generated' AND (? IS NULL OR id=?) ORDER BY id LIMIT 1", (job_id, job_id)).fetchone()
         if ready:

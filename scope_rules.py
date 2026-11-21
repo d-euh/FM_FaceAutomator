@@ -93,6 +93,20 @@ def selected(row, config, managed):
     return bool(matching_sides(row, config, managed))
 
 
+MISSING_DEPARTURE = '방출 전 선수단 기록 없음 · 감지 제외'
+
+
+def missing_departure(row, config, managed):
+    if row.get('manual_request') or not squad_types.restricted(config) or not config.get('scope_rules'):
+        return False
+    if matching_sides(row, config, managed) != ['outgoing']:
+        return False
+    return squad_types.registration({
+        'club_id': row.get('from_club_id'),
+        'registered_club_id': row.get('from_registered_club_id', row.get('from_club_id')),
+        'registered_team_id': row.get('from_team_id')}) is None
+
+
 def reason(row, config, managed):
     if row["id"] in config["exclude_player_ids"]:
         return "제외 선수 ID"
@@ -105,6 +119,8 @@ def reason(row, config, managed):
         return excluded
     if config["max_age"] and (row.get("age") is None or int(row["age"]) > config["max_age"]):
         return "나이 제한"
+    if missing_departure(row, config, managed):
+        return MISSING_DEPARTURE
     squad_result = squad_types.decision(row, config['scope_rules'], matching_sides(row, config, managed))
     if squad_result == 'unknown':
         return squad_types.WAIT
