@@ -304,7 +304,7 @@ class App:
         parent.rowconfigure(0, weight=1)
         left = ttk.Frame(parent)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
-        hero = ttk.Frame(left, style="Panel.Card.TFrame", padding=16)
+        hero = ttk.Frame(left, style="Rounded.Panel.Card.TFrame", padding=16)
         hero.pack(fill="both", expand=True)
         ttk.Label(hero, text="자동 생성", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(hero, text="이적 감지 범위", style="CardMuted.TLabel").pack(anchor="w")
@@ -324,12 +324,12 @@ class App:
         stats.pack(side="bottom", fill="x", pady=(16, 0), before=hero)
         self.metric_vars = {}
         for key, label in (("pending", "대기 중"), ("running", "생성 중"), ("applied", "저장 완료")):
-            card = ttk.Frame(stats, style="Panel.Card.TFrame", padding=10)
+            card = ttk.Frame(stats, style="Rounded.Panel.Card.TFrame", padding=10)
             card.pack(side="left", fill="both", expand=True, padx=(0, 10) if key != "applied" else 0)
             ttk.Label(card, text=label, style="CardMuted.TLabel").pack(anchor="w")
             self.metric_vars[key] = tk.StringVar(value="0")
             ttk.Label(card, textvariable=self.metric_vars[key], style="Metric.TLabel").pack(anchor="w", pady=(4, 0))
-        recent = ttk.Frame(parent, style="Panel.Card.TFrame", padding=(20, 12))
+        recent = ttk.Frame(parent, style="Rounded.Panel.Card.TFrame", padding=(20, 12))
         recent.grid(row=0, column=1, sticky="nsew")
         ttk.Label(recent, text="최근 생성된 페이스온", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 14))
         self.recent_canvas = tk.Canvas(recent, width=350, height=350, background=PREVIEW_BACKGROUND, highlightthickness=0)

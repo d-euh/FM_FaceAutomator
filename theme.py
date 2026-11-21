@@ -20,13 +20,13 @@ PREVIEW_BACKGROUND = "#D4D6DD"
 DISABLED = "#A6A4AD"
 
 
-def button_image(window, radius, color, outline=None):
+def button_image(window, radius, color, outline=None, *, background=None, outline_width=2):
     size = 2 * radius + 1
     scale = 3
-    image = Image.new("RGBA", (size * scale, size * scale))
+    image = Image.new("RGBA", (size * scale, size * scale), background)
     ImageDraw.Draw(image).rounded_rectangle(
         (0, 0, image.width - 1, image.height - 1), radius=radius * scale,
-        fill=color, outline=outline, width=2 * scale)
+        fill=color, outline=outline, width=outline_width * scale)
     return ImageTk.PhotoImage(image.resize((size, size), Image.Resampling.LANCZOS), master=window)
 
 
@@ -109,6 +109,12 @@ def apply_theme(window, family):
     style.configure("Muted.TLabel", foreground=MUTED)
     style.configure("Card.TFrame", background=SURFACE, borderwidth=0, relief="flat")
     style.configure("Panel.Card.TFrame", background=SURFACE, borderwidth=1, relief="solid", bordercolor=BORDER)
+    panel_image = button_image(window, 8, SURFACE, BORDER,
+                               background=BACKGROUND, outline_width=1)
+    style.element_create("Panel.rounded", "image", panel_image,
+                         border=8, padding=1, width=0, height=0, sticky="nsew")
+    style.layout("Rounded.Panel.Card.TFrame", [("Panel.rounded", {"sticky": "nsew"})])
+    window.panel_theme_image = panel_image
     style.configure("CardText.TLabel", background=SURFACE, foreground=TEXT)
     style.configure("CardTitle.TLabel", background=SURFACE, foreground=TEXT, font=(family, 13, "bold"))
     style.configure("CardMuted.TLabel", background=SURFACE, foreground=MUTED)
