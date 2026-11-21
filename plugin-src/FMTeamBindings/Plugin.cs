@@ -9,11 +9,16 @@ using FMFaceRefresh.Diagnostics;
 
 namespace FMTeamBindings;
 
-[BepInPlugin("io.github.d_euh.fmface.teambindings", "FM Team Binding Diagnostics", "0.1.1")]
+[BepInPlugin("io.github.d_euh.fmface.teambindings", "FM Team Binding Diagnostics", "0.2.0")]
 public sealed class Plugin : BasePlugin
 {
     private static Plugin? instance;
-    private Harmony? harmony;
+    private Harmony? harmony, observerHarmony;
+    private BindingObserver? observer;
+    private string observerState = "initialising";
+    private double lastSaved;
+    private bool schemaSucceeded;
+    private const double CaptureSeconds = 600;
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private readonly List<SchemaResult> schemas = new();
     private readonly List<object> shapes = new(), errors = new();
@@ -35,16 +40,27 @@ public sealed class Plugin : BasePlugin
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Output)!);
         var data = JsonSerializer.SerializeToUtf8Bytes(new {
-            kind = "fm_team_bindings", schema_version = 1, tool_version = "0.1.1", state,
-            mode = "runtime_schema_only", generated_at_utc = DateTime.UtcNow,
+            kind = "fm_team_bindings", schema_version = 1, tool_version = "0.2.0", state,
+            mode = "runtime_schema_and_observed_values", generated_at_utc = DateTime.UtcNow,
             detected_steam_build = Report.SteamBuild(Paths.GameRootPath),
             game_data_queried = false, game_state_modified = false,
             schema_methods_invoked = descriptorCalls > 0, descriptor_call_attempts = descriptorCalls, schemas, types = shapes, errors,
-            notice = "Allowlisted static binding schema descriptors only. No player data, channels, game writes, portraits, or authentication data. Not a verified squad classification."
+            observations = new {
+                state = observerState, capture_limit_seconds = CaptureSeconds,
+                elapsed_seconds = Math.Round(clock.Elapsed.TotalSeconds, 2),
+                observed_existing_ui_values_only = true, values = observer?.Values.rows,
+                dropped = observer?.Values.dropped ?? 0,
+                seen_events = observer?.seen_events ?? 0, inspected_events = observer?.inspected_events ?? 0,
+                skipped_for_frame_budget = observer?.skipped_for_frame_budget ?? 0,
+                read_errors = observer?.read_errors ?? 0, event_counts = observer?.event_counts
+            },
+            notice = "Allowlisted schema descriptors and passive copies of existing UI binding values only. No channels opened, active player queries, game writes, portraits, prompts or authentication data. Observed names/record IDs may be included. Not a verified squad classification."
         });
         if (data.Length > 8 * 1024 * 1024) throw new InvalidOperationException("report_too_large");
         var temporary = Output + ".tmp";
         File.WriteAllBytes(temporary, data); File.Move(temporary, Output, true);
+        lastSaved = clock.Elapsed.TotalSeconds;
+        if (observer is not null) observer.Dirty = false;
     }
     public override void Load()
     {
@@ -81,7 +97,8 @@ public sealed class Plugin : BasePlugin
             Save("waiting_for_main_thread");
             harmony = new Harmony("io.github.d_euh.fmface.teambindings");
             harmony.Patch(tick, postfix: new HarmonyMethod(typeof(Plugin), nameof(Tick)));
-            Log.LogInfo("Team schema report scheduled on main thread. No save/player data will be queried.");
+            InstallObserver();
+            Log.LogInfo("Team schema report and bounded UI observation enabled. No data channels will be opened.");
         }
         catch (Exception e)
         {
@@ -91,7 +108,49 @@ public sealed class Plugin : BasePlugin
             Log.LogError("Team schema diagnostic unavailable: " + e.GetBaseException().GetType().Name);
         }
     }
-    private static void Tick() { instance?.Step(); }
+    private void InstallObserver()
+    {
+        try
+        {
+            foreach (var name in new[] { "SI.Bindable.Bindings+Key", "SI.Bindable.Bindings+SetFlags", "SI.Core.TypedValue+ITypedValuePool" })
+                shapes.Add(Descriptors.Shape(Resolve(name)));
+            observer = new BindingObserver(Resolve);
+            observerHarmony = new Harmony("io.github.d_euh.fmface.teamvalues");
+            observerHarmony.Patch(observer.Get, postfix: new HarmonyMethod(typeof(Plugin), nameof(AfterGet)));
+            observerHarmony.Patch(observer.SetInternal, postfix: new HarmonyMethod(typeof(Plugin), nameof(AfterSet)));
+            observerState = "capturing";
+        }
+        catch (Exception e)
+        {
+            observerHarmony?.UnpatchSelf(); observer = null; observerState = "unavailable";
+            errors.Add(new { stage = "observer_initialise", error = e.GetBaseException().GetType().Name });
+        }
+    }
+    private static void AfterGet(object __instance, object[] __args, object __result)
+    { instance?.Observe(__instance, __args, __result, "get"); }
+    private static void AfterSet(object __instance, object[] __args)
+    { if (__args.Length >= 2) instance?.Observe(__instance, __args, __args[1], "set"); }
+    private void Observe(object bindings, object[] arguments, object? value, string source)
+    {
+        if (observer is null || arguments.Length == 0 || value is null || clock.Elapsed.TotalSeconds > CaptureSeconds) return;
+        try { observer.Observe(bindings, arguments[0], value, source, clock.Elapsed.TotalSeconds); }
+        catch { /* Diagnostics must never affect the game's UI flow. */ }
+    }
+    private static void Tick()
+    {
+        try { instance?.Pulse(); }
+        catch { /* A report I/O error must not escape into the game. */ }
+    }
+    private void Pulse()
+    {
+        observer?.NextFrame();
+        if (clock.Elapsed.TotalSeconds > CaptureSeconds && observerState == "capturing")
+        { observerState = "capture_finished"; if (observer is not null) observer.Dirty = true; }
+        Step();
+        if (finished && observer is not null && clock.Elapsed.TotalSeconds - lastSaved >= 2
+            && (observer.Dirty || observerState == "capturing" && clock.Elapsed.TotalSeconds - lastSaved >= 10))
+            Save(schemaSucceeded ? "complete" : "complete_with_errors");
+    }
     private void Step()
     {
         if (busy || finished || clock.Elapsed.TotalSeconds < 30) return;
@@ -111,7 +170,8 @@ public sealed class Plugin : BasePlugin
                 if (next == Descriptors.References.Length)
                 {
                     finished = true;
-                    Save(errors.Count == 0 && schemas.All(s => !s.HasErrors && s.complete) ? "complete" : "complete_with_errors");
+                    schemaSucceeded = errors.Count == 0 && schemas.All(s => !s.HasErrors && s.complete);
+                    Save(schemaSucceeded ? "complete" : "complete_with_errors");
                     Log.LogInfo("Team schema report saved: " + Output);
                 }
                 else Save("reading_schema");

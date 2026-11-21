@@ -61,9 +61,57 @@ Check(!shape.GetProperty("is_enum").GetBoolean() && shape.GetProperty("methods")
 Check(!TeamReference.SetterCalled, "Shape collection cannot invoke getters/setters");
 Console.WriteLine("PASS: actual BindingKind structure, reference/scalar schemas, chunked 1500 rows, preserved partial data/counts, bounds, duplicates, exact signatures, no player data/state writes.");
 
+// Observation policy tests do not call the game or read unrelated UI values.
+Check(ValueObservations.Relevant("context.person.Team.TeamType"), "Watch exact team-kind property");
+Check(ValueObservations.Relevant("context.club.YouthTeam.Name"), "Watch team names in a football context");
+Check(!ValueObservations.Relevant("Steam.Login.Name") && !ValueObservations.Relevant("account.Name")
+    && !ValueObservations.Relevant("context.person.Password") && !ValueObservations.Relevant("ui.Name"), "Never capture unrelated UI/account fields");
+var observed = new ValueObservations();
+Check(observed.Add("get", "context.team.IsFirstTeam", new() { data_type = "System.Boolean", scalar = true }, 1), "Keep observed scalar");
+Check(!observed.Add("set", "context.team.IsFirstTeam", new() { data_type = "System.Boolean", scalar = true }, 2), "Deduplicate same path/value across sources");
+Check(observed.Add("set", "context.team.IsFirstTeam", new() { data_type = "System.Boolean", scalar = false }, 3), "Preserve value transition");
+Check(!observed.Add("get", "Steam.Login.Name", new() { scalar = "secret" }, 3), "Reject unrelated path before storage");
+for (int i = 2; i < ValueObservations.Limit; i++) observed.Add("get", "context.team.TeamType", new() { scalar = i }, i);
+Check(!observed.Add("get", "context.team.TeamType", new() { scalar = 9999 }, 9999) && observed.rows.Count == ValueObservations.Limit && observed.dropped == 1, "Bound report storage");
+Check(observed.rows[0].sequence == 1 && observed.rows[1].value.scalar is false, "Keep order and raw booleans without guessed classification");
+Console.WriteLine("PASS: passive observation path allowlist, value changes, cross-source deduplication, unrelated UI exclusion and capacity bounds.");
+
+// Use signature-compatible fake Bindings/TypedValue to verify no active reads/writes.
+var observer = new BindingObserver(name => typeof(SI.Core.TypedValue).Assembly.GetType(name, true)!);
+var bindings = new SI.Bindable.Bindings();
+var key = new SI.Bindable.Bindings.Key { Path = "context.team.IsFirstTeam" };
+observer.Observe(bindings, key, new SI.Core.TypedValue(true, "System.Boolean"), "set", 4);
+Check(observer.Values.rows.Single().value.scalar is true, "Decode only already supplied values");
+observer.Observe(bindings, new SI.Bindable.Bindings.Key { Path = "context.club.YouthTeam.Name" }, new SI.Core.TypedValue("Manchester U18", "System.String"), "set", 5);
+Check((string?)observer.Values.rows[1].value.scalar == "Manchester U18", "Decode supplied string with AsString");
+var opaque = new SI.Core.TypedValue(new object(), "Unverified.NativeValue");
+observer.Observe(bindings, new SI.Bindable.Bindings.Key { Path = "context.team.TeamType" }, opaque, "set", 6);
+Check(opaque.GetCalls == 0 && observer.Values.rows[2].value.error == "unsupported_data_type", "Do not reinterpret unknown native layouts");
+var ignored = new SI.Core.TypedValue("secret", "System.String");
+observer.Observe(bindings, new SI.Bindable.Bindings.Key { Path = "account.Name" }, ignored, "set", 7);
+Check(ignored.GetCalls == 0 && observer.Values.rows.Count == 3, "Filter unrelated paths before inspecting value");
+for (int i = 0; i < 150; i++) observer.Observe(bindings, key, new SI.Core.TypedValue(true, "System.Boolean"), "set", 8);
+Check(observer.skipped_for_frame_budget > 0 && observer.inspected_events <= 128, "Bound native path reads per frame");
+observer.NextFrame();
+var broken = new SI.Core.TypedValue(3, "System.Int32") { ThrowGet = true };
+observer.Observe(bindings, new SI.Bindable.Bindings.Key { Path = "context.team.TeamType" }, broken, "set", 9);
+Check(observer.Values.rows[^1].value.data_type == "System.Int32" && observer.Values.rows[^1].value.error == "InvalidOperationException", "Preserve reported type when value conversion fails");
+Check(bindings.ActiveCalls == 0, "Never invoke Bindings.Get/SetInternal to request or mutate game data");
+var busyObserver = new BindingObserver(name => typeof(SI.Core.TypedValue).Assembly.GetType(name, true)!);
+for (int pass = 0; pass < 2; pass++) {
+    if (pass == 1) busyObserver.NextFrame();
+    for (int i = 0; i < 1000; i++) busyObserver.Observe(bindings,
+        new SI.Bindable.Bindings.Key { Path = i == 900 ? "context.team.TeamType" : "ui.Name" },
+        new SI.Core.TypedValue(7, "System.Int32"), "get", 10 + pass);
+}
+Check(busyObserver.Values.rows.Count == 1 && busyObserver.Values.rows[0].value.scalar is 7,
+    "Adaptive sampling must reach later UI events after a busy frame");
+Console.WriteLine("PASS: signature-compatible passive hooks, primitive decoding, opaque-type refusal, path filtering and frame bounds; no active data requests.");
+
 namespace Il2CppSystem {
     public class ValueType { }
-    public class Type { public string FullName => "System.Int32"; }
+    public class Type { private readonly string name; public Type(string name = "System.Int32") { this.name = name; } public string FullName => name; }
+    public class Object : Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase { }
 }
 namespace SI.Bindable.Reference.Core {
     public struct PropertyID { public uint id; public uint ID => id; }
@@ -111,4 +159,31 @@ namespace FM.UI {
         public static long GetPropertyCountInternal() { Called = true; return 0; }
     }
     public class EvilReference { }
+}
+
+namespace Il2CppInterop.Runtime.InteropTypes {
+    public class Il2CppObjectBase { public IntPtr Pointer => IntPtr.Zero; }
+}
+namespace SI.Core {
+    public class TypedValue {
+        private readonly object? scalar; private readonly string type;
+        public int GetCalls;
+        public bool ThrowGet;
+        public TypedValue(object? scalar, string type) { this.scalar = scalar; this.type = type; }
+        public bool IsNull => scalar is null;
+        public Il2CppSystem.Type DataType => new(type);
+        public T Get<T>() { GetCalls++; if (ThrowGet) throw new InvalidOperationException("fixture_get_failure"); return (T)scalar!; }
+        public Il2CppSystem.Object Get() { GetCalls++; throw new Exception("Record not requested in this test"); }
+        public string AsString() { GetCalls++; return (string)scalar!; }
+    }
+}
+namespace SI.Bindable {
+    public class Bindings {
+        public struct Key { public string Path; }
+        public enum SetFlags { None = 0 }
+        public int ActiveCalls;
+        public string GetPathDebug(ref Key key) => key.Path;
+        public SI.Core.TypedValue Get(ref Key key) { ActiveCalls++; throw new Exception("Do not query data"); }
+        public void SetInternal(ref Key key, SI.Core.TypedValue value, SetFlags flags) { ActiveCalls++; throw new Exception("Do not write data"); }
+    }
 }

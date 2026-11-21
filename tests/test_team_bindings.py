@@ -20,9 +20,10 @@ class TeamBindingsTests(unittest.TestCase):
         self.source = self.game/'BepInEx'/'diagnostics'/FOLDER/'team-bindings.json'
         self.source.parent.mkdir(parents=True)
         self.output = self.root/'diagnostics'/'team-bindings.json'
-        self.report = dict(kind='fm_team_bindings', schema_version=1, mode='runtime_schema_only',
+        self.report = dict(kind='fm_team_bindings', schema_version=1, mode='runtime_schema_and_observed_values',
                            detected_steam_build='26620374', game_data_queried=False, game_state_modified=False,
-                           tool_version='0.1.1', state='complete', schemas=[], types=[], errors=[])
+                           tool_version='0.2.0', state='complete', schemas=[], types=[], errors=[],
+                           observations={'observed_existing_ui_values_only':True, 'state':'capturing', 'values':[]})
         self.validation = patch('team_bindings.validate_game', return_value=self.game)
         self.validation.start()
         self.addCleanup(self.validation.stop)
@@ -53,7 +54,7 @@ class TeamBindingsTests(unittest.TestCase):
 
     def test_rejects_modified_game_flags_build_and_untrusted_paths(self):
         for key, value in [('game_state_modified',True), ('game_data_queried',True),
-                           ('detected_steam_build','other'), ('mode','other'), ('types',None)]:
+                           ('detected_steam_build','other'), ('mode','other'), ('types',None), ('observations',None)]:
             with self.subTest(key=key):
                 old = self.report[key]
                 self.report[key] = value
@@ -86,3 +87,15 @@ class TeamBindingsTests(unittest.TestCase):
         self.write()
         with self.assertRaisesRegex(ValueError, '재설치'):
             export_report(self.game, self.output)
+
+    def test_previous_successful_schema_report_requests_reinstallation(self):
+        self.report.update(tool_version='0.1.1', mode='runtime_schema_only')
+        self.write()
+        with self.assertRaisesRegex(ValueError,'재설치'):
+            export_report(self.game,self.output)
+
+    def test_empty_passive_observations_are_exported_for_diagnosing_missing_hooks(self):
+        self.report['observations']['values'] = []
+        self.write()
+        export_report(self.game,self.output)
+        self.assertEqual(json.loads(self.output.read_text())['observations']['values'],[])

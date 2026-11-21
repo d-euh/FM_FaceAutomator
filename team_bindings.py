@@ -11,7 +11,7 @@ from refresh_diagnostics import (INSTALL_RECORD, ROOT, EXPECTED_BUILD, game_proc
                                  install_component, validate_game)
 from team_metadata import find_games
 
-TOOL_VERSION = '0.1.1'
+TOOL_VERSION = '0.2.0'
 FOLDER = 'FMTeamBindings'
 DLL = 'FMTeamBindings.dll'
 MAX_REPORT = 8 * 1024 * 1024
@@ -39,14 +39,18 @@ def export_report(game, destination):
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or len(data) > MAX_REPORT:
         raise ValueError('팀 진단 보고서가 저장 중입니다. 잠시 후 다시 실행하세요.')
     report = json.loads(data.decode('utf-8-sig'))
-    if (not isinstance(report, dict) or report.get('kind') != 'fm_team_bindings'
-            or report.get('schema_version') != 1 or report.get('mode') != 'runtime_schema_only'
-            or report.get('detected_steam_build') != EXPECTED_BUILD
-            or report.get('game_data_queried') is not False or report.get('game_state_modified') is not False
-            or not all(isinstance(report.get(k), list) for k in ('schemas', 'types', 'errors'))):
-        raise ValueError('지원하는 읽기 전용 팀 속성 보고서가 아닙니다.')
+    if not isinstance(report, dict) or report.get('kind') != 'fm_team_bindings' or report.get('schema_version') != 1:
+        raise ValueError('지원하는 팀 진단 보고서가 아닙니다.')
     if report.get('tool_version') != TOOL_VERSION:
         raise ValueError('기존 팀 진단 보고서입니다. 업데이트 후 install_team_bindings.bat로 재설치하고 FM27을 다시 실행하세요.')
+    observed = report.get('observations')
+    if (report.get('mode') != 'runtime_schema_and_observed_values'
+            or report.get('detected_steam_build') != EXPECTED_BUILD
+            or report.get('game_data_queried') is not False or report.get('game_state_modified') is not False
+            or not all(isinstance(report.get(k), list) for k in ('schemas', 'types', 'errors'))
+            or not isinstance(observed, dict) or observed.get('observed_existing_ui_values_only') is not True
+            or not (isinstance(observed.get('values'), list) or observed.get('values') is None)):
+        raise ValueError('지원하는 읽기 전용 팀 속성 보고서가 아닙니다.')
     if report.get('state') in ('waiting_for_main_thread', 'reading_schema'):
         raise ValueError('아직 팀 속성을 읽고 있습니다. FM27 메인 화면에서 60초 정도 기다린 뒤 다시 실행하세요.')
     if report.get('state') not in ('complete', 'complete_with_errors', 'unavailable'):
@@ -92,7 +96,12 @@ def main():
         if args.export:
             target = export_report(game, args.output)
             print('저장 완료: '+str(target), flush=True)
-            print('team-bindings.json 파일만 대화에 첨부해 주세요. 게임을 종료하거나 선수 이동·합성을 할 필요는 없습니다.', flush=True)
+            print('team-bindings.json 파일만 대화에 첨부해 주세요. 선수 이동·합성은 필요 없습니다.', flush=True)
+            report = json.loads(target.read_text(encoding='utf-8-sig'))
+            rows = report.get('observations', {}).get('values') or []
+            print(f'관찰한 팀 관련 값: {len(rows)}개', flush=True)
+            if not rows:
+                print('값이 수집되지 않은 결과도 원인 확인에 필요하므로 그대로 첨부해 주세요.', flush=True)
             try:
                 os.startfile(str(target.parent))
             except OSError:
@@ -102,9 +111,10 @@ def main():
             target = install(game)
             INSTALL_RECORD.write_text(json.dumps({'game':str(game)}, ensure_ascii=False), encoding='utf-8')
             print('팀 속성 진단 플러그인 설치 완료: '+str(target), flush=True)
-            print('1. FM27을 실행하고 메인 화면에서 60초 정도 기다리세요. 세이브 로드는 필요 없습니다.\n'
-                  '2. export_team_bindings.bat를 실행하세요.\n'
-                  '3. 열린 폴더의 team-bindings.json만 첨부해 주세요.\n'
+            print('1. FM27 실행 후 세이브를 불러오세요. 값 관찰은 게임 실행 후 10분 동안만 진행합니다.\n'
+                  '2. 맨유 1군/U21/U18 선수단 화면을 각각 열고, 셰이 레이시와 치도 오비 마틴의 프로필도 열어 주세요.\n'
+                  '3. 시작 후 최소 60초가 지난 뒤 export_team_bindings.bat를 실행하세요.\n'
+                  '4. 열린 폴더의 team-bindings.json만 첨부해 주세요.\n'
                   '선수 이동, 페이스온 삭제·합성, 새로고침 테스트는 필요 없습니다. 기존 새로고침 플러그인은 변경하지 않았습니다.', flush=True)
         return 0
     except Exception as exc:

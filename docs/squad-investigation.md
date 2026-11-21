@@ -58,3 +58,41 @@ descriptions/kinds, per-property errors, preserved declared/actual counts, chunk
 now mirror the real wrapper shape rather than incorrectly using a BindingKind enum.
 User must reinstall only FMTeamBindings with game closed, rerun game and export.
 No team-kind values have been obtained yet; the global filter remains incomplete.
+
+## Successful schema report received 2026-11-21
+
+FMTeamBindings 0.1.1 completed without errors: Team 478, TeamSquad 4, Person 1302,
+Club 518, SquadOverviewPlayer 13 properties. All descriptions are empty but names,
+kinds and reference targets are valid. Important verified properties:
+
+| Reference | Property | ID | Kind / target |
+|---|---|---:|---|
+| Team | IsFirstTeam | 1232293204 | Value, dynamic type |
+| Team | TeamType | 1416919408 | Value, dynamic type |
+| Team | TeamTypeStringDefault | 1651004725 | Value, dynamic type |
+| Team | TeamTypeStringTypeOnly | 1295219302 | Value, dynamic type |
+| Team | Club | 825630752 | Reference club |
+| Person | Team | 1415930221 | Reference team |
+| Person | UniqueId | 1970170212 | Int32 |
+| Person | Index | 1883858041 | Value, dynamic type |
+| Club | ReservesTeam | 1114862952 | Reference team |
+| Club | YouthTeam | 1181434674 | Reference team |
+| Club | YouthTeam3 | 1634489434 | Reference team |
+| Club | YouthTeam4 | 1181955121 | Reference team |
+| Club | YouthTeam5 | 1934847574 | Reference team |
+
+Person.TeamType is a DisplayValuePair reference, not the same kind as Team.TeamType.
+Do not decode these by the shared property ID alone. TeamSquad contains only position
+group lists, not an actual team kind. DB table enum Team=24, Club=3, Person=1 is verified.
+
+Next diagnostic DLL 0.2.0 keeps the schema scan and adds passive UI-value copies from
+Bindings.Get(ref Key) and SetInternal(ref Key, TypedValue, SetFlags). Exact path getter
+GetPathDebug(ref Key) is verified. No new channels, SendEvent, or active binding reads
+are requested. Primitive TypedValue.Get<T> uses only an exactly matching reported CLR
+type; string uses AsString. Known Team/Club references expose verified Index/Type getters;
+InteropReference exposes verified GetPersistentIdentity. Other values stay opaque.
+
+Counts/timestamps/paths are observations, not yet proof of squad mappings or completeness.
+User must reinstall team diagnostic only, load save, visit first/U21/U18 squad screens
+and both player profiles within 10 minutes, then export. No save edits required.
+Global feature still requires record ID/type validation; no slot-based shortcut added.
