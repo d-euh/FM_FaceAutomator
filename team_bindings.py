@@ -11,7 +11,7 @@ from refresh_diagnostics import (INSTALL_RECORD, ROOT, EXPECTED_BUILD, game_proc
                                  install_component, validate_game)
 from team_metadata import find_games
 
-TOOL_VERSION = '0.3.0'
+TOOL_VERSION = '0.4.0'
 FOLDER = 'FMTeamBindings'
 DLL = 'FMTeamBindings.dll'
 MAX_REPORT = 8 * 1024 * 1024
@@ -44,7 +44,7 @@ def export_report(game, destination):
     if report.get('tool_version') != TOOL_VERSION:
         raise ValueError('기존 팀 진단 보고서입니다. 업데이트 후 install_team_bindings.bat로 재설치하고 FM27을 다시 실행하세요.')
     observed = report.get('observations')
-    if (report.get('mode') != 'runtime_schema_observed_and_targeted_probe'
+    if (report.get('mode') != 'runtime_team_reader_service'
             or report.get('detected_steam_build') != EXPECTED_BUILD
             or not isinstance(report.get('game_data_query_attempted'),bool)
             or report.get('gameplay_state_modified') is not False or report.get('save_files_modified') is not False
@@ -103,7 +103,8 @@ def main():
             rows = report.get('observations', {}).get('values') or []
             print(f'관찰한 팀 관련 값: {len(rows)}개', flush=True)
             probe = report.get('probe',{})
-            print(f"제한 조회 상태: {probe.get('state','확인 불가')} · 결과 {len(probe.get('results') or [])}팀", flush=True)
+            service = report.get('service') or {}
+            print(f"팀 조회 연결: {service.get('reason','확인 불가')} · 처리 {service.get('completed',0)}건", flush=True)
             if not rows:
                 print('값이 수집되지 않은 결과도 원인 확인에 필요하므로 그대로 첨부해 주세요.', flush=True)
             try:
@@ -114,11 +115,11 @@ def main():
             game = Path(game).resolve()
             target = install(game)
             INSTALL_RECORD.write_text(json.dumps({'game':str(game)}, ensure_ascii=False), encoding='utf-8')
-            print('팀 속성 진단 플러그인 설치 완료: '+str(target), flush=True)
-            print('1. FM27 실행 후 세이브를 불러오세요. 값 관찰은 게임 실행 후 10분 동안만 진행합니다.\n'
-                  '2. 맨유 세이브를 불러온 뒤 진행 버튼을 누르지 말고 1~2분 기다리세요. 화면을 따로 열 필요는 없습니다.\n'
-                  '3. export_team_bindings.bat를 실행하세요. 맨유 세 팀의 제한 조회 결과도 함께 저장됩니다.\n'
-                  '4. 열린 폴더의 team-bindings.json만 첨부해 주세요.\n'
+            print('팀 구분 조회 플러그인 설치 완료: '+str(target), flush=True)
+            print('1. FM27을 실행하고 앱에 연결한 세이브를 불러오세요.\n'
+                  '2. 앱의 이적 감지 범위에서 포함할 선수단(1군/리저브/유소년)을 선택하고 저장하세요.\n'
+                  '3. 기존 테스트처럼 이적 후 저장하면 생성 전에 선수단을 자동 조회합니다.\n'
+                  '문제가 있으면 export_team_bindings.bat의 team-bindings.json을 첨부하세요.\n'
                   '선수 이동, 페이스온 삭제·합성, 새로고침 테스트는 필요 없습니다. 기존 새로고침 플러그인은 변경하지 않았습니다.', flush=True)
         return 0
     except Exception as exc:

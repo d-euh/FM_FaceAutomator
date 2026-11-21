@@ -10,6 +10,8 @@ public sealed class BindingObserver
     private const BindingFlags Instance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
     private readonly Func<string, Type> resolve;
     private readonly DynamicNumbers numbers;
+    private readonly FieldInfo bindingKey;
+    private readonly Dictionary<ulong,string> ownerKeys = new();
     public object? BindingOwner { get; private set; }
     public int? HumanTeamIndex { get; private set; }
     private readonly MethodInfo pathDebug, dataType, isNull, getValue, getObject;
@@ -39,6 +41,9 @@ public sealed class BindingObserver
         this.resolve = resolve;
         var bindings = resolve("SI.Bindable.Bindings");
         var value = resolve("SI.Core.TypedValue");
+        bindingKey = resolve("SI.Bindable.Bindings+Key").GetField("m_key", BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new MissingFieldException("Bindings.Key.m_key");
+        if (bindingKey.FieldType != typeof(ulong)) throw new InvalidOperationException("unexpected_binding_key");
         const string key = "SI.Bindable.Bindings+Key&";
         Get = Method(bindings, "Get", "SI.Core.TypedValue", key);
         SetInternal = Method(bindings, "SetInternal", "System.Void", key, "SI.Core.TypedValue", "SI.Bindable.Bindings+SetFlags");
@@ -62,10 +67,20 @@ public sealed class BindingObserver
         stride = Math.Max(1, (int)Math.Ceiling(ordinal / 96.0));
         frameCalls = 0; ordinal = 0; frame = (frame + 1) % 1000000;
     }
-    public void Observe(object bindings, object key, object typedValue, string source, double elapsed)
+    public void Observe(object bindings, object key, object typedValue, string source, double elapsed, bool capture = true, bool discover = true)
     {
         if (inside) return;
         seen_events++;
+        var rawKey = (ulong)bindingKey.GetValue(key)!;
+        if (!capture && ownerKeys.TryGetValue(rawKey,out var ownerPath))
+        {
+            inside = true;
+            try { UpdateOwner(bindings,rawKey,ownerPath,DecodeSupplied(typedValue)); }
+            catch { read_errors++; }
+            finally { inside = false; }
+            return;
+        }
+        if (!capture && !discover) return;
         if (!eventKinds.ContainsKey(source)) eventKinds[source] = 0;
         eventKinds[source]++;
         // Spread reads across the previous frame's event volume and rotate the
@@ -77,16 +92,23 @@ public sealed class BindingObserver
         {
             var path = pathDebug.Invoke(bindings, new[] { key }) as string ?? "";
             inspected_events++;
-            if (!ValueObservations.Relevant(path)) return;
+            if (!ValueObservations.Relevant(path) || !capture && path is not ("Human.Team" or "game.GameCurrentManager.Team")) return;
             ObservedValue value;
             try { value = DecodeSupplied(typedValue); }
             catch (Exception e) { read_errors++; value = new() { error = e.GetBaseException().GetType().Name }; }
-            if (path is "Human.Team" or "game.GameCurrentManager.Team" && value.record_table == "Team" && value.error is null)
-            { BindingOwner = bindings; HumanTeamIndex = value.record_index; }
-            if (Values.Add(source, path, value, elapsed)) Dirty = true;
+            UpdateOwner(bindings,rawKey,path,value);
+            if (capture && Values.Add(source, path, value, elapsed)) Dirty = true;
         }
         catch { read_errors++; }
         finally { inside = false; }
+    }
+    private void UpdateOwner(object bindings, ulong key, string path, ObservedValue value)
+    {
+        if ((path is "Human.Team" or "game.GameCurrentManager.Team") && value.error is null && (value.record_table == "Team" || value.is_null))
+        {
+            BindingOwner = bindings; HumanTeamIndex = value.record_index;
+            if (key != 0 && ownerKeys.Count < 128) ownerKeys[key] = path;
+        }
     }
     private string TypeName(object type)
     {

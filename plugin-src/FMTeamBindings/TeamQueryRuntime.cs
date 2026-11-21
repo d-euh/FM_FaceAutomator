@@ -9,7 +9,7 @@ public sealed class TeamQueryRuntime : ITeamProbeRuntime
 {
     public static string InitialisationStage { get; private set; } = "not_started";
     public static readonly string[] Properties = { "UniqueId", "Name", "IsFirstTeam", "TeamType", "TeamTypeStringDefault",
-        "Club", "Club.UniqueId", "Club.Name", "Club.ReservesTeam", "Club.YouthTeam", "TeamContainer.HighestLevelYouthTeam", "TeamContainer.SecondHighestLevelYouthTeam" };
+        "Club", "Club.UniqueId", "Club.Name", "Club.ReservesTeam", "Club.YouthTeam", "Club.YouthTeam3", "Club.YouthTeam4", "Club.YouthTeam5", "TeamContainer.HighestLevelYouthTeam", "TeamContainer.SecondHighestLevelYouthTeam" };
     private readonly BindingObserver observer;
     private readonly ConstructorInfo teamConstructor, spanConstructor;
     private readonly MethodInfo create, set, remove, pathDebug, validKey, groupLimit, createGroup, add, build, isDone, read, dispose, count, makeValue;
@@ -19,7 +19,7 @@ public sealed class TeamQueryRuntime : ITeamProbeRuntime
     private readonly string prefix = "FMFaceProbe" + Guid.NewGuid().ToString("N");
     private bool createAttempted, builderAllocated;
     public int? maximum_group_size { get; private set; }
-    public bool Ready => observer.BindingOwner is not null && observer.HumanTeamIndex == 540;
+    public bool Ready => observer.BindingOwner is not null;
     public int groups_created { get; private set; }
     public int groups_disposed { get; private set; }
     public int temporary_roots_created { get; private set; }

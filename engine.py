@@ -22,6 +22,8 @@ from gunzo import DEFAULT_FONT_FILENAME, DEFAULT_FONT_RELATIVE, DEFAULT_NAME_COL
 from assets import AssetCatalog, AssetError, MissingFaceError, MissingKitError, reference_png, source_exclusions
 import facepack
 import scope_rules
+import squad_types
+from team_reader import TeamReader, TeamReadPending, snapshot_key
 import live_refresh
 from league_catalog import read_catalog
 from workspaces import select_workspace, source_key
@@ -428,7 +430,7 @@ def read_source(config):
 
 def in_scope(row, config, managed):
     if config.get("scope_rules") is not None:
-        return scope_rules.reason(row, config, managed) == "대상"
+        return scope_rules.reason(row, config, managed) in ("대상", squad_types.WAIT)
     pid, cid = row["id"], row["club_id"]
     if pid in config["exclude_player_ids"] or not cid:
         return False
@@ -467,6 +469,7 @@ def process_lock(folder):
 class Engine:
     def __init__(self, config):
         self.c = config
+        self._team_reader = TeamReader()
         self._editing_locks = {}
         self._asset_catalogs = {}
         self._last_preflight_retry = 0
@@ -642,16 +645,21 @@ class Engine:
                 before = json.loads(old[0]) if old else None
                 row = resolve_membership(row, before)
                 row["league_ids"] = clubs.get(row["club_id"], {}).get("league_ids", row.get("league_ids", []))
-                for field in ("from_club_id", "from_club_name", "from_league_ids", 'transfer_type', 'transfer_type_reason'):
+                for field in ("from_club_id", "from_club_name", "from_league_ids", 'transfer_type', 'transfer_type_reason',
+                              'from_team_id', 'from_registered_club_id', 'squad_evidence', 'squad_lookup_note'):
                     row.pop(field, None)
                 old_club = before["club_id"] if before and before["identity"] == row["identity"] else ""
                 if not old_club and before and before["identity"] == row["identity"]:
                     old_club = before.get("last_club_id", "")
-                event = dict(row, from_club_id=old_club,
+                event = dict(row, from_team_id=(before.get('registered_team_id') if before.get('club_id') else before.get('last_registered_team_id')) if before else None,
+                             from_registered_club_id=(before.get('registered_club_id',before['club_id']) if before.get('club_id') else before.get('last_registered_club_id','')) if before else '',
+                             from_club_id=old_club,
                              from_club_name=clubs.get(old_club, {}).get("name", before["club_name"] if before else ""),
                              from_league_ids=(before.get("league_ids") or before.get("last_league_ids", []) or clubs.get(old_club, {}).get("league_ids", [])) if before else [])
                 if not row["club_id"] and old_club:
                     row["last_club_id"] = old_club
+                    row['last_registered_team_id'] = event['from_team_id']
+                    row['last_registered_club_id'] = event['from_registered_club_id']
                     row["last_league_ids"] = event["from_league_ids"]
                 changed = before is not None and (before["club_id"], before["identity"]) != (row["club_id"], row["identity"])
                 club_changed = before is not None and before["club_id"] != row["club_id"]
@@ -1070,7 +1078,50 @@ class Engine:
         if lock:
             lock.__exit__(None, None, None)
 
-    def next_job(self, now, save_gated=False, job_id=None):
+    def enrich_squads(self, job, cancel=None):
+        row = json.loads(job['data'])
+        if row.get('manual_request') or not squad_types.restricted(self.c):
+            return row
+        current = self.db.execute('SELECT data FROM people WHERE id=?',(row['id'],)).fetchone()
+        if current:
+            actual = json.loads(current[0])
+            if (actual['identity'],actual['club_id']) == (row['identity'],row['club_id']):
+                for key in ('registered_team_id','registered_club_id','club_basis'):
+                    if key in actual: row[key] = actual[key]
+        sides = scope_rules.matching_sides(row,self.c,json.loads(self.meta('managed') or '[]'))
+        evidence, targets = {},{}
+        for side in sides:
+            index = row.get('from_team_id' if side == 'outgoing' else 'registered_team_id')
+            club = row.get('from_club_id','') if side == 'outgoing' else row['club_id']
+            registered = row.get('from_registered_club_id',club) if side == 'outgoing' else row.get('registered_club_id',club)
+            if type(index) is int and index >= 0 and registered == club:
+                targets[side] = (index,club)
+            else:
+                evidence[side] = {'kind':'unknown','reason':'등록 팀을 확인할 수 없거나 계약 구단만 변경됨'}
+        note = ''
+        try:
+            if targets:
+                with self.db:
+                    self.db.execute("UPDATE jobs SET note='팀 구분 조회 중' WHERE id=? AND status='pending'",(job['id'],))
+                if Path(self.c['source']).suffix.lower() != '.fm':
+                    raise TeamReadPending('팀 구분은 연결한 FM 세이브와 게임에서 확인합니다.')
+                stamp = json.loads(self.meta('source_stamp') or 'null')
+                native = self._team_reader.resolve(list(dict.fromkeys(v[0] for v in targets.values())),
+                    json.loads(self.meta('managed') or '[]'),snapshot_key(self.c['source'],stamp),cancel)
+                if list(file_stamp(self.c['source'])) != stamp:
+                    raise TeamReadPending('세이브 변경 중 · 다음 점검에서 팀 구분을 다시 확인합니다.')
+                for side,(index,club) in targets.items():
+                    evidence[side] = squad_types.native_role(native.get(index),club)
+        except TeamReadPending as exc:
+            note = str(exc)
+            for side in targets: evidence[side] = {'kind':'unknown','reason':note}
+        row['squad_evidence'] = evidence
+        row['squad_lookup_note'] = note
+        with self.db:
+            self.db.execute('UPDATE jobs SET data=? WHERE id=?',(json.dumps(row,ensure_ascii=False),job['id']))
+        return row
+
+    def next_job(self, now, save_gated=False, job_id=None, cancel_event=None):
         waiting_for_save = save_gated and int(self.meta("save_updates_pending") or 0)
         if self.c["daily_limit"] and self.db.execute("SELECT count(*) FROM attempts WHERE started>?", (now - 86400,)).fetchone()[0] >= self.c["daily_limit"]:
             return None
@@ -1079,10 +1130,27 @@ class Engine:
             row = json.loads(job["data"])
             if waiting_for_save and not row.get('manual_request'):
                 continue
-            if not self.latest(row):
+            if not self.latest(dict(row,squad_evidence={}) if squad_types.restricted(self.c) else row):
                 reason = scope_reason(row, self.c, json.loads(self.meta('managed') or '[]'))
                 self.update(job["id"], "superseded", reason if reason != '대상' else "현재 범위/소속과 불일치")
                 continue
+            if squad_types.restricted(self.c) and not row.get('manual_request'):
+                row = self.enrich_squads(job,cancel_event)
+                fresh_job = self.db.execute('SELECT * FROM jobs WHERE id=?',(job['id'],)).fetchone()
+                if not fresh_job or fresh_job['status'] != 'pending': continue
+                if cancel_event is not None and cancel_event.is_set():
+                    with self.db:
+                        self.db.execute("UPDATE jobs SET note='팀 구분 조회 중단 · 재개 시 다시 확인' WHERE id=? AND status='pending'",(job['id'],))
+                    return None
+                reason = scope_reason(row,self.c,json.loads(self.meta('managed') or '[]'))
+                if reason == squad_types.WAIT:
+                    self.update(job['id'],'blocked',row.get('squad_lookup_note') or next((v.get('reason') for v in row.get('squad_evidence',{}).values() if v.get('reason')),squad_types.WAIT))
+                    continue
+                if reason != '대상':
+                    self.update(job['id'],'superseded',reason)
+                    continue
+                job = self.db.execute('SELECT * FROM jobs WHERE id=?',(job['id'],)).fetchone()
+                if job['status'] != 'pending': continue
             recent = self.db.execute("SELECT max(started) FROM jobs WHERE player_id=? AND id<>?", (row["id"], job["id"])).fetchone()[0]
             if recent is not None and recent > now - self.c["cooldown_hours"] * 3600:
                 continue
@@ -1111,7 +1179,7 @@ class Engine:
             return False
         self.refresh()
         queue_revision = self.meta("queue_revision")
-        job = self.next_job(time.time(), save_gated=save_gated, job_id=job_id)
+        job = self.next_job(time.time(), save_gated=save_gated, job_id=job_id, cancel_event=cancel_event)
         if job is None:
             return False
         jid, row = job["id"], json.loads(job["data"])
@@ -1389,7 +1457,10 @@ class Engine:
         job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job or job["status"] not in ("generated", "apply_failed"):
             raise ValueError("적용할 수 있는 생성 결과가 아닙니다.")
-        row = json.loads(job["data"])
+        row = self.enrich_squads(job)
+        reason = scope_reason(row,self.c,json.loads(self.meta('managed') or '[]')) if not row.get('manual_request') else '대상'
+        if reason == squad_types.WAIT:
+            raise TeamReadPending(row.get('squad_lookup_note') or next((v.get('reason') for v in row.get('squad_evidence',{}).values() if v.get('reason')),squad_types.WAIT))
         if not self.latest(row):
             reason = scope_reason(row, self.c, json.loads(self.meta('managed') or '[]'))
             self.update(job_id, "superseded", reason if reason != '대상' else "적용 전 소속/범위 변경")

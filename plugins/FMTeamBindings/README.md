@@ -1,10 +1,10 @@
-# FM Team Binding Diagnostics 0.3.0
+# FM Team Binding Reader 0.4.0
 
 Separate BepInEx 6 Unity IL2CPP diagnostic for FM27 Steam build 26620374.
-Use `install_team_bindings.bat` with FM27 closed. Start the game and load the
-Manchester United save. Do not advance the game; wait 1–2 minutes, then run
-`export_team_bindings.bat`. No separate squad/profile screen visits, player moves,
-AI requests, image deletions or refresh tests are required.
+Use `install_team_bindings.bat` with FM27 closed. Start FM27 and load the same save
+connected in the app. Choose the squad categories in the transfer detection scope.
+The app sends bounded native team-read requests before automatic image generation.
+No manual squad/profile navigation or diagnostic export is normally required.
 
 Output: `BepInEx/diagnostics/FMTeamBindings/team-bindings.json`, exported to the app's
 `diagnostics/team-bindings.json`. Error reports are useful too. Old reports from before
@@ -33,26 +33,39 @@ There are 512 unique path/value records maximum, 128 path inspections per tick a
 the schema scan. Values may include player/team names and native record IDs. Reports
 with zero observations are exportable and include hook/capture counters.
 
-The targeted probe uses a private temporary binding root, a TeamReference(index),
-and the game's normal binding group read API. It starts only for an observed human
-team index 540 and stable loaded-game state. Only the main result's native youth
-references matching the previously observed 28346/28347 are queried next (max 3 teams).
-These indexes are diagnostic examples, never universal squad categories.
+The runtime service uses the same owned binding-group API that successfully read and
+cleaned all three controlled Manchester United teams in the user's 0.3.0 report.
+It accepts 1–4 distinct nonnegative team indexes per request from the app. There are
+no hardcoded Manchester United targets in the service. Stable loaded-game state,
+exact binary hashes, request/session/epoch/expiry and group capacity are validated.
 
-DynamicNumber uses its verified Kind/GetLong/GetULong/GetDouble API. No memory offsets,
-float-to-ID truncation or lossy double conversion for unsigned integers are used.
-Private native char arrays root path spans until cleanup. Missing signatures/span
-constructors fail before binding creation; no unverified string-pointer construction.
+IPC root: LocalAppData/FMFaceAutomator/team-reader. Status heartbeats expire after
+5 seconds. Requests are correlated to a per-save snapshot token; the Python client
+validates native club unique IDs and the live human club against save membership.
+Changing game state cancels active reads and invalidates cached results. The user must
+load the same save in the game as the app has connected.
 
-Every query group has a 15-second deadline and is disposed with its private root
-removed on completion/failure/busy state. Partial-build cleanup uncertainty is reported
-and stops further queries. Results and root/group counters are exported even on error.
-No existing UI values, gameplay/continue events, save files or facepacks are changed,
-and no Codex calls are made. The temporary binding tree itself is changed, explicitly
-recorded in the report. The existing FMFaceRefresh DLL is not replaced.
+DynamicNumber keeps signed/unsigned/floating values separate with full integer
+precision. Each team group reads at most 15 fields (native reported max is 16).
+Read roots have unique names, ownership is checked before Set/Remove, and Dispose
+and Remove run on completion, cancellation, busy-state transitions and timeout.
+Mailbox write failures do not replay native reads. Cleanup errors disable further
+queries until a game restart. Old UI-observation capture remains bounded to ten minutes;
+lightweight owner-key updates continue for subsequent save loads.
 
-Actual native reads and classification still require verification on the user's PC.
-There is no production first/reserve/youth filter enabled yet.
+The Python app classifies first team by IsFirstTeam, reserve by Club.ReservesTeam,
+and youth by explicit native youth references (reserve has priority over overlapping
+youth refs). Numeric type codes, age and slot order are not guessed. Unmatched teams
+remain unknown. Incoming/outgoing are checked on the same side as club scope. No AI
+request or facepack apply is authorized by an unknown restricted category.
+
+Existing UI values, gameplay actions and save files are not changed. Private binding
+nodes and diagnostic/IPC files are created and removed. No Codex calls occur in this
+plugin. The existing FMFaceRefresh DLL is unchanged. See README.md for app usage.
+
+The exact native query path was verified on the user's three teams; the generalized
+IPC/client/scope integration is tested with fake game APIs and still needs normal
+end-to-end use on the user's PC. Unsupported team relationships remain on hold.
 
 Source: `plugin-src/FMTeamBindings`. Host-only descriptor tests:
 

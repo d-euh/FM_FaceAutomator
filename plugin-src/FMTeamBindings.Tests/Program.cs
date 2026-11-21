@@ -162,6 +162,48 @@ try { query.Close(); throw new Exception("Expected uncertain group cleanup repor
 Check(ownerBindings.Roots == 0, "Always try to remove private root when group Build fails");
 Console.WriteLine("PASS: tagged numeric conversion, stable-idle probe scheduling, bounded returned targets, timeout/busy cleanup, private binding ownership and partial-build cleanup reporting.");
 
+// General app-driven batches do not contain the old controlled team-index rule.
+var general = new FakeProbeRuntime(); var generalProbe = new TeamProbe(general,new[] { 123,456 });
+generalProbe.Tick(0,true); generalProbe.Tick(2.1,true); generalProbe.Tick(2.2,true);
+generalProbe.Tick(3,true); generalProbe.Tick(5.1,true); generalProbe.Tick(5.2,true);
+Check(generalProbe.state == "complete" && general.Started.SequenceEqual(new[] { 123,456 }), "General batches must not query hardcoded Manchester United indexes");
+var cancelRuntime = new FakeProbeRuntime { Stall = true }; var cancelled = new TeamProbe(cancelRuntime,new[] { 123 });
+cancelled.Tick(0,true); cancelled.Tick(2.1,true); cancelled.Cancel("test_cancel");
+Check(cancelled.Done && cancelRuntime.Closed == 1, "Cancellation cleans the active general batch");
+var validRequest = new TeamReadRequest { protocol=1, profile=TeamReadService.Profile,session=new string('a',32),id=new string('b',32),
+    snapshot=new string('c',64),epoch=2,teams=new[] { 123,456 },created_at=1000,expires_at=1040 };
+Check(TeamReadService.Valid(validRequest,new string('a',32),2,1001), "Accept exact bounded app request");
+Check(!TeamReadService.Valid(validRequest,new string('a',32),3,1001), "Reject another game epoch");
+validRequest.teams=new[] { 123,123 };
+Check(!TeamReadService.Valid(validRequest,new string('a',32),2,1001), "Reject duplicate targets");
+validRequest.id=null!;
+Check(!TeamReadService.Valid(validRequest,new string('a',32),2,1001), "Malformed request cannot crash the mailbox");
+Console.WriteLine("PASS: arbitrary bounded team batches, cancellation cleanup and local request/session/epoch validation.");
+
+var serviceFolder = Path.Combine(Path.GetTempPath(),"fm-team-service-"+Guid.NewGuid().ToString("N"));
+try {
+    ownerBindings.ThrowBuild = false; ownerBindings.ThrowDispose = false;
+    var serviceRuntime = new TeamQueryRuntime(name => typeof(SI.Core.TypedValue).Assembly.GetType(name,true)!,ownerObserver);
+    var service = new TeamReadService(serviceRuntime,ownerObserver,serviceFolder);
+    service.Tick(1,true,"idle");
+    var statusFile = Directory.GetFiles(Path.Combine(serviceFolder,"sessions"),"status.json",SearchOption.AllDirectories).Single();
+    using var currentStatus = JsonDocument.Parse(File.ReadAllText(statusFile));
+    var sid = currentStatus.RootElement.GetProperty("session").GetString()!;
+    var req = new TeamReadRequest { protocol=1,id=new string('d',32),session=sid,profile=TeamReadService.Profile,
+        epoch=currentStatus.RootElement.GetProperty("epoch").GetInt32(),snapshot=new string('e',64),teams=new[] { 123 },
+        created_at=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()/1000.0,expires_at=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()/1000.0+40 };
+    var inbox=Path.Combine(serviceFolder,"requests",sid); Directory.CreateDirectory(inbox);
+    File.WriteAllText(Path.Combine(inbox,req.id+".json"),JsonSerializer.Serialize(req));
+    service.Tick(2,true,"idle");service.Tick(2.5,true,"idle");service.Tick(4.6,true,"idle");service.Tick(4.85,true,"idle");
+    var responseFile=Path.Combine(Path.GetDirectoryName(statusFile)!,"responses",req.id+".json");
+    using var response=JsonDocument.Parse(File.ReadAllText(responseFile));
+    Check(response.RootElement.GetProperty("status").GetString()=="complete"
+        && response.RootElement.GetProperty("results")[0].GetProperty("native_team_index").GetInt32()==123,
+        "File IPC drives one bounded group and returns correct correlation/target");
+    Check(service.completed==1 && ownerBindings.Roots==0 && !File.Exists(Path.Combine(inbox,req.id+".json")), "IPC completion cleans request and private root");
+} finally { if(Directory.Exists(serviceFolder)) Directory.Delete(serviceFolder,true); }
+Console.WriteLine("PASS: local file IPC request, typed native-group adapter, response correlation and cleanup end to end with fake game API.");
+
 namespace Il2CppSystem {
     public class ValueType { }
     public class Type { private readonly string name; public Type(string name = "System.Int32") { this.name = name; } public string FullName => name; }
@@ -244,7 +286,7 @@ namespace SI.Core {
 }
 namespace SI.Bindable {
     public class Bindings {
-        public struct Key { public string Path; public bool IsValid() => !string.IsNullOrEmpty(Path); }
+        public struct Key { public ulong m_key; public string Path; public bool IsValid() => !string.IsNullOrEmpty(Path); }
         public enum SetFlags { None = 0, Default = 1 }
         public static int MaxGroupSize { get; set; } = 64;
         public int ActiveCalls, Roots;

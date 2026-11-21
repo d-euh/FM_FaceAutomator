@@ -164,3 +164,43 @@ User action: close game, update and reinstall team diagnostic with install_team_
 start game, load Manchester United save, do not advance and wait 1–2 minutes, then
 export_team_bindings.bat and attach team-bindings.json. No repeated squad/player UI
 navigation is required for this probe. Refresh DLL remains 0.2.3 unchanged.
+
+## Successful targeted probe received 2026-11-21
+
+DLL 0.3.0 state complete, all three groups/root nodes created and disposed/removed,
+no per-field/query/cleanup errors. Native maximum group size = 16.
+
+| Native index | UniqueId | IsFirstTeam | TeamType | Club.UniqueId | Exact role |
+|---:|---:|---|---:|---:|---|
+| 540 | 680 | true | 0 | 680 | first |
+| 28346 | 2000778736 | false | 10 | 680 | Club.ReservesTeam |
+| 28347 | 2000778737 | false | 12 | 680 | Club.YouthTeam |
+
+All three Club native indexes are 409. Native index, team UID and club UID must remain
+separate. TeamContainer highest youth also points to U21; prioritize the explicit
+reserve relationship over generic youth container membership. These numbers are
+observed examples, not a global mapping of type codes or slots.
+
+Implementation app 0.17.0 / DLL 0.4.0: generalized 1–4 team request batches through
+owned binding groups, local session/epoch/snapshot-scoped file IPC, heartbeat/expiry,
+source club and human-club proof, cache per source snapshot and native epoch.
+No hardcoded control IDs in service calls. The old optional controlled probe constructor
+exists only for its tests/diagnostic compatibility. Production always supplies targets.
+
+Save events now retain from_team_id/from_registered_club_id including free-agent gaps.
+Scope has first/reserve/youth inclusion, default all. Candidate unknown events remain
+queued and are resolved before Codex; unknown blocks with automatic preflight retry.
+Both selected sides are a union, while each side uses its own registered team. Direct
+manual generation bypasses auto-scope. Already-paid results recheck role before apply.
+Incoming assignment is refreshed from current people; source assignment stays frozen.
+Contract-only registration mismatch does not assume first-team status.
+
+Classifier uses native bool and explicit reserve/youth refs; integer type/age/name/slot
+are evidence only. Missing/unmatched/B-team relationships stay unknown. All categories
+selected require no native lookup. Verified native API path is reused; world-wide team
+structures are not claimed tested. Local IPC, arbitrary bounded target lists, cancellation,
+cleanup, direction union, paid-result holding, proof mismatch and no-AI-on-unknown are
+covered in unit/fake-runtime tests. Running game must contain the same connected save.
+
+User next step is installation of DLL 0.4.0 and ordinary transfer/filter testing in app,
+not another mandatory diagnostic round. Refresh DLL remains unchanged at 0.2.3.
