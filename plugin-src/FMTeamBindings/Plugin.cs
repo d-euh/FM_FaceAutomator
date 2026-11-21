@@ -28,7 +28,7 @@ public sealed class Plugin : BasePlugin
     private readonly List<object> shapes = new(), errors = new();
     private Descriptors.Scan? scan;
     private int next, descriptorCalls;
-    private bool busy, finished;
+    private bool busy, finished, pulsing;
     private Type? list;
     private string Output => Path.Combine(Paths.BepInExRootPath, "diagnostics", "FMTeamBindings", "team-bindings.json");
     private static Type Resolve(string name)
@@ -166,6 +166,13 @@ public sealed class Plugin : BasePlugin
         catch { /* A report I/O error must not escape into the game. */ }
     }
     private void Pulse()
+    {
+        if (pulsing) return;
+        pulsing = true;
+        try { PulseCore(); }
+        finally { pulsing = false; }
+    }
+    private void PulseCore()
     {
         observer?.NextFrame();
         if (clock.Elapsed.TotalSeconds > CaptureSeconds && observerState == "capturing")
