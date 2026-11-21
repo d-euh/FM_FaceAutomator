@@ -70,3 +70,51 @@ class DiagnosticBundleTests(unittest.TestCase):
         self.assertEqual(report["sessions"][0]["responses"], [{"status": "failed"}])
         self.assertEqual(report["metadata"]["mode"], "metadata_only")
         self.assertNotIn("candidate_assemblies", report["metadata"])
+
+    def test_squad_diagnostics_distinguish_event_history_from_current_registration(self):
+        self.config['scope_rules'] = {
+            'preset': 'custom', 'clubs': {'10': 'outgoing'}, 'squad_types': ['first'],
+            'additional_instructions': 'SECRET_SCOPE'}
+        event = {
+            'identity': 'person-123', 'club_id': '20', 'registered_club_id': '20',
+            'registered_team_id': 200, 'from_club_id': '10', 'from_team_id': None,
+            'from_registered_club_id': '10', 'additional_instructions': 'SECRET_EVENT',
+            'portrait_reference': 'SECRET_PATH',
+            'squad_evidence': {'outgoing': {'kind': 'unknown', 'reason': 'No source registration',
+                                          'unrelated': 'SECRET_NESTED'}}}
+        current = {
+            'identity': 'person-123', 'club_id': '20', 'registered_club_id': '20',
+            'registered_team_id': 200,
+            'last_squad_registration': {'club_id': '20', 'team_id': 200, 'unrelated': 'SECRET_HISTORY'},
+            'name': 'SECRET_NAME'}
+        engine = Engine(self.config)
+        try:
+            with engine.db:
+                engine.db.execute("INSERT INTO jobs(id,player_id,data,status,created) VALUES (1,'123',?,'blocked',1)",
+                                  (json.dumps(event),))
+                engine.db.execute("INSERT INTO people VALUES ('123',?)", (json.dumps(current),))
+        finally:
+            engine.close()
+        original = (self.root / 'state' / 'queue.sqlite').read_bytes()
+        report = self.export()
+        job = report['jobs'][0]
+        self.assertIsNone(job['squad_event']['from_team_id'])
+        self.assertEqual(job['squad_event']['squad_evidence']['outgoing']['kind'], 'unknown')
+        self.assertEqual(job['squad_current']['last_squad_registration'], {'club_id': '20', 'team_id': 200})
+        self.assertTrue(job['same_identity'])
+        self.assertEqual(report['settings']['scope_rules']['clubs'], {'10': 'outgoing'})
+        self.assertNotIn('SECRET', self.output.read_text())
+        self.assertEqual((self.root / 'state' / 'queue.sqlite').read_bytes(), original)
+
+    def test_invalid_squad_json_does_not_stop_exporting_other_jobs(self):
+        engine = Engine(self.config)
+        try:
+            with engine.db:
+                engine.db.execute("INSERT INTO jobs(id,player_id,data,status,created) VALUES (1,'123','broken','blocked',1)")
+                engine.db.execute("INSERT INTO jobs(id,player_id,data,status,created) VALUES (2,'456','{}','pending',2)")
+        finally:
+            engine.close()
+        jobs = self.export()['jobs']
+        self.assertEqual(len(jobs), 2)
+        self.assertIn('squad_error', jobs[1])
+        self.assertEqual(jobs[0]['squad_event'], {})

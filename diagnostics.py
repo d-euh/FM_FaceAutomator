@@ -11,6 +11,30 @@ from live_refresh import bridge_root, read_json
 APP_VERSION = "0.17.0"
 
 
+def squad_record(data):
+    """Export registration evidence without prompts, names or image paths."""
+    row = json.loads(data)
+    if not isinstance(row, dict):
+        raise ValueError("invalid player record")
+    fields = ("club_id", "registered_club_id", "registered_team_id", "club_basis",
+              "from_club_id", "from_team_id", "from_registered_club_id",
+              "last_club_id", "last_registered_team_id", "last_registered_club_id")
+    result = {key: row[key] for key in fields if key in row}
+    history = row.get("last_squad_registration")
+    if isinstance(history, dict):
+        result["last_squad_registration"] = {key: history[key] for key in ("club_id", "team_id") if key in history}
+    evidence = row.get("squad_evidence")
+    if isinstance(evidence, dict):
+        result["squad_evidence"] = {}
+        for side in ("incoming", "outgoing"):
+            value = evidence.get(side)
+            if isinstance(value, dict):
+                result["squad_evidence"][side] = {
+                    key: value[key] for key in ("kind", "reason", "native_team_index", "team_unique_id", "club_id")
+                    if key in value}
+    return result
+
+
 def recent_files(directory, pattern, limit):
     files = []
     for path in directory.glob(pattern):
@@ -25,7 +49,7 @@ def export_bundle(destination, *, config_path=None, config=None, root=None, brid
     """Never open Engine or read a save, prompt, image, or Codex credentials."""
     from engine import load_config, write_atomic
     root = Path(root) if root else Path(__file__).resolve().parent
-    report = {"schema_version": 2, "kind": "fm_face_diagnostic_bundle", "app_version": APP_VERSION,
+    report = {"schema_version": 3, "kind": "fm_face_diagnostic_bundle", "app_version": APP_VERSION,
               "exported_at_utc": datetime.now(timezone.utc).isoformat(), "sessions": [], "jobs": [], "errors": []}
     bridge = Path(bridge) if bridge is not None else bridge_root()
     if bridge:
@@ -50,14 +74,28 @@ def export_bundle(destination, *, config_path=None, config=None, root=None, brid
             report["errors"].append("config:" + type(exc).__name__)
     if config is not None:
         report["settings"] = {key: config.get(key) for key in ("source", "state_dir", "pack_dir", "live_refresh_enabled")}
+        scope = config.get("scope_rules")
+        if isinstance(scope, dict):
+            report["settings"]["scope_rules"] = {
+                key: scope[key] for key in ("preset", "direction", "clubs", "include_managed", "squad_types")
+                if key in scope}
         database = Path(config["state_dir"]) / "queue.sqlite"
         if database.is_file():
             try:
                 with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=2) as db:
                     db.row_factory = sqlite3.Row
                     report["workspace"] = dict(db.execute("SELECT key,value FROM meta WHERE key IN ('live_refresh_pending','live_refresh_status','live_refresh_session','live_refresh_last_result','source_stamp','detection_summary')"))
-                    for job in db.execute("SELECT id,player_id,status,note,created,started,artifact FROM jobs ORDER BY id DESC LIMIT 30"):
+                    for job in db.execute("SELECT id,player_id,data,status,note,created,started,artifact FROM jobs ORDER BY id DESC LIMIT 30"):
                         item = {key: job[key] for key in ("id", "player_id", "status", "note", "created", "started")}
+                        try:
+                            item["squad_event"] = squad_record(job["data"])
+                            person = db.execute("SELECT data FROM people WHERE id=?", (job["player_id"],)).fetchone()
+                            if person:
+                                item["squad_current"] = squad_record(person["data"])
+                                event_identity = json.loads(job["data"]).get("identity")
+                                item["same_identity"] = bool(event_identity and event_identity == json.loads(person["data"]).get("identity"))
+                        except (ValueError, TypeError) as exc:
+                            item["squad_error"] = type(exc).__name__
                         item["artifact_exists"] = bool(job["artifact"] and Path(job["artifact"]).is_file())
                         custom = db.execute("SELECT options,editing FROM job_custom WHERE job_id=?", (job["id"],)).fetchone()
                         item["has_custom"] = bool(custom and custom["options"] != "{}")
