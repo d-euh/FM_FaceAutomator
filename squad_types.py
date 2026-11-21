@@ -5,6 +5,15 @@ KINDS = {'first':'1군', 'reserve':'리저브', 'youth':'유소년'}
 WAIT = '팀 구분 확인 대기'
 
 
+def registration(row):
+    """Keep only an observed registration matching the player's effective club."""
+    club = row.get('club_id')
+    team = row.get('registered_team_id')
+    if club and row.get('registered_club_id') == club and type(team) is int and team >= 0:
+        return {'club_id': club, 'team_id': team}
+    return None
+
+
 def restricted(config):
     return set((config.get('scope_rules') or {}).get('squad_types', KINDS)) != set(KINDS)
 

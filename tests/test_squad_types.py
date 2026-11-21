@@ -143,3 +143,80 @@ class EngineSquadTests(unittest.TestCase):
         self.assertEqual(event['from_club_id'],'602')
         self.assertEqual(event['from_team_id'],900)
         self.assertEqual(event['from_registered_club_id'],'602')
+
+    def test_last_valid_registration_survives_missing_team_before_release(self):
+        self.c['scope_rules']['clubs'] = {'602': 'outgoing'}
+        self.e.ingest(self.snap(602, None), now=3)
+        for now in (4, 5, 6):
+            self.e.ingest(self.snap(None, None), now=now)
+        self.e.ingest(self.snap(680, 540), now=7)
+        job = self.e.db.execute('SELECT * FROM jobs ORDER BY id DESC LIMIT 1').fetchone()
+        event = json.loads(job['data'])
+        self.assertEqual((event['from_team_id'], event['from_registered_club_id']), (900, '602'))
+        self.e._team_reader.resolve = Mock(return_value={900: native(900, 'reserve', 602)})
+        self.assertEqual(self.e.enrich_squads(job)['squad_evidence']['outgoing']['kind'], 'reserve')
+
+    def test_departure_keeps_most_recent_valid_squad_assignment(self):
+        self.c['scope_rules']['clubs'] = {'602': 'outgoing'}
+        self.e.ingest(self.snap(602, 901), now=3)
+        self.e.ingest(self.snap(602, None), now=4)
+        self.e.ingest(self.snap(None, None), now=5)
+        self.e.ingest(self.snap(680, 540), now=6)
+        event = json.loads(self.e.db.execute('SELECT data FROM jobs ORDER BY id DESC LIMIT 1').fetchone()[0])
+        self.assertEqual(event['from_team_id'], 901)
+
+    def test_missing_registration_stays_unknown_without_historical_evidence(self):
+        self.c['scope_rules']['clubs'] = {'602': 'outgoing'}
+        with self.e.db:
+            self.e.db.execute('DELETE FROM people')
+        self.e.ingest(self.snap(602, None), now=3)
+        self.e.ingest(self.snap(None, None), now=4)
+        self.e.ingest(self.snap(680, 540), now=5)
+        job = self.e.db.execute('SELECT * FROM jobs ORDER BY id DESC LIMIT 1').fetchone()
+        self.e._team_reader.resolve = Mock(side_effect=AssertionError('Missing registration'))
+        row = self.e.enrich_squads(job)
+        self.assertIn('방출 전 선수단 기록 없음', row['squad_evidence']['outgoing']['reason'])
+        self.e._team_reader.resolve.assert_not_called()
+
+    def test_free_agent_arrival_waits_for_new_team_then_recovers_existing_job(self):
+        self.c['scope_rules']['clubs'] = {'680': 'incoming'}
+        self.e.ingest(self.snap(None, None), now=3)
+        self.e.ingest(self.snap(680, None), now=4)
+        self.e._team_reader.resolve = Mock(return_value={540: native(540, 'first')})
+        runner = Mock()
+        self.e.run_one(runner)
+        runner.assert_not_called()
+        job = self.e.jobs()[0]
+        self.assertEqual(job['status'], 'blocked')
+        self.assertIn('새 구단 선수단 등록 대기', job['note'])
+        self.e.ingest(self.snap(680, 540), now=5)
+        self.e.retry_preflight()
+        self.assertIsNotNone(self.e.next_job(time.time()))
+        self.assertEqual(self.e.jobs()[0]['id'], job['id'])
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
+
+    def test_unrelated_historical_club_cannot_classify_an_unknown_departure(self):
+        self.c['scope_rules']['clubs'] = {'700': 'outgoing'}
+        self.e.ingest(self.snap(700, None), now=3)
+        self.e.ingest(self.snap(None, None), now=4)
+        self.e.ingest(self.snap(680, 540), now=5)
+        event = json.loads(self.e.db.execute('SELECT data FROM jobs ORDER BY id DESC LIMIT 1').fetchone()[0])
+        self.assertIsNone(event['from_team_id'])
+        self.assertEqual(event['from_registered_club_id'], '700')
+
+    def test_registration_history_survives_restart_without_carrying_to_reused_identity(self):
+        self.c['scope_rules']['clubs'] = {'602': 'outgoing'}
+        self.e.ingest(self.snap(602, None), now=3)
+        self.e.close()
+        self.e = Engine(self.c)
+        self.addCleanup(self.e.close)
+        self.e.refresh = lambda: 0
+        self.e.ingest(self.snap(None, None), now=4)
+        self.e.ingest(self.snap(680, 540), now=5)
+        event = json.loads(self.e.db.execute('SELECT data FROM jobs ORDER BY id DESC LIMIT 1').fetchone()[0])
+        self.assertEqual(event['from_team_id'], 900)
+        replacement = self.snap(680, None)
+        replacement['players'][0]['identity'] = 'different-person'
+        self.e.ingest(replacement, now=6)
+        person = json.loads(self.e.db.execute('SELECT data FROM people').fetchone()[0])
+        self.assertNotIn('last_squad_registration', person)

@@ -644,6 +644,7 @@ class Engine:
                 old = self.db.execute("SELECT data FROM people WHERE id=?", (row["id"],)).fetchone()
                 before = json.loads(old[0]) if old else None
                 row = resolve_membership(row, before)
+                row.pop('last_squad_registration', None)
                 row["league_ids"] = clubs.get(row["club_id"], {}).get("league_ids", row.get("league_ids", []))
                 for field in ("from_club_id", "from_club_name", "from_league_ids", 'transfer_type', 'transfer_type_reason',
                               'from_team_id', 'from_registered_club_id', 'squad_evidence', 'squad_lookup_note'):
@@ -651,8 +652,23 @@ class Engine:
                 old_club = before["club_id"] if before and before["identity"] == row["identity"] else ""
                 if not old_club and before and before["identity"] == row["identity"]:
                     old_club = before.get("last_club_id", "")
-                event = dict(row, from_team_id=(before.get('registered_team_id') if before.get('club_id') else before.get('last_registered_team_id')) if before else None,
-                             from_registered_club_id=(before.get('registered_club_id',before['club_id']) if before.get('club_id') else before.get('last_registered_club_id','')) if before else '',
+                previous_registration = None
+                if before and before["identity"] == row["identity"]:
+                    previous_registration = squad_types.registration(before) or before.get('last_squad_registration')
+                    # Support records written before last_squad_registration existed.
+                    if previous_registration is None and before.get('last_club_id'):
+                        previous_registration = squad_types.registration({
+                            'club_id': before['last_club_id'],
+                            'registered_club_id': before.get('last_registered_club_id'),
+                            'registered_team_id': before.get('last_registered_team_id')})
+                source_registration = None
+                if previous_registration and previous_registration['club_id'] == old_club:
+                    source_registration = previous_registration
+                observed_registration = squad_types.registration(row)
+                if observed_registration or previous_registration:
+                    row['last_squad_registration'] = observed_registration or previous_registration
+                event = dict(row, from_team_id=source_registration['team_id'] if source_registration else None,
+                             from_registered_club_id=source_registration['club_id'] if source_registration else old_club,
                              from_club_id=old_club,
                              from_club_name=clubs.get(old_club, {}).get("name", before["club_name"] if before else ""),
                              from_league_ids=(before.get("league_ids") or before.get("last_league_ids", []) or clubs.get(old_club, {}).get("league_ids", [])) if before else [])
@@ -1097,7 +1113,13 @@ class Engine:
             if type(index) is int and index >= 0 and registered == club:
                 targets[side] = (index,club)
             else:
-                evidence[side] = {'kind':'unknown','reason':'등록 팀을 확인할 수 없거나 계약 구단만 변경됨'}
+                if side == 'outgoing':
+                    reason = '방출 전 선수단 기록 없음 · 이전 구단의 등록 팀을 확인할 수 없습니다.'
+                elif registered != club:
+                    reason = '새 구단 선수단 등록 대기 · 계약 구단과 등록 구단이 다릅니다.'
+                else:
+                    reason = '새 구단 선수단 등록 대기 · 등록 팀 ID를 확인할 수 없습니다.'
+                evidence[side] = {'kind':'unknown','reason':reason}
         note = ''
         try:
             if targets:
