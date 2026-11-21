@@ -481,6 +481,10 @@ class App:
         for label,callback in (('문제 진단 저장',self.export_diagnostics),('선수 목록 저장',self.export),('백업 복원',self.restore)):
             ttk.Button(tools,text=label,style='Compact.TButton',command=callback).pack(side='left',padx=(0,8))
         ttk.Label(tools,text='진단 보고서 · ID 목록 · 사진/매핑 복구',style='CardMuted.TLabel').pack(side='left')
+        ttk.Button(self.support_frame, text='방출 전 선수단 복구', style='Compact.TButton',
+                   command=self.restore_departure_squads).grid(row=2, column=0, sticky='w', pady=(8, 0))
+        ttk.Label(self.support_frame, text='방출 직전 세이브에서 보류 작업의 이전 등록 팀을 가져옵니다.',
+                  style='CardMuted.TLabel').grid(row=2, column=1, columnspan=2, sticky='w', padx=8, pady=(8, 0))
         footer = ttk.Frame(parent)
         footer.grid(row=4,column=0,sticky='ew',pady=(8,0))
         ttk.Button(footer,text='설정 저장',style='Primary.TButton',command=self.save).pack(side='left')
@@ -1409,6 +1413,23 @@ class App:
         editor.wait_visibility()
         if editor.winfo_exists():
             editor.grab_set()
+
+    def restore_departure_squads(self):
+        if self.active() or self.request_active():
+            self.status.set('작업 종료 후 멈춤으로 감시를 멈춘 뒤 선수단을 복구하세요.')
+            return
+        source = filedialog.askopenfilename(
+            title='해당 선수들이 방출되기 직전에 저장한 FM 세이브 선택',
+            initialdir=str(Path(self.config['source']).parent),
+            filetypes=[('FM 세이브', '*.fm')])
+        if not source:
+            return
+        def task(engine):
+            historical = read_source(dict(engine.c, source=source))
+            count = engine.restore_departure_squads(historical, source)
+            self.events.put(f'방출 전 등록 팀 {count}건 복구 · 자동 생성 시작 시 게임에서 선수단을 재확인합니다.'
+                            if count else '복구 가능한 기록 없음 · 선수·이전 구단·등록 팀과 세이브 날짜를 확인하세요.')
+        self.background(task)
 
     def export(self):
         if self.active():

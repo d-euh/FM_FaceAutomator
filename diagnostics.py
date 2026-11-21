@@ -18,11 +18,16 @@ def squad_record(data):
         raise ValueError("invalid player record")
     fields = ("club_id", "registered_club_id", "registered_team_id", "club_basis",
               "from_club_id", "from_team_id", "from_registered_club_id",
-              "last_club_id", "last_registered_team_id", "last_registered_club_id")
+              "last_club_id", "last_registered_team_id", "last_registered_club_id",
+              "transfer_game_date")
     result = {key: row[key] for key in fields if key in row}
     history = row.get("last_squad_registration")
     if isinstance(history, dict):
         result["last_squad_registration"] = {key: history[key] for key in ("club_id", "team_id") if key in history}
+    recovery = row.get("source_registration_recovery")
+    if isinstance(recovery, dict):
+        result["source_registration_recovery"] = {
+            key: recovery[key] for key in ("game_date",) if key in recovery}
     evidence = row.get("squad_evidence")
     if isinstance(evidence, dict):
         result["squad_evidence"] = {}

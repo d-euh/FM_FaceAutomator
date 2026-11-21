@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+from datetime import date as calendar_date
 from importlib.metadata import version as package_version
 import json
 import os
@@ -672,6 +673,7 @@ class Engine:
                              from_club_id=old_club,
                              from_club_name=clubs.get(old_club, {}).get("name", before["club_name"] if before else ""),
                              from_league_ids=(before.get("league_ids") or before.get("last_league_ids", []) or clubs.get(old_club, {}).get("league_ids", [])) if before else [])
+                event['transfer_game_date'] = date
                 if not row["club_id"] and old_club:
                     row["last_club_id"] = old_club
                     row['last_registered_team_id'] = event['from_team_id']
@@ -1093,6 +1095,58 @@ class Engine:
         lock = self._editing_locks.pop(job_id, None)
         if lock:
             lock.__exit__(None, None, None)
+
+    def restore_departure_squads(self, snapshot, source):
+        """Repair missing event registrations from an explicitly selected old save."""
+        imported_date = calendar_date.fromisoformat(snapshot.get('game_date', ''))
+        current_date = calendar_date.fromisoformat(self.meta('game_date') or '')
+        if imported_date >= current_date:
+            raise ValueError('방출 직전에 저장한 더 과거의 세이브를 선택하세요.')
+        if Path(source).resolve() == Path(self.c['source']).resolve():
+            raise ValueError('현재 연결된 세이브 대신 방출 직전의 다른 세이브를 선택하세요.')
+        people = {row['id']: row for row in snapshot['players']}
+        restored = 0
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            jobs = self.db.execute(
+                "SELECT jobs.* FROM jobs LEFT JOIN job_custom ON job_custom.job_id=jobs.id "
+                "WHERE status IN ('pending','blocked','generated','apply_failed') "
+                "AND COALESCE(job_custom.editing,0)=0").fetchall()
+            for job in jobs:
+                row = json.loads(job['data'])
+                if row.get('manual_request') or not row.get('from_club_id'):
+                    continue
+                existing = squad_types.registration({
+                    'club_id': row['from_club_id'],
+                    'registered_club_id': row.get('from_registered_club_id'),
+                    'registered_team_id': row.get('from_team_id')})
+                if existing:
+                    continue
+                historical = people.get(row['id'])
+                if not historical or historical['identity'] != row['identity']:
+                    continue
+                registration = squad_types.registration(historical)
+                if not registration or registration['club_id'] != row['from_club_id']:
+                    continue
+                event_date = row.get('transfer_game_date')
+                if event_date and imported_date >= calendar_date.fromisoformat(event_date):
+                    continue
+                row['from_team_id'] = registration['team_id']
+                row['from_registered_club_id'] = registration['club_id']
+                row['source_registration_recovery'] = {
+                    'game_date': str(imported_date), 'file': Path(source).name}
+                row['squad_evidence'] = {}
+                row.pop('squad_lookup_note', None)
+                status = job['status']
+                note = job['note']
+                if status == 'blocked' and job['started'] is None:
+                    status = 'pending'
+                if job['started'] is None:
+                    note = '방출 전 등록 팀 복구 · 실행/적용 전 게임에서 선수단 재확인'
+                self.db.execute('UPDATE jobs SET data=?,status=?,note=? WHERE id=?',
+                    (json.dumps(row, ensure_ascii=False), status, note, job['id']))
+                restored += 1
+        return restored
 
     def enrich_squads(self, job, cancel=None):
         row = json.loads(job['data'])
