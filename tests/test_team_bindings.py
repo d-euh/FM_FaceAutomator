@@ -1,0 +1,81 @@
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from team_bindings import DLL, FOLDER, export_report, install
+
+
+class TeamBindingsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.game = self.root/'game'
+        self.dll = self.game/'BepInEx'/'plugins'/FOLDER/DLL
+        self.dll.parent.mkdir(parents=True)
+        self.dll.write_bytes(b'MZ fixture')
+        self.source = self.game/'BepInEx'/'diagnostics'/FOLDER/'team-bindings.json'
+        self.source.parent.mkdir(parents=True)
+        self.output = self.root/'diagnostics'/'team-bindings.json'
+        self.report = dict(kind='fm_team_bindings', schema_version=1, mode='runtime_schema_only',
+                           detected_steam_build='26620374', game_data_queried=False, game_state_modified=False,
+                           state='complete', schemas=[], types=[], errors=[])
+        self.validation = patch('team_bindings.validate_game', return_value=self.game)
+        self.validation.start()
+        self.addCleanup(self.validation.stop)
+        self.write()
+
+    def write(self):
+        self.source.write_text(json.dumps(self.report))
+        os.utime(self.source, ns=(self.dll.stat().st_mtime_ns+1000000,)*2)
+
+    def test_export_preserves_source_and_writes_only_report(self):
+        original = self.source.read_bytes()
+        self.assertEqual(export_report(self.game, self.output), self.output)
+        self.assertEqual(self.output.read_bytes(), original)
+        self.assertEqual(self.source.read_bytes(), original)
+
+    def test_stale_or_incomplete_report_cannot_replace_previous_export(self):
+        self.output.parent.mkdir()
+        self.output.write_text('old export')
+        os.utime(self.source, ns=(self.dll.stat().st_mtime_ns-1000000,)*2)
+        with self.assertRaisesRegex(ValueError, '아직'):
+            export_report(self.game, self.output)
+        self.report['state'] = 'waiting_for_main_thread'
+        self.write()
+        with self.assertRaisesRegex(ValueError, '아직'):
+            export_report(self.game, self.output)
+        self.assertEqual(self.output.read_text(), 'old export')
+
+    def test_rejects_modified_game_flags_build_and_untrusted_paths(self):
+        for key, value in [('game_state_modified',True), ('game_data_queried',True),
+                           ('detected_steam_build','other'), ('mode','other'), ('types',None)]:
+            with self.subTest(key=key):
+                old = self.report[key]
+                self.report[key] = value
+                self.write()
+                with self.assertRaises(ValueError):
+                    export_report(self.game, self.output)
+                self.report[key] = old
+        self.write()
+        with self.assertRaisesRegex(ValueError, '설치 폴더 밖'):
+            export_report(self.game, self.game/'overwrite.json')
+
+    def test_partial_or_unavailable_reports_remain_exportable_for_diagnosis(self):
+        for state in ('complete_with_errors', 'unavailable'):
+            self.report.update(state=state, errors=[{'stage':'schema', 'error':'MissingMethodException'}])
+            self.write()
+            export_report(self.game,self.output)
+            self.assertEqual(json.loads(self.output.read_text())['state'],state)
+
+    def test_install_requires_closed_game_and_uses_separate_component(self):
+        with patch('team_bindings.game_process_running',return_value=True), patch('team_bindings.install_component') as component:
+            with self.assertRaisesRegex(ValueError,'종료'):
+                install(self.game)
+            component.assert_not_called()
+        with patch('team_bindings.game_process_running',return_value=False), patch('team_bindings.install_component') as component:
+            install(self.game)
+            component.assert_called_once_with(self.game,None,DLL,FOLDER)
