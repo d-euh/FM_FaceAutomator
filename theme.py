@@ -60,6 +60,26 @@ def configure_buttons(window, style):
     window.button_theme_images = images
 
 
+def match_button_background(event):
+    button = event.widget
+    style = ttk.Style(button)
+    parent = button.master
+    if isinstance(parent, ttk.Widget):
+        background = style.lookup(parent.cget("style") or parent.winfo_class(), "background")
+    else:
+        background = parent.cget("background")
+    background = background or BACKGROUND
+    red, green, blue = button.winfo_rgb(background)
+    color = f"#{red // 257:02x}{green // 257:02x}{blue // 257:02x}"
+    base = button.cget("style") or "TButton"
+    if base.startswith("Surface"):
+        base = base.split(".", 1)[1]
+    name = f"Surface{color[1:]}.{base}"
+    style.configure(name, background=color)
+    style.map(name, background=[("disabled", color), ("!disabled", color)])
+    button.configure(style=name)
+
+
 def apply_theme(window, family):
     window.configure(background=BACKGROUND)
     for pattern, value in {
@@ -82,6 +102,7 @@ def apply_theme(window, family):
     style.configure("TFrame", background=BACKGROUND)
     style.configure("TLabel", background=BACKGROUND, foreground=TEXT)
     configure_buttons(window, style)
+    window.bind_class("TButton", "<Map>", match_button_background, add="+")
     style.configure("Badge.TLabel", background=SELECTED, foreground=PURPLE, padding=(12, 7), font=(family, 10, "bold"))
     style.configure("Title.TLabel", font=(family, 22, "bold"))
     style.configure("Section.TLabel", font=(family, 13, "bold"), foreground=TEXT, background=BACKGROUND)
