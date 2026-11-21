@@ -1273,7 +1273,8 @@ class Engine:
         write_atomic(folder / "prompt.txt", prompt.encode("utf-8"))
         cmd = [executable, "--ask-for-approval", "never"]
         if portrait is None or kit is None:
-            cmd.append('--search')
+            # Web search does not grant shell downloads network access.
+            cmd += ['--config', 'sandbox_workspace_write.network_access=true', '--search']
         cmd += ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write",
                "--cd", str(folder), "--json", "--output-schema", str(folder / "schema.json"),
                "--output-last-message", str(folder / "reply.json")]

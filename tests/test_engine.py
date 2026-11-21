@@ -425,6 +425,9 @@ class EngineTests(unittest.TestCase):
         self.e.ingest(read_source(self.c))
         def runner(cmd, **kwargs):
             self.assertIn('--search',cmd)
+            self.assertEqual(cmd[cmd.index('--config') + 1], 'sandbox_workspace_write.network_access=true')
+            self.assertEqual(cmd[cmd.index('--sandbox') + 1], 'workspace-write')
+            self.assertEqual(cmd[cmd.index('--ask-for-approval') + 1], 'never')
             self.assertEqual(cmd.count('--image'),1)
             self.assertIn('gk_home',kwargs['input'])
             self.assertIn('2026/27',kwargs['input'])
@@ -881,6 +884,9 @@ class EngineTests(unittest.TestCase):
         (Path(self.c['portraits_dir'])/'900001.png').unlink()
         def searched(cmd, **kwargs):
             self.assertIn('--search',cmd)
+            self.assertEqual(cmd[cmd.index('--config') + 1], 'sandbox_workspace_write.network_access=true')
+            self.assertEqual(cmd[cmd.index('--sandbox') + 1], 'workspace-write')
+            self.assertEqual(cmd[cmd.index('--ask-for-approval') + 1], 'never')
             self.assertEqual(cmd.count('--image'),1)
             folder = Path(cmd[cmd.index('--cd')+1])
             self.assertFalse((folder/'original.png').exists())
@@ -910,6 +916,7 @@ class EngineTests(unittest.TestCase):
         self.refs()
         def local(cmd, **kwargs):
             self.assertNotIn('--search',cmd)
+            self.assertNotIn('sandbox_workspace_write.network_access=true', cmd)
             self.assertEqual(cmd.count('--image'),2)
             return self.good_runner(cmd, **kwargs)
         self.e.run_one(local)
@@ -1179,6 +1186,9 @@ class EngineTests(unittest.TestCase):
         self.transfer()
         def runner(cmd, **kwargs):
             self.assertIn('--search',cmd)
+            self.assertEqual(cmd[cmd.index('--config') + 1], 'sandbox_workspace_write.network_access=true')
+            self.assertEqual(cmd[cmd.index('--sandbox') + 1], 'workspace-write')
+            self.assertEqual(cmd[cmd.index('--ask-for-approval') + 1], 'never')
             self.assertNotIn('--image',cmd)
             folder = self.supply_web_kit(cmd)
             Image.new('RGB',(300,400),'gray').save(folder/'original.png')
