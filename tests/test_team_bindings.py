@@ -22,7 +22,7 @@ class TeamBindingsTests(unittest.TestCase):
         self.output = self.root/'diagnostics'/'team-bindings.json'
         self.report = dict(kind='fm_team_bindings', schema_version=1, mode='runtime_schema_only',
                            detected_steam_build='26620374', game_data_queried=False, game_state_modified=False,
-                           state='complete', schemas=[], types=[], errors=[])
+                           tool_version='0.1.1', state='complete', schemas=[], types=[], errors=[])
         self.validation = patch('team_bindings.validate_game', return_value=self.game)
         self.validation.start()
         self.addCleanup(self.validation.stop)
@@ -44,10 +44,11 @@ class TeamBindingsTests(unittest.TestCase):
         os.utime(self.source, ns=(self.dll.stat().st_mtime_ns-1000000,)*2)
         with self.assertRaisesRegex(ValueError, '아직'):
             export_report(self.game, self.output)
-        self.report['state'] = 'waiting_for_main_thread'
-        self.write()
-        with self.assertRaisesRegex(ValueError, '아직'):
-            export_report(self.game, self.output)
+        for state in ('waiting_for_main_thread', 'reading_schema'):
+            self.report['state'] = state
+            self.write()
+            with self.assertRaisesRegex(ValueError, '아직'):
+                export_report(self.game, self.output)
         self.assertEqual(self.output.read_text(), 'old export')
 
     def test_rejects_modified_game_flags_build_and_untrusted_paths(self):
@@ -79,3 +80,9 @@ class TeamBindingsTests(unittest.TestCase):
         with patch('team_bindings.game_process_running',return_value=False), patch('team_bindings.install_component') as component:
             install(self.game)
             component.assert_called_once_with(self.game,None,DLL,FOLDER)
+
+    def test_old_tool_version_is_rejected_even_if_file_timestamp_is_recent(self):
+        self.report['tool_version'] = '0.1.0'
+        self.write()
+        with self.assertRaisesRegex(ValueError, '재설치'):
+            export_report(self.game, self.output)

@@ -1,4 +1,4 @@
-# FM Team Binding Diagnostics 0.1.0
+# FM Team Binding Diagnostics 0.1.1
 
 Separate BepInEx 6 Unity IL2CPP diagnostic for FM27 Steam build 26620374.
 Use `install_team_bindings.bat` with FM27 closed. Start the game, wait about 60 seconds
@@ -11,8 +11,14 @@ installation and reports still waiting for the main thread are rejected by the e
 
 The plugin uses the same three-file SHA256/build guard as FMFaceRefresh 0.2.3.
 On the main thread it calls only exact allowlisted static binding-schema descriptors
-on six FM.UI Reference types. It records property IDs/descriptions/kinds, plus supporting
-CLR member signatures without invoking those members. Native property-ID storage must
+on five FM.UI Reference types (the database-record base has no schema descriptors). It records property IDs/descriptions/kinds, plus supporting
+CLR member signatures without invoking those members. BindingKind is the observed
+IL2CPP value wrapper containing Kind/Reference/Type/IsList, not an enum. Schema names
+come from IdentifierUtils.GetName, reference target names from ReferenceID.GetInfo.
+Partial property descriptions and actual counts survive per-item errors. At most 32
+properties are read per tick (yield after ~5ms); per-reference count is bounded to 8192.
+The export size limit is 8 MiB. Version 0.1.0 reports are rejected even if their file
+timestamp is recent. Reinstall with install_team_bindings.bat after updating. Native property-ID storage must
 be unambiguous; no offsets or slot meanings are guessed. Counts/descriptions/output
 are bounded. A one-time inert tick postfix remains until process exit.
 

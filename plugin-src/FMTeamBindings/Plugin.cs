@@ -9,13 +9,15 @@ using FMFaceRefresh.Diagnostics;
 
 namespace FMTeamBindings;
 
-[BepInPlugin("io.github.d_euh.fmface.teambindings", "FM Team Binding Diagnostics", "0.1.0")]
+[BepInPlugin("io.github.d_euh.fmface.teambindings", "FM Team Binding Diagnostics", "0.1.1")]
 public sealed class Plugin : BasePlugin
 {
     private static Plugin? instance;
     private Harmony? harmony;
     private readonly Stopwatch clock = Stopwatch.StartNew();
-    private readonly List<object> schemas = new(), shapes = new(), errors = new();
+    private readonly List<SchemaResult> schemas = new();
+    private readonly List<object> shapes = new(), errors = new();
+    private Descriptors.Scan? scan;
     private int next, descriptorCalls;
     private bool busy, finished;
     private Type? list;
@@ -33,14 +35,14 @@ public sealed class Plugin : BasePlugin
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Output)!);
         var data = JsonSerializer.SerializeToUtf8Bytes(new {
-            kind = "fm_team_bindings", schema_version = 1, tool_version = "0.1.0", state,
+            kind = "fm_team_bindings", schema_version = 1, tool_version = "0.1.1", state,
             mode = "runtime_schema_only", generated_at_utc = DateTime.UtcNow,
             detected_steam_build = Report.SteamBuild(Paths.GameRootPath),
             game_data_queried = false, game_state_modified = false,
             schema_methods_invoked = descriptorCalls > 0, descriptor_call_attempts = descriptorCalls, schemas, types = shapes, errors,
             notice = "Allowlisted static binding schema descriptors only. No player data, channels, game writes, portraits, or authentication data. Not a verified squad classification."
         });
-        if (data.Length > 4 * 1024 * 1024) throw new InvalidOperationException("report_too_large");
+        if (data.Length > 8 * 1024 * 1024) throw new InvalidOperationException("report_too_large");
         var temporary = Output + ".tmp";
         File.WriteAllBytes(temporary, data); File.Move(temporary, Output, true);
     }
@@ -96,14 +98,23 @@ public sealed class Plugin : BasePlugin
         busy = true;
         try
         {
-            var name = Descriptors.References[next++];
-            try { schemas.Add(Descriptors.Read(Resolve(name), list!, () => descriptorCalls++)); }
-            catch (Exception e) { errors.Add(new { stage = "schema", type = name, error = e.GetBaseException().GetType().Name,
-                code = e is InvalidOperationException ? e.Message : "signature_or_descriptor_unavailable" }); }
-            if (next == Descriptors.References.Length)
+            if (scan is null)
             {
-                finished = true; Save(errors.Count == 0 ? "complete" : "complete_with_errors");
-                Log.LogInfo("Team schema report saved: " + Output);
+                var name = Descriptors.References[next];
+                scan = new Descriptors.Scan(Resolve(name), list!, () => descriptorCalls++);
+                schemas.Add(scan.Result);
+            }
+            scan.Step(); // At most 32 properties / about 5 ms per tick, retaining partial rows.
+            if (scan.Done)
+            {
+                scan = null; next++;
+                if (next == Descriptors.References.Length)
+                {
+                    finished = true;
+                    Save(errors.Count == 0 && schemas.All(s => !s.HasErrors && s.complete) ? "complete" : "complete_with_errors");
+                    Log.LogInfo("Team schema report saved: " + Output);
+                }
+                else Save("reading_schema");
             }
         }
         catch (Exception e)

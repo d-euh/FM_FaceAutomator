@@ -11,9 +11,10 @@ from refresh_diagnostics import (INSTALL_RECORD, ROOT, EXPECTED_BUILD, game_proc
                                  install_component, validate_game)
 from team_metadata import find_games
 
+TOOL_VERSION = '0.1.1'
 FOLDER = 'FMTeamBindings'
 DLL = 'FMTeamBindings.dll'
-MAX_REPORT = 4 * 1024 * 1024
+MAX_REPORT = 8 * 1024 * 1024
 
 
 def install(game, bundle=None):
@@ -44,7 +45,9 @@ def export_report(game, destination):
             or report.get('game_data_queried') is not False or report.get('game_state_modified') is not False
             or not all(isinstance(report.get(k), list) for k in ('schemas', 'types', 'errors'))):
         raise ValueError('지원하는 읽기 전용 팀 속성 보고서가 아닙니다.')
-    if report.get('state') == 'waiting_for_main_thread':
+    if report.get('tool_version') != TOOL_VERSION:
+        raise ValueError('기존 팀 진단 보고서입니다. 업데이트 후 install_team_bindings.bat로 재설치하고 FM27을 다시 실행하세요.')
+    if report.get('state') in ('waiting_for_main_thread', 'reading_schema'):
         raise ValueError('아직 팀 속성을 읽고 있습니다. FM27 메인 화면에서 60초 정도 기다린 뒤 다시 실행하세요.')
     if report.get('state') not in ('complete', 'complete_with_errors', 'unavailable'):
         raise ValueError('팀 진단 보고서 상태를 확인할 수 없습니다.')
