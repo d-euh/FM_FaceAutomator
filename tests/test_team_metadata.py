@@ -27,7 +27,7 @@ class TeamMetadataTests(unittest.TestCase):
         self.manifest.write_text(hashlib.sha256(self.helper.read_bytes()).hexdigest()+'  '+HELPER)
         self.output=self.root/'diagnostics'/'team-metadata.json'
         self.report={'kind':'fm_team_metadata','schema_version':1,'mode':'metadata_only',
-                     'game_methods_invoked':False,'scanned_assemblies':1,'assemblies':[],'errors':[]}
+                     'game_methods_invoked':False,'tool_version':'0.2.0','focus_types':['SI.Core.DynamicNumber'],'scanned_assemblies':1,'assemblies':[],'errors':[]}
 
     def run_export(self, runner):
         return export_metadata(self.interop,self.output,'26620374',bundle=self.bundle,runner=runner)
@@ -83,3 +83,11 @@ class TeamMetadataTests(unittest.TestCase):
         for path in (self.interop/'report.json',self.root/'FM.Data.dll'):
             with self.subTest(path=path),self.assertRaises(ValueError):
                 export_metadata(self.interop,path,bundle=self.bundle,runner=lambda *a,**k:self.fail('Invalid destination'))
+
+    def test_previous_metadata_helper_cannot_be_mistaken_for_focused_api_export(self):
+        previous = self.report | {'tool_version':'0.1.0'}
+        def runner(command, **kwargs):
+            Path(command[2]).write_text(json.dumps(previous))
+            return NS(returncode=0)
+        with self.assertRaisesRegex(ValueError, '기존'):
+            self.run_export(runner)

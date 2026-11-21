@@ -12,6 +12,10 @@ public sealed class TypeEntry
     public string base_type { get; set; } = "";
     public int token { get; set; }
     public bool is_enum { get; set; }
+    public bool is_interface { get; set; }
+    public bool is_abstract { get; set; }
+    public bool focused_api { get; set; }
+    public List<object> generic_parameters { get; set; } = new();
     public int total_methods { get; set; }
     public int total_fields { get; set; }
     public int total_properties { get; set; }
@@ -34,11 +38,28 @@ public sealed class AssemblyEntry
 public static class MetadataReport
 {
     public const int MaxBytes = 24 * 1024 * 1024;
+    public static readonly string[] FocusTypes = {
+        "SI.Core.DynamicNumber", "SI.Core.TypedValue", "SI.Core.ReferenceTypedValue",
+        "SI.Core.RecordSerialisation", "SI.Core.SerializationStream",
+        "SI.Bindable.IDataHandler", "SI.Bindable.IReadOnlyData", "SI.Bindable.IReadOnlyNode",
+        "SI.Bindable.Bindings", "SI.Bindable.PropertyHandler", "SI.Bindable.ReferenceUtils",
+        "SI.Bindable.Reference.Core.PropertyID", "SI.Bindable.Reference.Core.ReferenceID",
+        "SI.Bindable.Reference.Core.ContextID", "SI.Bindable.Reference.Core.BindingKind",
+        "SI.Interop.InteropReference", "SI.Interop.IInteropReferenceFactory", "SI.Interop.InteropUtils",
+        "FM.GamePlugin.ChannelData", "FM.GamePlugin.ChannelAction", "FM.GamePlugin.ChannelActionMode",
+        "FM.GamePlugin.UiRecordID", "FM.GamePlugin.GameRecordSerialisation",
+        "FM.GamePlugin.GamePlugin", "FM.GamePlugin.GameInteropSubsystem",
+        "FM.UI.DatabaseRecordReference", "FM.UI.DatabaseTableType", "FM.UI.TeamReference",
+        "FM.UI.ClubReference", "FM.UI.PersonReference"
+    };
+    private static bool Focused(string name) => !name.Contains("+MethodInfoStoreGeneric_", StringComparison.Ordinal)
+        && !name.Contains("+__", StringComparison.Ordinal)
+        && FocusTypes.Any(n => name == n || name.StartsWith(n + "+", StringComparison.Ordinal));
     private static readonly string[] Keywords = { "team", "squad", "youth", "reserve", "club" };
 
     private static bool GameFile(string name) => name.StartsWith("FM", StringComparison.OrdinalIgnoreCase)
         || name.StartsWith("SI.", StringComparison.OrdinalIgnoreCase);
-    private static bool Candidate(string name) => Keywords.Any(k => name.Contains(k, StringComparison.OrdinalIgnoreCase))
+    private static bool Candidate(string name) => Focused(name) || Keywords.Any(k => name.Contains(k, StringComparison.OrdinalIgnoreCase))
         && !name.Contains("ReferenceRegistration", StringComparison.OrdinalIgnoreCase);
     private static bool Boilerplate(string name) => name.StartsWith("Native", StringComparison.Ordinal)
         || name.StartsWith("__", StringComparison.Ordinal);
@@ -48,6 +69,7 @@ public static class MetadataReport
         && (name.Contains("team", StringComparison.OrdinalIgnoreCase) || name.Contains("squad", StringComparison.OrdinalIgnoreCase));
     private static int Priority(string name, bool isEnum)
     {
+        if (Focused(name)) return -1;
         if (isEnum) return 0;
         if (new[] { "TeamType", "SquadType", "TeamKind", "SquadKind", "TeamData", "TeamReference", "ClubTeam" }
             .Any(k => name.Contains(k, StringComparison.OrdinalIgnoreCase))) return 1;
@@ -69,13 +91,14 @@ public static class MetadataReport
             catch (Exception exc) { errors.Add(Path.GetFileName(file) + ":" + exc.GetType().Name); }
         }
         return new() {
-            ["kind"] = "fm_team_metadata", ["schema_version"] = 1, ["tool_version"] = "0.1.0",
+            ["kind"] = "fm_team_metadata", ["schema_version"] = 1, ["tool_version"] = "0.2.0",
             ["mode"] = "metadata_only", ["game_methods_invoked"] = false,
             ["detected_steam_build"] = build, ["generated_at_utc"] = DateTime.UtcNow,
             ["scanned_assemblies"] = scanned, ["assemblies"] = entries, ["errors"] = errors,
             ["candidate_limit_per_assembly"] = 180, ["member_limit_per_type"] = 100,
-            ["output_compacted"] = false,
-            ["notice"] = "Static type names/signatures and numeric enum constants only. No game assemblies are loaded, no constructors/getters are executed, and no squad meanings or runtime player assignments are inferred. Counts record omitted entries."
+            ["output_compacted"] = false, ["focus_types"] = FocusTypes,
+            ["focused_member_limit_per_type"] = 250,
+            ["notice"] = "Static type names/signatures, constructor signatures, generic constraints and numeric enum constants only. Focused bridge/numeric types include all member signatures, including write-shaped names as metadata only. No game assemblies are loaded, no constructors/getters are executed, and no squad meanings or runtime player assignments are inferred. Counts record omitted entries."
         };
     }
 
@@ -111,8 +134,12 @@ public static class MetadataReport
             try
             {
                 var definition = reader.GetTypeDefinition(handle);
+                var focused = Focused(name);
                 var entry = new TypeEntry { name = name, token = MetadataTokens.GetToken(handle), is_enum = isEnum,
-                    base_type = provider.TypeName(reader, definition.BaseType) };
+                    base_type = provider.TypeName(reader, definition.BaseType), focused_api = focused,
+                    is_interface = (definition.Attributes & TypeAttributes.Interface) != 0,
+                    is_abstract = (definition.Attributes & TypeAttributes.Abstract) != 0,
+                    generic_parameters = Generics(reader, provider, definition.GetGenericParameters()) };
                 foreach (var fieldHandle in definition.GetFields().OrderBy(h => Candidate(reader.GetString(reader.GetFieldDefinition(h).Name)) ? 0 : 1))
                 {
                     var field = reader.GetFieldDefinition(fieldHandle);
@@ -128,14 +155,18 @@ public static class MetadataReport
                 {
                     var method = reader.GetMethodDefinition(methodHandle);
                     var methodName = reader.GetString(method.Name);
-                    // Read-like signatures only; this does not execute or certify any getter.
-                    if (!(methodName.StartsWith("get_", StringComparison.Ordinal) || methodName.StartsWith("Get", StringComparison.Ordinal)
+                    // Focused types include constructors/conversions/channel signatures.
+                    // These are PE descriptors only, never permission to invoke them.
+                    if (methodName == ".cctor") continue;
+                    if (!focused && !(methodName.StartsWith("get_", StringComparison.Ordinal) || methodName.StartsWith("Get", StringComparison.Ordinal)
                         || methodName.StartsWith("Find", StringComparison.Ordinal) || methodName.StartsWith("TryGet", StringComparison.Ordinal))) continue;
                     entry.total_methods++;
-                    if (entry.methods.Count >= 100) continue;
+                    if (entry.methods.Count >= (focused ? 250 : 100)) continue;
                     var signature = method.DecodeSignature(provider, (object?)null);
                     entry.methods.Add(new { name = methodName, token = MetadataTokens.GetToken(methodHandle),
                         is_static = (method.Attributes & MethodAttributes.Static) != 0,
+                        is_public = (method.Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.Public,
+                        generic_parameters = Generics(reader, provider, method.GetGenericParameters()),
                         return_type = signature.ReturnType, parameters = signature.ParameterTypes.ToArray(),
                         parameter_names = method.GetParameters().Select(p => reader.GetParameter(p)).Where(p => p.SequenceNumber > 0)
                             .OrderBy(p => p.SequenceNumber).Select(p => reader.GetString(p.Name)).ToArray() });
@@ -159,6 +190,12 @@ public static class MetadataReport
         }
         return result;
     }
+
+    private static List<object> Generics(MetadataReader reader, SignatureNames provider, GenericParameterHandleCollection handles)
+        => handles.Select(h => reader.GetGenericParameter(h)).OrderBy(p => p.Index).Select(p => (object)new {
+            name = reader.GetString(p.Name), index = p.Index, attributes = p.Attributes.ToString(),
+            constraints = p.GetConstraints().Select(h => provider.TypeName(reader, reader.GetGenericParameterConstraint(h).Type)).ToArray()
+        }).ToList();
 
     private static bool IsEnum(MetadataReader reader, TypeDefinition type, SignatureNames provider)
         => provider.TypeName(reader, type.BaseType) is "System.Enum" or "Il2CppSystem.Enum";
@@ -204,7 +241,7 @@ public static class MetadataReport
 
 internal sealed class SignatureNames : ISignatureTypeProvider<string, object?>
 {
-    public string TypeName(MetadataReader reader, EntityHandle handle) => handle.Kind switch {
+    public string TypeName(MetadataReader reader, EntityHandle handle) => handle.IsNil ? "" : handle.Kind switch {
         HandleKind.TypeDefinition => GetTypeFromDefinition(reader, (TypeDefinitionHandle)handle, 0),
         HandleKind.TypeReference => GetTypeFromReference(reader, (TypeReferenceHandle)handle, 0),
         HandleKind.TypeSpecification => GetTypeFromSpecification(reader, null, (TypeSpecificationHandle)handle, 0), _ => "" };

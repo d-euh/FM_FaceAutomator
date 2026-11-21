@@ -96,3 +96,41 @@ Counts/timestamps/paths are observations, not yet proof of squad mappings or com
 User must reinstall team diagnostic only, load save, visit first/U21/U18 squad screens
 and both player profiles within 10 minutes, then export. No save edits required.
 Global feature still requires record ID/type validation; no slot-based shortcut added.
+
+## Successful runtime values received 2026-11-21
+
+DLL 0.2.0 report: 204 distinct path/value observations, 31,399 binding events,
+8,591 inspected, no read errors/dropped rows. Real displayed values:
+
+| Team native record index | UI label | Prior controlled save team ID |
+|---:|---|---:|
+| 540 | 성인 선수단 (senior squad) | 540 |
+| 28346 | U21 팀 | 28346 |
+| 28347 | 유소년 팀 (U18) | 28347 |
+
+Main/first flags are true for the senior view and false for U21/U18 views.
+Human.Team.TeamContainer.HighestLevelYouthTeam refers to 28346; SecondHighestLevelYouthTeam
+refers to 28347. U21 being a reserve side in the user's controlled setup must not be
+promoted into a universal slot/age/category convention; the native container calls it
+a youth level. A player Person.Team reference to 28347 was also observed. These match
+the controlled assignments, but the two test-player unique IDs were not decoded yet.
+
+UniqueId and some other numeric values use SI.Core.DynamicNumber (75 opaque rows).
+Do not reinterpret its memory as Int32. In particular, native Club record index 409 is
+used for the Manchester United context while the save's club UID/unique ID is 680.
+Native indexes and actual unique IDs are not interchangeable. Runtime scalar TeamType
+was not observed; localized strings and flags are not a complete numeric enum mapping.
+System.String values can contain FM control/link encoding; do not equate the full raw
+string with a clean display name or scan arbitrary base64 contents for IDs.
+
+Next prepared step (app 0.16.6): static helper 0.2.0 includes DynamicNumber and its nested
+types, conversion/constructor signatures, generic constraints, IDataHandler/Bindings
+handler API, InteropReference factory/Pair, ChannelData/Action/Mode, DB-reference
+constructors. All are PE metadata only. The metadata scanner now handles interface nil
+base handles and tests ensure no constructors/conversions/getters are executed.
+
+User action: update, run export_team_metadata.bat, attach team-metadata.json. Game may
+remain running; no plugin reinstall/restart, player movement or repeat UI visits needed.
+The next implementation must validate numeric conversions and safe targeted read lifecycle
+against these types before claiming general automatic squad filtering. Existing diagnostic
+DLL 0.2.0 and refresh DLL 0.2.3 remain byte-for-byte unchanged in this release.

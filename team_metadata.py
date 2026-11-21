@@ -81,6 +81,8 @@ def export_metadata(interop, destination, build=None, bundle=None, runner=subpro
         if (not isinstance(report,dict) or report.get('kind') != 'fm_team_metadata' or report.get('schema_version') != 1
                 or report.get('mode') != 'metadata_only' or report.get('game_methods_invoked') is not False):
             raise ValueError('읽기 전용 팀 메타데이터 보고서가 아닙니다.')
+        if report.get('tool_version') != '0.2.0' or not isinstance(report.get('focus_types'), list):
+            raise ValueError('기존 메타데이터 도구입니다. 프로그램을 업데이트한 뒤 다시 실행하세요.')
         if not report.get('scanned_assemblies'):
             raise ValueError('읽을 수 있는 FM/SI interop DLL이 없습니다. BepInEx interop 폴더를 확인하세요.')
         os.replace(staged,destination)
@@ -115,7 +117,7 @@ def main():
             build = steam_manifest(game)['build']
         except (OSError,ValueError):
             build = None
-        print('팀·스쿼드 형식 정보를 읽습니다. 게임 실행/재시작·플러그인 재설치는 필요 없습니다.',flush=True)
+        print('팀·스쿼드 및 DynamicNumber·조회 API 형식 정보를 읽습니다. 게임 실행/재시작·플러그인 재설치는 필요 없습니다.',flush=True)
         target, report = export_metadata(interop,args.output,build)
         print('\n저장 완료: '+str(target),flush=True)
         print(f"읽은 DLL: {report['scanned_assemblies']} · 읽기 오류: {len(report.get('errors',[]))}",flush=True)

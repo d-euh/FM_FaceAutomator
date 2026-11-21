@@ -35,13 +35,27 @@ try
         .ToDictionary(f => f.GetProperty("name").GetString()!, f => f.GetProperty("constant").GetInt32());
     Check(values["Unknown"] == -1 && values["Senior"] == 7 && values["Under21"] == 13 && values["Under18"] == 42,
         "Read enum constants rather than guessing slot meanings");
+    Check(root.GetProperty("tool_version").GetString() == "0.2.0", "Need focus-capable tool version");
+    var number = types.Single(t => t.GetProperty("name").GetString() == "SI.Core.DynamicNumber");
+    Check(number.GetProperty("focused_api").GetBoolean(), "DynamicNumber must bypass team-name filtering");
+    var numberMethods = number.GetProperty("methods").EnumerateArray().ToArray();
+    Check(numberMethods.Any(m => m.GetProperty("name").GetString() == ".ctor" && m.GetProperty("parameters")[0].GetString() == "IntPtr"),
+        "Need constructor signatures without invoking them");
+    Check(numberMethods.Any(m => m.GetProperty("name").GetString() == "op_Explicit"), "Need numeric conversion signatures");
+    var generic = numberMethods.Single(m => m.GetProperty("name").GetString() == "As").GetProperty("generic_parameters")[0];
+    Check(generic.GetProperty("attributes").GetString()!.Contains("NotNullableValueTypeConstraint"), "Must preserve value-type generic constraints");
+    Check(numberMethods.Any(m => m.GetProperty("name").GetString() == "set_Value"), "Focused signatures include setters as metadata only");
+    Check(!numberMethods.Any(m => m.GetProperty("name").GetString() == ".cctor"), "No need to include static initialisers");
+    var channel = types.Single(t => t.GetProperty("name").GetString() == "SI.Bindable.IDataHandler");
+    Check(channel.GetProperty("is_interface").GetBoolean(), "Need bridge interface type kind");
+    Check(channel.GetProperty("methods").EnumerateArray().Any(m => m.GetProperty("name").GetString() == "Open"), "Need channel signatures, never execution");
     Check(!text.Contains("SECRET_CONSTANT_VALUE") && !text.Contains(folder), "Must omit literal strings and installation paths");
     Check(File.ReadAllBytes(Path.Combine(folder, "FM.Fixture.dll")).SequenceEqual(original), "Must not alter source files");
     Check(bytes.Length < MetadataReport.MaxBytes, "Report must fit attachment limit");
     var failed = false;
     try { MetadataReport.SerializeBounded(report, 16); } catch (InvalidDataException) { failed = true; }
     Check(failed, "Must fail instead of writing an oversized report");
-    Console.WriteLine("PASS: static-only scanning, signed enum values, nested names, getters/properties, corrupt DLL isolation, no literals/paths, immutable inputs and output bounds.");
+    Console.WriteLine("PASS: static-only scanning, focused numeric/bridge interfaces, constructor/conversion signatures, generic constraints, enum values, corrupt DLL isolation, no literals/paths and bounded immutable inputs.");
 }
 finally { Directory.Delete(folder, true); }
 
@@ -61,4 +75,20 @@ namespace SI.Data
         public const string SecretLiteral = "SECRET_CONSTANT_VALUE";
         public ClubTeam? FindTeam(int teamId) => throw new InvalidOperationException("Game methods must never execute");
     }
+}
+
+namespace SI.Core
+{
+    public class DynamicNumber
+    {
+        static DynamicNumber() => throw new Exception("Must not initialise game wrappers");
+        public DynamicNumber(IntPtr pointer) => throw new Exception("Must not call native constructors");
+        public long Value { get => throw new Exception("Must not read runtime values"); set => throw new Exception("Must not write runtime values"); }
+        public T As<T>() where T : struct => throw new Exception("Must not convert native values");
+        public static explicit operator long(DynamicNumber value) => throw new Exception("Must not invoke conversions");
+    }
+}
+namespace SI.Bindable
+{
+    public interface IDataHandler { void Open(int key); }
 }
