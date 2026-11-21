@@ -8,6 +8,8 @@ from scope_rules import DIRECTIONS, LEAGUES, PRESETS, describe, migrate_scope
 from transfer_types import TRANSFER_TYPES
 from squad_types import KINDS as SQUAD_TYPES
 
+LOAN_TYPES = ('loan', 'loan_return')
+
 
 class ScopePanel:
     def __init__(self, parent, variables, save, read, changed, advanced, find_players=None, generate=None):
@@ -27,7 +29,9 @@ class ScopePanel:
         self.direction = tk.StringVar(value=DIRECTIONS["both"])
         self.include_managed = tk.BooleanVar(value=False)
         self.squad_types = {kind: tk.BooleanVar(value=True) for kind in SQUAD_TYPES}
-        self.transfer_types = {kind: tk.BooleanVar(value=True) for kind in TRANSFER_TYPES}
+        self.transfer_types = {kind: tk.BooleanVar(value=True) for kind in TRANSFER_TYPES if kind not in LOAN_TYPES}
+        self.loan_moves = tk.IntVar(value=1)
+        self.saved_loan_types = LOAN_TYPES
         self.search = tk.StringVar()
         self.manual_id = tk.StringVar()
         self.club_direction = tk.StringVar(value=DIRECTIONS["both"])
@@ -58,6 +62,13 @@ class ScopePanel:
         kinds.grid(row=2,column=0,columnspan=4,sticky='ew',pady=(8,0))
         ttk.Label(kinds,text='포함할 이적 유형',style='CardText.TLabel').pack(side='left',padx=(0,14))
         for kind, label in TRANSFER_TYPES.items():
+            if kind == LOAN_TYPES[0]:
+                self.loan_checkbox = ttk.Checkbutton(
+                    kinds, text='임대 이동', variable=self.loan_moves, style='Card.TCheckbutton',
+                    command=self.select_loan_moves)
+                self.loan_checkbox.pack(side='left', padx=(0, 14))
+            if kind in LOAN_TYPES:
+                continue
             ttk.Checkbutton(kinds,text=label,variable=self.transfer_types[kind],style='Card.TCheckbutton',command=self.render_summary).pack(side='left',padx=(0,14))
 
         groups = ttk.Frame(kinds, style='Card.TFrame')
@@ -155,10 +166,18 @@ class ScopePanel:
     def select_preset(self, event=None):
         self.choose_preset({label: key for key, label in PRESETS.items()}[self.preset_label.get()])
 
+    def select_loan_moves(self):
+        self.loan_checkbox.state(['!alternate'])
+        self.render_summary()
+
     def value(self):
         reverse = {label: key for key, label in DIRECTIONS.items()}
+        loan_moves = self.loan_moves.get()
+        selected_loans = self.saved_loan_types if loan_moves == -1 else LOAN_TYPES if loan_moves else ()
+        selected_types = set(selected_loans)
+        selected_types.update(kind for kind, variable in self.transfer_types.items() if variable.get())
         return {"preset": self.preset.get(), "direction": reverse[self.direction.get()], "clubs": dict(self.rules), "include_managed": self.include_managed.get(),
-                'transfer_types': [kind for kind, variable in self.transfer_types.items() if variable.get()],
+                'transfer_types': [kind for kind in TRANSFER_TYPES if kind in selected_types],
                 'squad_types':[kind for kind,variable in self.squad_types.items() if variable.get()]}
 
     def load(self, config):
@@ -169,6 +188,10 @@ class ScopePanel:
         self.include_managed.set(value.get("include_managed", False))
         for kind, variable in self.transfer_types.items():
             variable.set(kind in value['transfer_types'])
+        self.saved_loan_types = tuple(kind for kind in LOAN_TYPES if kind in value['transfer_types'])
+        mixed = len(self.saved_loan_types) == 1
+        self.loan_moves.set(-1 if mixed else int(bool(self.saved_loan_types)))
+        self.loan_checkbox.state(['alternate' if mixed else '!alternate'])
         for kind, variable in self.squad_types.items():
             variable.set(kind in value['squad_types'])
         self.player_rules = {str(pid): 'include' for pid in config.get('player_ids', [])}
