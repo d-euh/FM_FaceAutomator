@@ -132,7 +132,7 @@ class App:
         table.grid(row=2, column=0, sticky="nsew")
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
-        self.tree = ttk.Treeview(table, columns=("id", "player", "club", 'type', "status", "note"), show="headings", height=8, selectmode="browse")
+        self.tree = ttk.Treeview(table, columns=("id", "player", "club", 'type', "status", "note"), show="headings", height=8, selectmode="extended")
         for key, label, width in [("id", "순서", 45), ("player", "선수", 145), ("club", "이동 · 새 소속팀", 200), ('type','이적 유형',90), ("status", "상태", 100), ("note", "설명", 320)]:
             self.tree.heading(key, text=label)
             self.tree.column(key, width=width, stretch=key == "note")
@@ -147,6 +147,7 @@ class App:
         self.tree.bind('<B1-Motion>', self.move_queue_drag)
         self.tree.bind('<ButtonRelease-1>', self.finish_queue_drag)
         self.tree.bind('<Escape>', self.cancel_queue_drag)
+        self.tree.bind('<Control-a>', self.select_all_jobs)
         self.tree.tag_configure('queue-drop', background=PURPLE, foreground='white')
         actions = ttk.Frame(jobs)
         actions.grid(row=3, column=0, sticky="ew", pady=12)
@@ -963,7 +964,15 @@ class App:
 
     def selected(self):
         selection = self.tree.selection()
-        return int(selection[0]) if selection else None
+        return int(selection[0]) if len(selection) == 1 else None
+
+    def selected_ids(self):
+        selected = set(self.tree.selection())
+        return [int(item) for item in self.tree.get_children() if item in selected]
+
+    def select_all_jobs(self, event=None):
+        self.tree.selection_set(self.tree.get_children())
+        return 'break'
 
     def search_scope_players(self, query, ids):
         self.player_search_token += 1
@@ -992,6 +1001,11 @@ class App:
         threading.Thread(target=search, daemon=True).start()
 
     def select(self, event=None):
+        count = len(self.tree.selection())
+        if count > 1:
+            self.detail.set(f'{count}개 작업 선택 · 작업 메뉴에서 선택 작업을 재시도하거나 삭제할 수 있습니다.')
+        elif count == 0:
+            self.detail.set("더블클릭: 개별 지시 · 결과 보기")
         jid = self.selected()
         if jid:
             values = self.tree.item(str(jid), "values")
@@ -999,8 +1013,7 @@ class App:
                 self.detail.set(values[-1])
         self.update_job_actions()
 
-    def queue_action_states(self):
-        job = self.job_records.get(self.selected())
+    def queue_job_actions(self, job):
         free = job and not job['editing']
         ranked = free and job['status'] in ('pending','blocked','failed','interrupted')
         return {
@@ -1009,6 +1022,12 @@ class App:
             '위로 이동': ranked, '아래로 이동': ranked, '맨 위로': ranked,
             '유니폼 변경': ranked and not self.active(),
         }
+
+    def queue_action_states(self):
+        choices = [self.queue_job_actions(self.job_records.get(jid)) for jid in self.selected_ids()]
+        return {action: any(choice[action] for choice in choices) and
+                (len(choices) == 1 or action in ('재시도', '삭제'))
+                for action in ('재시도', '삭제', '위로 이동', '아래로 이동', '맨 위로', '유니폼 변경')}
 
     def update_job_actions(self):
         states = self.queue_action_states()
@@ -1030,12 +1049,13 @@ class App:
         row = self.tree.identify_row(event.y)
         if not row:
             return
-        self.tree.selection_set(row)
+        if row not in self.tree.selection():
+            self.tree.selection_set(row)
         self.show_job_menu(event.x_root, event.y_root)
 
     def show_job_menu(self, x=None, y=None):
         self.cancel_queue_drag()
-        if self.selected() is None:
+        if not self.tree.selection():
             return
         states = self.queue_action_states()
         self.job_menu = tk.Menu(self.window, tearoff=False)
@@ -1057,6 +1077,8 @@ class App:
         self.cancel_queue_drag()
         row = self.tree.identify_row(event.y)
         if not row or self.tree.identify_region(event.x, event.y) not in ('cell', 'tree'):
+            return
+        if event.state & 0x0005 or (len(self.tree.selection()) > 1 and row in self.tree.selection()):
             return
         job = self.job_records.get(int(row))
         if job and not job['editing'] and job['status'] in ('pending','blocked','failed','interrupted'):
@@ -1128,7 +1150,26 @@ class App:
             engine.close()
 
     def delete_job(self):
-        self.change_queue('delete')
+        ids = [jid for jid in self.selected_ids()
+               if self.queue_job_actions(self.job_records.get(jid))['삭제']]
+        if not ids:
+            return
+        self.cancel_queue_drag()
+        engine = Engine(self.config)
+        removed, skipped = 0, 0
+        try:
+            for jid in ids:
+                try:
+                    removed += int(engine.remove_job(jid))
+                except ValueError:
+                    skipped += 1
+            self.refresh_queue(engine)
+            self.update_dashboard(engine)
+            self.events.put(f'선택 작업 {removed}개 삭제' + (f' · 상태 변경으로 {skipped}개 제외' if skipped else ''))
+        except Exception as exc:
+            self.status.set(str(exc))
+        finally:
+            engine.close()
 
     def reorder_job(self, direction):
         self.change_queue(direction)
@@ -1158,21 +1199,26 @@ class App:
             self.background(lambda e: (e.apply(jid), self.events.put("선택 결과 적용 완료")))
 
     def retry(self):
-        jid = self.selected()
-        if jid is None:
+        ids = [jid for jid in self.selected_ids()
+               if self.queue_job_actions(self.job_records.get(jid))['재시도']]
+        if not ids:
             return
+        def task(engine, execute):
+            requested = [jid for jid in ids if engine.retry(jid)]
+            self.events.put(f'선택 작업 {len(requested)}개 재시도 요청')
+            if execute:
+                for jid in requested:
+                    if self.stop.is_set():
+                        break
+                    self.process_one(engine, job_id=jid)
         if self.active():
             engine = Engine(self.config)
             try:
-                if engine.retry(jid):
-                    self.events.put('선택 작업 재시도 요청')
+                task(engine, False)
             finally:
                 engine.close()
         else:
-            def task(engine):
-                if engine.retry(jid):
-                    self.process_one(engine, job_id=jid)
-            self.background(task)
+            self.background(lambda engine: task(engine, True))
 
     def retry_all(self):
         def task(engine, execute):
@@ -1491,7 +1537,8 @@ class App:
                 self.tree.move(key,'',position-1)
                 order.remove(key)
                 order.insert(position-1,key)
-        if selected and self.tree.exists(selected[0]):
+        selected = [item for item in selected if self.tree.exists(item)]
+        if selected:
             self.tree.selection_set(selected)
             self.select()
         elif self.detail.get() != '더블클릭: 개별 지시 · 결과 보기':
