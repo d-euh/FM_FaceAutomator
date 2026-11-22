@@ -2,7 +2,7 @@
 
 FM27 세이브 저장 후 이적을 감지하여 Codex CLI로 페이스온 합성을 요청하는 독립형 Windows 데스크톱 프로그램 **v1.0**입니다.
 
-배포·설치·업데이트는 **[v1.0 빠른 시작 안내](docs/QUICK_START.ko.md)**를 참고하세요. Windows에서 `build_windows.bat`를 실행하면 **`dist\FMFaceAutomator-v1.0-windows-x64.zip`**을 만듭니다. 기존 `dist\FMFaceAutomator`는 교체하지 않습니다. 새 ZIP의 `update_windows.bat`로 프로그램 파일만 업데이트하며 기존 설정·작업 기록·페이스팩은 보존하고 교체한 프로그램 파일은 백업합니다. 받는 PC에서는 `install_game_plugins.bat`로 게임 연동 DLL을 설치하며 Python이 필요하지 않습니다.
+배포·설치·업데이트는 **[v1.0 빠른 시작 안내](docs/QUICK_START.ko.md)**와 [배포용 README 원문](docs/DISTRIBUTION_README.txt)을 참고하세요. Windows x64에서 Inno Setup 6.3 이상을 설치하고 `build_windows.bat`를 실행하면 **`dist\FMFaceAutomator-v1.0-windows-x64.zip`**을 만듭니다. ZIP에는 **`FMFaceAutomator-Setup-v1.0.exe`와 `README.txt`만** 들어갑니다. Setup은 프로그램·DLL 설치 도구와 바로가기를 설치하며, 기존 프로그램 폴더를 선택하면 프로그램 파일을 백업한 뒤 업데이트하고 설정·작업 기록·페이스팩은 보존합니다. 앱 제거 시에도 사용자 자료와 백업은 남습니다. 기존 `dist\FMFaceAutomator`는 빌드 시 교체하지 않습니다. 기존 포터블 ZIP 방식은 `build_windows.bat --portable`로 유지합니다.
 
 설정 파일이 없는 최초 실행에는 자동 경로 검색 결과를 반영한 뒤 **폴더 · 연결** 설정 창이 자동으로 열립니다. 검색에 실패하거나 일부 경로를 찾지 못해도 창을 열어 직접 선택할 수 있습니다. 이후 실행 및 기존 설정이 있는 경우에는 홈 화면으로 시작합니다.
 
@@ -99,7 +99,7 @@ v0.7.1은 사용자가 제공한 **Koverwatch · Bebas Neue · Venus Rising** �
 
 ## Windows에서 실행
 
-배포 ZIP 사용자는 [빠른 시작 안내](docs/QUICK_START.ko.md)에 따라 압축을 풀고 EXE를 실행합니다. Python·Git 설치는 필요하지 않습니다. 아래 절차는 소스 코드에서 실행하는 개발자용입니다.
+배포 ZIP 사용자는 [빠른 시작 안내](docs/QUICK_START.ko.md)에 따라 압축을 풀고 Setup EXE로 설치합니다. Python·Git 설치는 필요하지 않습니다. 아래 절차는 소스 코드에서 실행하는 개발자용입니다.
 
 Steam 빌드 **26620374**용 실험적 게임 갱신 플러그인은 `install_live_refresh.bat`로 설치합니다. BepInEx 6 IL2CPP x64 be.793 이상이 필요하며, 게임을 종료한 상태에서 설치한 뒤 앱의 **생성 후 자동 새로고침**을 켭니다. [설치·테스트·진단 안내](plugin-src/FMFaceRefresh/README.md)를 확인하세요. 진단 내보내기는 `export_diagnostics.bat` 또는 **우측 상단 폴더 · 연결 → 문제 해결 펼치기 → 문제 진단 저장**입니다.
 

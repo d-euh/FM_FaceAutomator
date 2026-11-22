@@ -3,8 +3,10 @@
 ## 처음 설치
 
 1. `FMFaceAutomator-v1.0-windows-x64.zip`을 내려받아 **압축을 완전히 풉니다.**
-   `FMFaceAutomator` 폴더 전체를 쓰기 가능한 위치(예: `D:\FMFaceAutomator`)에 두세요.
-   ZIP 안에서 실행하거나 EXE만 따로 옮기지 마세요. `_internal` 폴더도 필요합니다.
+   ZIP에는 **`FMFaceAutomator-Setup-v1.0.exe`와 `README.txt`**만 들어갑니다.
+   README를 읽고 Setup EXE를 실행합니다. 쓰기 가능한 전용 설치 폴더를 선택하세요.
+   기본값은 `D:\FMFaceAutomator`이며 D:가 없으면 사용자 AppData의 Programs 아래입니다.
+   시작 메뉴와 선택한 바탕화면 바로가기를 만들며, 설치 완료 후 앱을 실행할 수 있습니다.
 2. 받는 PC에 Python, 가상환경 또는 Git은 필요하지 않습니다.
    Codex CLI와 로그인은 별도로 필요합니다. 공식 설치 안내:
    https://developers.openai.com/codex/cli/
@@ -41,21 +43,30 @@
 ## 기존 설치 업데이트 — 설정·작업 기록 유지
 
 1. 기존 앱과 도구를 종료합니다. 게임 DLL도 업데이트한다면 FM27도 종료하세요.
-2. 새 ZIP을 **기존 설치 폴더 밖의 임시 폴더**에 완전히 풉니다.
-3. **새로 푼 폴더의 `update_windows.bat`**를 실행하고
-   기존 `FMFaceAutomator.exe`가 있는 폴더를 선택합니다.
-4. 도구가 새 배포 파일의 목록·해시를 검사한 뒤 프로그램 파일만 교체합니다.
+2. 새 ZIP을 풀고 **Setup EXE**를 실행합니다.
+3. 설치 위치로 기존 `FMFaceAutomator.exe`가 있는 폴더를 선택합니다.
+   기존 설치 프로그램으로 설치한 경로는 자동으로 제안하며, 이전 포터블 설치는 직접 선택합니다.
+4. 설치 프로그램은 검증된 배포 목록의 프로그램 파일만 교체합니다.
    `config.json`, `state`, `workspaces`, 페이스팩, 사용자 사진·유니폼 및 관련 없는 파일은
    목록에 넣거나 덮어쓰거나 삭제하지 않습니다. 사용 중인 프로그램은 먼저 종료해야 합니다.
-   교체한 프로그램 파일의 백업은 기존 설치 폴더 옆 `FMFaceAutomator-backup-*`에 남습니다.
-   교체 중 실패하면 이미 바꾼 프로그램 파일을 복원하고 실패를 알립니다.
-5. **기존 설치 위치의 EXE**를 실행합니다. 새 임시 폴더의 앱을 실행하면
-   그 위치에 별도 설정이 생깁니다. 설정과 대기열이 유지됐는지 확인하세요.
+   기존 프로그램 파일은 설치 폴더의 `program-backups`에 백업합니다.
+   백업에 실패하면 설치를 시작하지 않습니다. 정상 확인 후 불필요한 백업은 직접 정리할 수 있습니다.
+5. 설치 후 앱을 실행하고 설정과 대기열이 유지됐는지 확인하세요.
    게임 DLL이 바뀐 릴리스라면 기존 설치 폴더의 DLL 설치 도구도 다시 실행합니다.
 
 기존 앱을 `dist\FMFaceAutomator`에서 사용하고 있었다면 업데이트 대상으로 그 폴더를
 선택할 수 있습니다. 새 빌드는 그 폴더를 삭제·덮어쓰지 않습니다.
 원본 코드 사용자도 `setup_windows.bat` / `start_windows.bat` 실행 방식을 계속 사용할 수 있습니다.
+
+### 포터블 묶음 및 제거
+
+개발자가 `build_windows.bat --portable`로 만든 별도 포터블 ZIP은 폴더 전체를 풀어 실행합니다.
+EXE만 따로 옮기지 마세요. 새 포터블 폴더의 `update_windows.bat`로 기존 설치를 업데이트할 수도 있습니다.
+이 경우 프로그램 백업은 기존 설치 폴더 옆 `FMFaceAutomator-backup-*`에 남습니다.
+
+Setup으로 설치한 앱은 Windows의 설치된 앱이나 시작 메뉴에서 제거합니다.
+제거는 등록된 프로그램 파일·바로가기를 대상으로 하며 사용자 설정·작업 기록·페이스팩·백업과
+게임 폴더에 설치한 DLL·BepInEx는 자동 삭제하지 않습니다.
 
 ## 문제 확인
 
@@ -80,8 +91,11 @@
 
 ## 개발자 빌드
 
-Windows x64의 64비트 Python 3.12 이상에서 `setup_windows.bat` 이후 `build_windows.bat`를 실행합니다.
-빌드는 매번 `build/release-*` 임시 위치에서 수행하고 두 EXE의 아이콘과 필수 배포 파일을 검사합니다.
-성공 결과는 **`dist\FMFaceAutomator-v1.0-windows-x64.zip`**입니다.
+Windows x64의 64비트 Python 3.12 이상에서 `setup_windows.bat`를 실행합니다.
+개발자 PC에 **Inno Setup 6.3 이상**(https://jrsoftware.org/isdl.php)을 설치하고 `build_windows.bat`를 실행합니다.
+컴파일러를 못 찾으면 `build_windows.bat --iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"`로 지정합니다.
+빌드는 매번 임시 위치에서 수행하고 두 실행 파일의 아이콘·시작과 필수 배포 파일을 검사한 뒤 설치 EXE를 만듭니다.
+성공 결과는 **`dist\FMFaceAutomator-v1.0-windows-x64.zip`**이며 설치 EXE와 README.txt만 포함합니다.
+`--portable` 옵션은 Inno Setup 없이 **`dist\FMFaceAutomator-Portable-v1.0-windows-x64.zip`**을 만듭니다.
 기존 `dist\FMFaceAutomator`와 그 안의 사용자 데이터는 변경하지 않습니다.
 새 ZIP에는 사용자 설정·작업 기록·개인 자료를 넣지 않습니다.

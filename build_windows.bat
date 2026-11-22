@@ -10,7 +10,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-".venv\Scripts\python.exe" scripts\build_release.py
+".venv\Scripts\python.exe" scripts\build_release.py %*
 set "ffa_build_exit=%errorlevel%"
 pause
 exit /b %ffa_build_exit%

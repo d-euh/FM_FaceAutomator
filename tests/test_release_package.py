@@ -170,7 +170,7 @@ class ReleaseTests(unittest.TestCase):
         installed = root / 'dist/FMFaceAutomator'
         installed.mkdir(parents=True)
         (installed / 'config.json').write_bytes(b'keep config')
-        archive = root / 'dist/FMFaceAutomator-v1.0-windows-x64.zip'
+        archive = root / 'dist/FMFaceAutomator-Portable-v1.0-windows-x64.zip'
         archive.write_bytes(b'keep previous release')
         def failed_runner(*args, **kwargs):
             raise RuntimeError('build failed')
