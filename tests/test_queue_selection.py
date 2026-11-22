@@ -1,5 +1,6 @@
 """Exercise actual Treeview selection and queue actions with a display."""
 import os
+import json
 import tkinter as tk
 import unittest
 from unittest.mock import patch
@@ -102,3 +103,35 @@ class QueueSelectionTests(unittest.TestCase):
         self.root.update()
         self.assertEqual(self.app.selected_ids(), [2])
         self.assertEqual([job['id'] for job in self.engine.jobs()], [2])
+
+    def test_selected_retry_stays_alive_until_temporary_game_wait_finishes(self):
+        calls = []
+        def run(**kwargs):
+            calls.append(kwargs)
+            self.engine.last_job_id = 1
+            self.engine.waiting_for_game = len(calls) == 1
+            return not self.engine.waiting_for_game
+        with patch.object(self.engine, 'run_one', side_effect=run), patch.object(self.app.stop, 'wait', return_value=False) as wait:
+            self.assertTrue(self.app.process_one(self.engine, job_id=1))
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call['job_id'] == 1 for call in calls))
+        wait.assert_called_once_with(1)
+
+    def test_game_wait_can_be_stopped_without_starting_another_attempt(self):
+        def run(**kwargs):
+            self.engine.last_job_id = 1
+            self.engine.waiting_for_game = True
+            return False
+        with patch.object(self.engine, 'run_one', side_effect=run) as execute, patch.object(self.app.stop, 'wait', return_value=True):
+            self.assertFalse(self.app.process_one(self.engine, job_id=1))
+        self.assertEqual(execute.call_count, 1)
+
+    def test_game_wait_is_visible_in_queue_and_activity(self):
+        row = json.loads(self.engine.jobs()[0]['data'])
+        row['game_wait'] = True
+        with self.engine.db:
+            self.engine.db.execute("UPDATE jobs SET data=?,status='pending',note='게임 대기 · 진행 중' WHERE id=1", (json.dumps(row),))
+        with patch.object(self.app, 'active', return_value=True):
+            self.app.refresh_queue(self.engine)
+            self.assertEqual(self.app.tree.item('1', 'values')[4], '게임 대기')
+            self.assertIn('게임 대기 중', self.app.activity.get())

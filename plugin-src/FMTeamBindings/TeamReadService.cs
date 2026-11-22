@@ -108,7 +108,7 @@ public sealed class TeamReadService
         }
         if (elapsed-lastStatus >= 1)
         {
-            Write(Path.Combine(SessionDir,"status.json"),new { protocol = 1, profile = Profile, plugin_version = "0.4.0",
+            Write(Path.Combine(SessionDir,"status.json"),new { protocol = 1, profile = Profile, plugin_version = "0.4.1",
                 session, pid = Environment.ProcessId, epoch, heartbeat = Utc, available = !faulted,
                 idle, binding_ready = runtime.Ready, human_team_index = observer.HumanTeamIndex, reason = faulted ? "cleanup_failed_restart_required" : reason });
             lastStatus = elapsed;

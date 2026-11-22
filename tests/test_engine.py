@@ -1970,7 +1970,8 @@ class EngineTests(unittest.TestCase):
         self.e.run_one(self.good_runner)
         targets = {r.get("to") for r in ET.parse(Path(self.c["pack_dir"])/"config.xml").findall("./list/record")}
         self.assertEqual(targets, {"graphics/pictures/person/900001/portrait", "graphics/pictures/person/900002/portrait"})
-        self.assertEqual([j["status"] for j in self.e.jobs()], ["applied", "applied"])
+        self.assertEqual([j["status"] for j in self.e.jobs()], ["applied"])
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM jobs WHERE status='applied'").fetchone()[0], 2)
 
     def test_invalid_template_blocks_before_codex_call(self):
         self.transfer()

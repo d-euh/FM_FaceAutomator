@@ -18,7 +18,7 @@ def squad_record(data):
         raise ValueError("invalid player record")
     fields = ("club_id", "registered_club_id", "registered_team_id", "club_basis",
               "from_club_id", "from_team_id", "from_registered_club_id",
-              "last_club_id", "last_registered_team_id", "last_registered_club_id")
+              "last_club_id", "last_registered_team_id", "last_registered_club_id", "game_wait")
     result = {key: row[key] for key in fields if key in row}
     history = row.get("last_squad_registration")
     if isinstance(history, dict):

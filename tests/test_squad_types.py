@@ -275,3 +275,40 @@ class EngineSquadTests(unittest.TestCase):
         self.assertEqual(self.e.ingest(self.snap(680, 540), now=5), 1)
         self.e.discard_missing_departures()
         self.assertTrue(any(job['status'] == 'pending' for job in self.e.jobs()))
+
+    def test_busy_game_keeps_preflight_pending_and_automatically_resumes(self):
+        from team_reader import GameWait
+        self.e._team_reader.resolve = Mock(side_effect=GameWait('게임 진행 중'))
+        runner = Mock()
+        self.assertFalse(self.e.run_one(runner))
+        job = self.e.jobs()[0]
+        self.assertEqual(job['status'], 'pending')
+        self.assertTrue(json.loads(job['data'])['game_wait'])
+        self.assertTrue(self.e.waiting_for_game)
+        runner.assert_not_called()
+        self.e._team_reader.resolve = Mock(return_value={540: native(540, 'first')})
+        self.assertIsNotNone(self.e.next_job(time.time()))
+        self.assertNotIn('game_wait', json.loads(self.e.jobs()[0]['data']))
+
+    def test_busy_game_after_generation_reuses_result_without_ai_or_apply_failure(self):
+        from team_reader import GameWait
+        job = self.e.jobs()[0]
+        self.e.update(job['id'], 'generated')
+        self.e._team_reader.resolve = Mock(side_effect=GameWait('게임 진행 중'))
+        runner = Mock()
+        self.assertFalse(self.e.run_one(runner, job_id=job['id']))
+        self.assertEqual(self.e.jobs()[0]['status'], 'generated')
+        self.assertTrue(self.e.waiting_for_game)
+        with unittest.mock.patch.object(self.e, 'apply', side_effect=lambda jid: self.e.update(jid, 'applied')):
+            self.assertTrue(self.e.run_one(runner, job_id=job['id']))
+        self.assertFalse(self.e.waiting_for_game)
+        runner.assert_not_called()
+
+    def test_save_in_progress_does_not_end_an_unstarted_job(self):
+        from engine import SaveBusyError
+        self.e.refresh = Mock(side_effect=SaveBusyError('세이브 저장 중'))
+        runner = Mock()
+        self.assertFalse(self.e.run_one(runner))
+        self.assertTrue(self.e.waiting_for_game)
+        self.assertEqual(self.e.jobs()[0]['status'], 'pending')
+        runner.assert_not_called()

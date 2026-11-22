@@ -225,6 +225,8 @@ class App:
             self.activity.set('현재 작업 종료 후 정지')
         elif any(job['status'] == 'running' for job in self.job_records.values()):
             self.activity.set('합성 중 · 이적 감지 유지' if self.watching else '합성 중')
+        elif any(job['status'] in ('pending', 'generated') and job['note'].startswith('게임 대기') for job in self.job_records.values()):
+            self.activity.set('게임 대기 중 · 게임이 안정되면 자동 재개')
         else:
             self.activity.set('이적 감지 중' if self.watching else '작업 처리 중')
 
@@ -251,9 +253,18 @@ class App:
             self.events.put(f'{name} · {job["note"] or job["status"]}')
 
     def process_one(self, engine, **kwargs):
-        result = engine.run_one(cancel_event=self.cancel_current, on_change=self.report_detection, **kwargs)
-        self.report_job(engine, engine.last_job_id)
-        return result
+        reported_wait = False
+        while not self.cancel_current.is_set():
+            result = engine.run_one(cancel_event=self.cancel_current, on_change=self.report_detection, **kwargs)
+            if not engine.waiting_for_game:
+                self.report_job(engine, engine.last_job_id)
+                return result
+            if not reported_wait:
+                self.report_job(engine, engine.last_job_id)
+                reported_wait = True
+            if self.stop.wait(1):
+                break
+        return False
 
     def update_detail(self, *args):
         self.detail_box.configure(state='normal')
@@ -1196,7 +1207,13 @@ class App:
     def apply(self):
         jid = self.selected()
         if jid:
-            self.background(lambda e: (e.apply(jid), self.events.put("선택 결과 적용 완료")))
+            def task(engine):
+                job = engine.db.execute('SELECT status FROM jobs WHERE id=?', (jid,)).fetchone()
+                if not job or job['status'] not in ('generated', 'apply_failed'):
+                    raise ValueError('적용할 수 있는 생성 결과가 아닙니다.')
+                engine.retry(jid)
+                self.process_one(engine, job_id=jid)
+            self.background(task)
 
     def retry(self):
         ids = [jid for jid in self.selected_ids()
@@ -1523,7 +1540,12 @@ class App:
                 source = self.scope_panel.catalog.get(row['from_club_id'], {})
                 destination = self.scope_panel.catalog.get(row['club_id'], {})
                 movement = (source.get('short_name') or row.get('from_club_name') or row['from_club_id']) + ' → ' + (destination.get('short_name') or row['club_name'])
-            status = '지시 편집 중' if job['editing'] else labels.get(job['status'],job['status'])
+            if job['editing']:
+                status = '지시 편집 중'
+            elif row.get('game_wait') and job['status'] in ('pending', 'generated'):
+                status = '게임 대기'
+            else:
+                status = labels.get(job['status'], job['status'])
             note = '생성 완료' if job['status']=='applied' else (('개별 지시 · ' if job['has_custom'] else '') + ('골키퍼 · ' if row.get('is_goalkeeper') is True else '') + job['note'])
             kind = '직접 생성' if row.get('manual_request') else TRANSFER_TYPES.get(event_type(row), '현재 선수')
             values = (str(position) if job['status'] not in ('applied','superseded') else '',row['name'],movement,kind,status,note)

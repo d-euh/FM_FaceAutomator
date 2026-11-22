@@ -22,7 +22,7 @@ class TeamBindingsTests(unittest.TestCase):
         self.output = self.root/'diagnostics'/'team-bindings.json'
         self.report = dict(kind='fm_team_bindings', schema_version=1, mode='runtime_team_reader_service',
                            detected_steam_build='26620374', game_data_query_attempted=True, gameplay_state_modified=False, save_files_modified=False, probe={'state':'complete','results':[]},
-                           tool_version='0.4.0', state='complete', schemas=[], types=[], errors=[],
+                           tool_version='0.4.1', state='complete', schemas=[], types=[], errors=[],
                            observations={'observed_existing_ui_values_only':True, 'state':'capturing', 'values':[]})
         self.validation = patch('team_bindings.validate_game', return_value=self.game)
         self.validation.start()

@@ -9,7 +9,7 @@ using FMFaceRefresh.Diagnostics;
 
 namespace FMTeamBindings;
 
-[BepInPlugin("io.github.d_euh.fmface.teambindings", "FM Team Reader", "0.4.0")]
+[BepInPlugin("io.github.d_euh.fmface.teambindings", "FM Team Reader", "0.4.1")]
 public sealed class Plugin : BasePlugin
 {
     private static Plugin? instance;
@@ -44,7 +44,7 @@ public sealed class Plugin : BasePlugin
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Output)!);
         var data = JsonSerializer.SerializeToUtf8Bytes(new {
-            kind = "fm_team_bindings", schema_version = 1, tool_version = "0.4.0", state,
+            kind = "fm_team_bindings", schema_version = 1, tool_version = "0.4.1", state,
             mode = "runtime_team_reader_service", generated_at_utc = DateTime.UtcNow,
             detected_steam_build = Report.SteamBuild(Paths.GameRootPath),
             game_data_query_attempted = teamRuntime?.groups_created > 0,

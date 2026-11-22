@@ -165,8 +165,14 @@ Console.WriteLine("PASS: tagged numeric conversion, stable-idle probe scheduling
 // General app-driven batches do not contain the old controlled team-index rule.
 var general = new FakeProbeRuntime(); var generalProbe = new TeamProbe(general,new[] { 123,456 });
 generalProbe.Tick(0,true); generalProbe.Tick(2.1,true); generalProbe.Tick(2.2,true);
-generalProbe.Tick(3,true); generalProbe.Tick(5.1,true); generalProbe.Tick(5.2,true);
+generalProbe.Tick(2.3,true); generalProbe.Tick(2.4,true);
 Check(generalProbe.state == "complete" && general.Started.SequenceEqual(new[] { 123,456 }), "General batches must not query hardcoded Manchester United indexes");
+var resumedRuntime = new FakeProbeRuntime(); var resumedProbe = new TeamProbe(resumedRuntime,new[] { 123,456 });
+resumedProbe.Tick(0,true); resumedProbe.Tick(2.1,true); resumedProbe.Tick(2.2,true);
+resumedProbe.Tick(2.3,false); resumedProbe.Tick(3,true); resumedProbe.Tick(4.9,true);
+Check(resumedRuntime.Started.Count == 1, "A busy interval requires a new two-second stable interval");
+resumedProbe.Tick(5.1,true); resumedProbe.Tick(5.2,true);
+Check(resumedProbe.Done && resumedRuntime.Closed == 2, "Resumed batches still close every native group");
 var cancelRuntime = new FakeProbeRuntime { Stall = true }; var cancelled = new TeamProbe(cancelRuntime,new[] { 123 });
 cancelled.Tick(0,true); cancelled.Tick(2.1,true); cancelled.Cancel("test_cancel");
 Check(cancelled.Done && cancelRuntime.Closed == 1, "Cancellation cleans the active general batch");

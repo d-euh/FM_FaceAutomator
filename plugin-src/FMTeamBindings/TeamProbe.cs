@@ -70,7 +70,9 @@ public sealed class TeamProbe
             result.native_team_index = current;
             try { runtime.Close(); groups_closed++; }
             catch (Exception e) { result.cleanup_error = e.GetBaseException().GetType().Name; }
-            results.Add(result); Dirty = true; stableSince = -1;
+            // Idle is checked on every tick. Keep the stable interval across a
+            // fully closed group instead of waiting another two seconds per team.
+            results.Add(result); Dirty = true;
             if (result.error is not null || result.cleanup_error is not null) { Done = true; state = "failed"; return; }
             if (controlled && current == 540)
             {

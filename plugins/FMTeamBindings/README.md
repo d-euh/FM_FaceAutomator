@@ -1,4 +1,4 @@
-# FM Team Binding Reader 0.4.0
+# FM Team Binding Reader 0.4.1
 
 Separate BepInEx 6 Unity IL2CPP diagnostic for FM27 Steam build 26620374.
 Use `install_team_bindings.bat` with FM27 closed. Start FM27 and load the same save
@@ -81,3 +81,10 @@ dotnet build plugin-src/FMTeamBindings -c Release -p:BepInExCoreDir=/path/to/Bep
 
 Only the resulting FMTeamBindings.dll and SHA256SUMS are bundled here. Tests use fake
 bindings and do not establish success against a running game.
+
+Version 0.4.1 retains the first two-second stable-idle check across a batch.
+Subsequent teams reuse the continuous idle interval after the previous group is
+fully closed. Every tick still checks idle state, and any busy interval resets
+the stable timer. Build hashes, signatures, group capacity and cleanup are unchanged.
+The scheduler is covered by fake-runtime tests and a DLL build. Actual Windows
+FM27 timing and loading of this version require in-game confirmation.

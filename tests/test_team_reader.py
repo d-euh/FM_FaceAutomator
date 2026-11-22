@@ -57,3 +57,42 @@ class ReaderTests(unittest.TestCase):
             def is_set(self):return True
         with self.assertRaises(TeamReadPending):self.reader.resolve([540],[],'b'*64,Cancel())
         self.assertFalse(list((self.root/'requests'/self.sid).glob('*.json')))
+
+    def test_busy_game_is_a_resumable_wait_and_not_a_permanent_connection_error(self):
+        from team_reader import GameWait
+        self.status['idle'] = False
+        self.save_status()
+        with self.assertRaises(GameWait):
+            self.reader.resolve([540], ['680'], 'b'*64)
+        self.assertEqual(self.requests, [])
+        self.status['idle'] = True
+        self.save_status()
+        self.assertIn(540, self.reader.resolve([540], ['680'], 'b'*64))
+
+    def test_partially_completed_batch_cancelled_by_progress_is_resumable(self):
+        from team_reader import GameWait
+        def busy(seconds):
+            self.respond(seconds)
+            for path in (self.dir/'responses').glob('*.json'):
+                result=json.loads(path.read_text())
+                result['status']='unavailable'
+                result['results'][-1]['error']='request_expired_cancelled_or_game_changed'
+                write_json(path,result)
+        self.reader.sleep=busy
+        with self.assertRaises(GameWait):
+            self.reader.resolve([28346], ['680'], 'b'*64)
+        self.assertEqual(self.reader.cache,{})
+        self.assertFalse(list((self.root/'requests'/self.sid).glob('*.json')))
+        self.reader.sleep=self.respond
+        self.assertIn(28346,self.reader.resolve([28346], ['680'], 'b'*64))
+
+    def test_stale_heartbeat_waits_without_authorizing_a_query_or_cached_result(self):
+        from team_reader import GameWait
+        self.reader.resolve([540], ['680'], 'b'*64)
+        requests = len(self.requests)
+        self.now += 10
+        with self.assertRaises(GameWait):
+            self.reader.resolve([540], ['680'], 'b'*64)
+        self.assertEqual(len(self.requests), requests)
+        self.save_status()
+        self.assertIn(540, self.reader.resolve([540], ['680'], 'b'*64))

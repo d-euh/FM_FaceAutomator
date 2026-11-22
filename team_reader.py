@@ -12,11 +12,15 @@ import uuid
 from live_refresh import write_json
 
 PROFILE = 'fm27-steam-26620374-teams-v1'
-VERSION = '0.4.0'
+VERSION = '0.4.1'
 
 
 class TeamReadPending(ValueError):
     pass
+
+
+class GameWait(TeamReadPending):
+    """A temporary game state that can resume without user retry."""
 
 
 def root_path():
@@ -33,24 +37,32 @@ def read(file):
 
 def connection(root, now):
     found = []
+    stale = False
     for file in sorted((root/'sessions').glob('*/status.json'))[-64:]:
         try:
             value = read(file)
             sid, pid = value['session'], value['pid']
-            if (value.get('protocol') == 1 and value.get('profile') == PROFILE and value.get('plugin_version') == VERSION
+            if (value.get('protocol') == 1 and value.get('profile') == PROFILE and value.get('plugin_version') in ('0.4.0', VERSION)
                     and isinstance(sid,str) and re.fullmatch('[a-f0-9]{32}',sid) and type(pid) is int and pid > 0
-                    and file.parent.name == f'{pid}-{sid}' and type(value.get('epoch')) is int
-                    and 0 <= now-float(value['heartbeat']) <= 5):
-                found.append((file.parent,value))
+                    and file.parent.name == f'{pid}-{sid}' and type(value.get('epoch')) is int):
+                age = now - float(value['heartbeat'])
+                if 0 <= age <= 5:
+                    found.append((file.parent,value))
+                elif age > 5 and value.get('reason') != 'cleanup_failed_restart_required':
+                    stale = True
         except (OSError,ValueError,KeyError,TypeError):
             continue
     if len(found) != 1:
+        if not found and stale:
+            raise GameWait('게임 연결 응답 대기 · 게임이 응답하면 자동으로 재개합니다.')
         raise TeamReadPending('팀 구분 연결 대기 · FM27 종료 후 install_team_bindings.bat로 설치하고 연결한 세이브를 불러오세요.' if not found else 'FM27을 하나만 실행하세요.')
     directory, status = found[0]
     if status.get('reason') == 'cleanup_failed_restart_required':
         raise TeamReadPending('팀 조회 정리 오류 · 게임을 재시작한 뒤 다시 시도하세요.')
-    if status.get('available') is not True or status.get('idle') is not True or status.get('binding_ready') is not True:
-        raise TeamReadPending('팀 구분 확인 대기 · 게임의 진행/저장이 끝나고 세이브가 열리면 재시도합니다.')
+    if status.get('available') is not True:
+        raise TeamReadPending('팀 조회 연결을 확인하세요.')
+    if status.get('idle') is not True or status.get('binding_ready') is not True:
+        raise GameWait('게임의 진행/저장이 끝나고 세이브가 열리면 자동으로 재개합니다.')
     return directory,status
 
 
@@ -68,7 +80,7 @@ class TeamReader:
         human = status.get('human_team_index')
         managed = set(map(str,managed))
         if managed and (type(human) is not int or human < 0):
-            raise TeamReadPending('담당 구단 확인 대기 · 실행 중인 게임에서 연결한 세이브를 불러오세요.')
+            raise GameWait('담당 구단 확인 대기 · 실행 중인 게임에서 연결한 세이브를 불러오세요.')
         targets = list(dict.fromkeys(([human] if managed else []) + list(indexes)))
         if any(type(i) is not int or i < 0 or i > 2147483647 for i in targets):
             raise TeamReadPending('등록 팀 인덱스 확인 불가')
@@ -84,7 +96,7 @@ class TeamReader:
                 self.cache = dict(list(keep.items())[-1024:]) | required
         _,fresh = connection(self.root,self.clock())
         if (fresh['session'],fresh['epoch']) != (session,epoch):
-            raise TeamReadPending('게임 상태가 변경되어 팀 구분을 다시 확인합니다.')
+            raise GameWait('게임 상태가 변경되어 팀 구분을 다시 확인합니다.')
         if managed:
             proof = self.cache.get((session,epoch,snapshot,human),{})
             club = (proof.get('values',{}).get('Club.UniqueId') or {})
@@ -108,6 +120,13 @@ class TeamReader:
                     if any(result.get(k) != data[k] for k in ('protocol','id','session','profile','epoch','snapshot')):
                         raise TeamReadPending('팀 조회 응답의 세션/스냅샷이 다릅니다.')
                     rows = result.get('results')
+                    if result.get('status') == 'unavailable' and isinstance(rows, list):
+                        _, fresh = connection(self.root, self.clock())
+                        transient = ('game_became_busy', 'request_expired_cancelled_or_game_changed', 'team_query_timeout')
+                        if (fresh['session'], fresh['epoch']) != (status['session'], status['epoch']) or (
+                                not rows or all(isinstance(row, dict) and not row.get('cleanup_error') and
+                                (not row.get('error') or any(reason in row['error'] for reason in transient)) for row in rows)):
+                            raise GameWait('게임 상태가 변경되어 팀 조회를 다시 준비합니다.')
                     if (result.get('status') != 'complete' or not isinstance(rows,list) or len(rows) != len(indexes)
                             or any(not isinstance(r,dict) or type(r.get('native_team_index')) is not int for r in rows)
                             or {r['native_team_index'] for r in rows} != set(indexes)
@@ -116,9 +135,9 @@ class TeamReader:
                     return rows
                 _, fresh = connection(self.root,self.clock())
                 if (fresh['session'],fresh['epoch']) != (status['session'],status['epoch']):
-                    raise TeamReadPending('게임 세션이 변경되어 팀 구분을 다시 확인합니다.')
+                    raise GameWait('게임 세션이 변경되어 팀 구분을 다시 확인합니다.')
                 self.sleep(.1)
-            raise TeamReadPending('팀 조회 응답 대기 시간 초과 · 다음 점검에서 재시도합니다.')
+            raise GameWait('팀 조회 응답 대기 시간 초과 · 게임이 안정되면 재시도합니다.')
         except (OSError,ValueError,KeyError,TypeError) as exc:
             if isinstance(exc,TeamReadPending):
                 raise

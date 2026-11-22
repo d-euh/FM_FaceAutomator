@@ -23,7 +23,7 @@ from assets import AssetCatalog, AssetError, MissingFaceError, MissingKitError, 
 import facepack
 import scope_rules
 import squad_types
-from team_reader import TeamReader, TeamReadPending, snapshot_key
+from team_reader import GameWait, TeamReader, TeamReadPending, snapshot_key
 import live_refresh
 from league_catalog import read_catalog
 from workspaces import select_workspace, source_key
@@ -475,6 +475,7 @@ class Engine:
         self._last_preflight_retry = 0
         self._last_apply_retry = 0
         self.last_job_id = None
+        self.waiting_for_game = False
         state = Path(config["state_dir"])
         state.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(state / "queue.sqlite", timeout=20)
@@ -491,6 +492,7 @@ class Engine:
           CREATE TABLE IF NOT EXISTS job_custom(job_id INTEGER PRIMARY KEY, options TEXT NOT NULL DEFAULT '{}', editing INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS job_order(job_id INTEGER PRIMARY KEY, position INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS paid_results(job_id INTEGER PRIMARY KEY, folder TEXT NOT NULL, options TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS queue_hidden(job_id INTEGER PRIMARY KEY);
         """)
         original = self.meta("source")
         if original and source_key(original) != source_key(config["source"]):
@@ -600,8 +602,10 @@ class Engine:
             for job in self.db.execute("SELECT id FROM jobs WHERE status='apply_failed'").fetchall():
                 try:
                     self.apply(job["id"])
+                except GameWait as exc:
+                    self.wait_for_game(job['id'], 'generated', exc)
                 except SaveBusyError:
-                    self.update(job["id"], "generated", "세이브 저장 중 · 합성 결과 보관, 저장 완료 후 추가 AI 호출 없이 자동 적용")
+                    self.wait_for_game(job['id'], 'generated', '세이브 저장 중 · 합성 결과 보관')
                 except Exception as exc:
                     if self.db.execute("SELECT status FROM jobs WHERE id=?", (job["id"],)).fetchone()[0] in ('generated','apply_failed'):
                         self.update(job["id"], "apply_failed", "자동 저장 재시도 대기: " + str(exc))
@@ -622,6 +626,19 @@ class Engine:
     def scope(self, row):
         return in_scope(row, self.c, json.loads(self.meta("managed") or "[]"))
 
+    def finish_new_jobs(self, jobs):
+        """Append this batch only, then hide completed rows without deleting history."""
+        if not jobs:
+            return
+        position = self.db.execute(
+            "SELECT COALESCE(MAX(COALESCE(job_order.position,jobs.id)),0) "
+            "FROM jobs LEFT JOIN job_order ON job_order.job_id=jobs.id").fetchone()[0]
+        for offset, (jid, _) in enumerate(sorted(jobs, key=lambda item: not item[1]), 1):
+            self.db.execute('INSERT INTO job_order(job_id,position) VALUES (?,?)', (jid, position + offset))
+        self.db.execute(
+            "INSERT OR IGNORE INTO queue_hidden SELECT id FROM jobs WHERE status='applied' "
+            "AND NOT EXISTS (SELECT 1 FROM job_custom WHERE job_id=jobs.id AND editing=1)")
+
     def ingest(self, snapshot, now=None):
         now = time.time() if now is None else now
         date = snapshot.get("game_date", "")
@@ -629,6 +646,7 @@ class Engine:
         if date and previous and date < previous:
             raise PastSaveError("과거 세이브로 돌아갔습니다. 새 기록에서 기준을 설정합니다.")
         count = 0
+        new_jobs = []
         summary = {"baseline": not bool(self.meta("baseline")), "source": self.c["source"],
                    "game_date": date, "read_at": now, "source_stamp": snapshot.get("source_stamp"),
                    "players": len(snapshot["players"]), "club_changes": 0, "filtered": 0,
@@ -708,7 +726,12 @@ class Engine:
                 if changed or added:
                     self.db.execute("UPDATE jobs SET status='superseded', note='새 소속팀/인물 정보 감지' WHERE player_id=? AND status IN ('pending','blocked','generated','running','apply_failed')", (row["id"],))
                     if self.scope(event):
-                        self.db.execute("INSERT INTO jobs(player_id,data,status,created) VALUES (?,?,'pending',?)", (row["id"], json.dumps(event, ensure_ascii=False), now))
+                        cursor = self.db.execute("INSERT INTO jobs(player_id,data,status,created) VALUES (?,?,'pending',?)", (row["id"], json.dumps(event, ensure_ascii=False), now))
+                        managed = snapshot.get('managed_club_ids', [])
+                        sides = (scope_rules.matching_sides(event, self.c, managed)
+                                 if self.c.get('scope_rules') else ['incoming', 'outgoing'])
+                        priority = ('incoming' in sides and row['club_id'] in managed) or ('outgoing' in sides and old_club in managed)
+                        new_jobs.append((cursor.lastrowid, priority))
                         count += 1
                         outcome = "생성 대기열 추가"
                     else:
@@ -736,6 +759,7 @@ class Engine:
                     self.db.execute("UPDATE jobs SET status='superseded',note='선수 목록에서 사라짐' WHERE player_id=? AND status IN ('pending','blocked','generated','running','apply_failed')", (old[0],))
                     self.db.execute("DELETE FROM people WHERE id=?", (old[0],))
             self.setmeta("baseline", "1")
+            self.finish_new_jobs(new_jobs)
             if "source_stamp" in snapshot:
                 self.setmeta("source_stamp", json.dumps(snapshot["source_stamp"]))
             if date:
@@ -758,13 +782,17 @@ class Engine:
 
     def enqueue_current(self):
         count = 0
+        new_jobs = []
+        managed = json.loads(self.meta('managed') or '[]')
         with self.db:
             for record in self.db.execute("SELECT data FROM people").fetchall():
                 row = json.loads(record[0])
                 existing = self.db.execute("SELECT 1 FROM jobs WHERE player_id=? AND status IN ('pending','blocked','running','generated','apply_failed')", (row["id"],)).fetchone()
                 if self.scope(row) and not existing:
-                    self.db.execute("INSERT INTO jobs(player_id,data,status,created) VALUES (?,?,'pending',?)", (row["id"], record[0], time.time()))
+                    cursor = self.db.execute("INSERT INTO jobs(player_id,data,status,created) VALUES (?,?,'pending',?)", (row["id"], record[0], time.time()))
+                    new_jobs.append((cursor.lastrowid, row['club_id'] in managed))
                     count += 1
+            self.finish_new_jobs(new_jobs)
         return count
 
     def enqueue_manual(self, player_id, club_id=None, instructions="", expected_identity=None, expected_club_id=None, reference_path=None):
@@ -797,6 +825,7 @@ class Engine:
                 row.update(manual_reference=str(staged), manual_reference_name=Path(reference_path).name)
             cursor = self.db.execute("INSERT INTO jobs(player_id,data,status,created) VALUES (?,?,'pending',?)", (row['id'], json.dumps(row, ensure_ascii=False), time.time()))
             jid = cursor.lastrowid
+            self.finish_new_jobs([(jid, False)])
             if instructions.strip():
                 self.db.execute('INSERT INTO job_custom(job_id,options) VALUES (?,?)', (jid, json.dumps({'additional_instructions': instructions.strip()}, ensure_ascii=False)))
             self.setmeta('queue_revision', int(self.meta('queue_revision') or 0) + 1)
@@ -814,7 +843,8 @@ class Engine:
         return [dict(r) for r in self.db.execute("SELECT jobs.*,COALESCE(job_custom.editing,0) AS editing, "
                     "CASE WHEN job_custom.options IS NOT NULL AND job_custom.options<>'{}' THEN 1 ELSE 0 END AS has_custom "
                     "FROM jobs LEFT JOIN job_custom ON job_custom.job_id=jobs.id LEFT JOIN job_order ON job_order.job_id=jobs.id "
-                    "WHERE jobs.status<>'deleted' ORDER BY CASE WHEN status='running' THEN 0 WHEN status='generated' THEN 1 WHEN status='apply_failed' THEN 2 "
+                    "WHERE jobs.status<>'deleted' AND NOT EXISTS (SELECT 1 FROM queue_hidden WHERE job_id=jobs.id) "
+                    "ORDER BY CASE WHEN status='running' THEN 0 WHEN status='generated' THEN 1 WHEN status='apply_failed' THEN 2 "
                     "WHEN status IN ('pending','blocked','failed','interrupted') THEN 3 ELSE 4 END, "
                     "CASE WHEN status IN ('applied','superseded') THEN -jobs.id ELSE COALESCE(job_order.position,jobs.id) END,jobs.id")]
 
@@ -1116,6 +1146,7 @@ class Engine:
 
     def enrich_squads(self, job, cancel=None):
         row = json.loads(job['data'])
+        row.pop('game_wait', None)
         if row.get('manual_request') or not squad_types.restricted(self.c):
             return row
         current = self.db.execute('SELECT data FROM people WHERE id=?',(row['id'],)).fetchone()
@@ -1151,10 +1182,12 @@ class Engine:
                 native = self._team_reader.resolve(list(dict.fromkeys(v[0] for v in targets.values())),
                     json.loads(self.meta('managed') or '[]'),snapshot_key(self.c['source'],stamp),cancel)
                 if list(file_stamp(self.c['source'])) != stamp:
-                    raise TeamReadPending('세이브 변경 중 · 다음 점검에서 팀 구분을 다시 확인합니다.')
+                    raise GameWait('세이브 변경 중 · 다음 점검에서 팀 구분을 다시 확인합니다.')
                 for side,(index,club) in targets.items():
                     evidence[side] = squad_types.native_role(native.get(index),club)
         except TeamReadPending as exc:
+            if isinstance(exc, GameWait):
+                row['game_wait'] = True
             note = str(exc)
             for side in targets: evidence[side] = {'kind':'unknown','reason':note}
         row['squad_evidence'] = evidence
@@ -1186,6 +1219,9 @@ class Engine:
                     return None
                 reason = scope_reason(row,self.c,json.loads(self.meta('managed') or '[]'))
                 if reason == squad_types.WAIT:
+                    if row.get('game_wait'):
+                        self.wait_for_game(job['id'], 'pending', row.get('squad_lookup_note') or '게임 상태 확인 중')
+                        return None
                     self.update(job['id'],'blocked',row.get('squad_lookup_note') or next((v.get('reason') for v in row.get('squad_evidence',{}).values() if v.get('reason')),squad_types.WAIT))
                     continue
                 if reason != '대상':
@@ -1199,8 +1235,20 @@ class Engine:
             return job
         return None
 
+    def wait_for_game(self, jid, status, reason):
+        self.waiting_for_game = True
+        self.last_job_id = jid
+        with self.db:
+            job = self.db.execute('SELECT data,status FROM jobs WHERE id=?', (jid,)).fetchone()
+            if job and job['status'] in ('pending', 'generated', 'apply_failed'):
+                row = json.loads(job['data'])
+                row['game_wait'] = True
+                self.db.execute('UPDATE jobs SET data=?,status=?,note=? WHERE id=?',
+                                (json.dumps(row, ensure_ascii=False), status, '게임 대기 · ' + str(reason), jid))
+
     def run_one(self, runner=None, save_gated=False, job_id=None, cancel_event=None, on_change=None):
         self.last_job_id = None
+        self.waiting_for_game = False
         if cancel_event is not None and cancel_event.is_set():
             return False
         self.discard_missing_departures()
@@ -1211,7 +1259,10 @@ class Engine:
             try:
                 self.apply(ready[0])
             except SaveBusyError:
-                self.update(ready[0], "generated", "세이브 저장 중 · 합성 결과 보관, 저장 완료 후 추가 AI 호출 없이 자동 적용")
+                self.wait_for_game(ready[0], 'generated', '세이브 저장 중 · 합성 결과 보관')
+                return False
+            except GameWait as exc:
+                self.wait_for_game(ready[0], 'generated', exc)
                 return False
             except Exception as exc:
                 current = self.db.execute("SELECT status FROM jobs WHERE id=?", (ready[0],)).fetchone()[0]
@@ -1220,12 +1271,22 @@ class Engine:
             return True
         if not self.db.execute("SELECT 1 FROM jobs WHERE status='pending' AND (? IS NULL OR id=?) LIMIT 1", (job_id, job_id)).fetchone():
             return False
-        self.refresh()
+        try:
+            self.refresh()
+        except SaveBusyError:
+            waiting = self.db.execute(
+                "SELECT jobs.id FROM jobs LEFT JOIN job_order ON job_order.job_id=jobs.id "
+                "WHERE status='pending' AND (? IS NULL OR jobs.id=?) "
+                "ORDER BY COALESCE(position,jobs.id),jobs.id LIMIT 1", (job_id, job_id)).fetchone()
+            if waiting:
+                self.wait_for_game(waiting[0], 'pending', '세이브 저장 중 · 완료 후 자동 재개')
+            return False
         queue_revision = self.meta("queue_revision")
         job = self.next_job(time.time(), save_gated=save_gated, job_id=job_id, cancel_event=cancel_event)
         if job is None:
             return False
         jid, row = job["id"], json.loads(job["data"])
+        row.pop('game_wait', None)
         self.last_job_id = jid
         current = self.db.execute("SELECT data FROM people WHERE id=?", (row["id"],)).fetchone()
         if current:
@@ -1380,7 +1441,9 @@ class Engine:
                     raise GenerationCancelled()
                 self.apply(jid)
             except SaveBusyError:
-                self.update(jid, "generated", "세이브 저장 중 · 합성 결과 보관, 저장 완료 후 추가 AI 호출 없이 자동 적용")
+                self.wait_for_game(jid, 'generated', '세이브 저장 중 · 합성 결과 보관')
+            except GameWait as exc:
+                self.wait_for_game(jid, 'generated', exc)
             except (GenerationCancelled, PastSaveError):
                 raise
             except Exception as exc:
@@ -1504,7 +1567,8 @@ class Engine:
         row = self.enrich_squads(job)
         reason = scope_reason(row,self.c,json.loads(self.meta('managed') or '[]')) if not row.get('manual_request') else '대상'
         if reason == squad_types.WAIT:
-            raise TeamReadPending(row.get('squad_lookup_note') or next((v.get('reason') for v in row.get('squad_evidence',{}).values() if v.get('reason')),squad_types.WAIT))
+            error = GameWait if row.get('game_wait') else TeamReadPending
+            raise error(row.get('squad_lookup_note') or next((v.get('reason') for v in row.get('squad_evidence',{}).values() if v.get('reason')),squad_types.WAIT))
         if not self.latest(row):
             reason = scope_reason(row, self.c, json.loads(self.meta('managed') or '[]'))
             self.update(job_id, "superseded", reason if reason != '대상' else "적용 전 소속/범위 변경")
