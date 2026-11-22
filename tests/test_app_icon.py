@@ -44,10 +44,14 @@ class AppIconTests(unittest.TestCase):
         self.assertEqual(events.mock_calls[1][0], 'window')
 
     def test_windows_build_embeds_and_packages_icons(self):
-        script = (Path(app.__file__).resolve().parent / 'build_windows.bat').read_text()
-        self.assertIn('--icon "%~dp0icons\\ffa.ico"', script)
-        self.assertIn('--add-data "icons;icons"', script)
-        self.assertIn('scripts\\verify_windows_icon.py', script)
+        root = Path(app.__file__).resolve().parent
+        script = (root / 'build_windows.bat').read_text()
+        spec = (root / 'packaging' / 'windows_release.spec').read_text()
+        builder = (root / 'scripts' / 'build_release.py').read_text()
+        self.assertIn('scripts\\build_release.py', script)
+        self.assertIn("icon=str(root / 'icons' / 'ffa.ico')", spec)
+        self.assertIn("('ffa.png', 'ffa.ico')", spec)
+        self.assertIn("'verify_windows_icon.py'", builder)
 
     def test_build_verifier_rejects_default_missing_or_corrupt_icon(self):
         expected = ico_frames(Path(app.__file__).resolve().parent / 'icons' / 'ffa.ico')
