@@ -12,7 +12,7 @@ import tempfile
 from engine import check_save_reader, write_atomic
 from scripts.probe_save_teams import BUILD, read_team_table
 from squad_diagnostics import initial_directory, stamp
-from team_reader import PROFILE, TeamReader
+from team_reader import GameWait, PROFILE, TeamReader
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +25,8 @@ REFERENCES = ('Club.ReservesTeam', 'Club.YouthTeam', 'Club.YouthTeam3',
 
 def samples(clubs, records, managed):
     """Cover observed raw-type/name-flag/control-link combinations, without labelling them."""
-    selected = {uid for uid, c in clubs.items() if c['id'] in CONTROL_CLUBS | set(managed)}
+    preferred = CONTROL_CLUBS | set(managed)
+    selected = {uid for uid, c in clubs.items() if c['id'] in preferred}
     seen = set()
     for uid, club in clubs.items():
         for team in club['teams']:
@@ -49,6 +50,7 @@ def samples(clubs, records, managed):
             teams.append({**row, 'owner_club_id': owner, 'is_affiliate': team['is_affiliate']})
         result.append({'club_id': club['id'], 'name': club['name'],
                        'anchor_team_id': anchors[0], 'teams': teams})
+    result.sort(key=lambda c: c['club_id'] not in preferred)
     return result
 
 
@@ -162,7 +164,19 @@ def main():
                   'note': 'Team identities and managed club are checked; the loaded save filename is not exposed by the service.'}
         reader = TeamReader()
         try:
-            report['native'] = compare_native(plan, reader)
+            started, next_notice = reader.clock(), 0
+            while True:
+                try:
+                    report['native'] = compare_native(plan, reader)
+                    break
+                except GameWait:
+                    now = reader.clock()
+                    if now - started >= 120:
+                        raise ValueError('게임 연결 대기 시간이 초과됐습니다. FM27 화면을 확인하고 다시 실행하세요.')
+                    if now >= next_notice:
+                        print('게임 연결 대기 중 · 도구를 유지하고 FM27 화면을 확인하세요.', flush=True)
+                        next_notice = now + 5
+                    reader.sleep(min(2, 120 - (now - started)))
         except Exception as exc:
             report['error'] = str(exc)
             # Keep failed/partial observations for diagnosis, never as verified comparisons.

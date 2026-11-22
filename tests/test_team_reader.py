@@ -97,6 +97,29 @@ class ReaderTests(unittest.TestCase):
         self.save_status()
         self.assertIn(540, self.reader.resolve([540], ['680'], 'b'*64))
 
+    def test_stale_heartbeat_between_batches_resumes_only_missing_teams(self):
+        from team_reader import GameWait
+        def pause_after_first_batch(seconds):
+            if self.requests:
+                self.now += 10
+                return
+            self.respond(seconds)
+        self.reader.sleep = pause_after_first_batch
+        targets = [100, 101, 102, 103, 104]
+        with self.assertRaises(GameWait):
+            self.reader.resolve(targets, ['680'], 'b' * 64)
+        self.assertEqual(self.requests[0]['teams'], [540, 100, 101, 102])
+        self.assertEqual(len(self.reader.cache), 4)
+        self.assertIsNone(self.reader.last_context)
+        self.assertFalse(list((self.root/'requests'/self.sid).glob('*.json')))
+        self.save_status()
+        self.reader.sleep = self.respond
+        result = self.reader.resolve(targets, ['680'], 'b' * 64)
+        self.assertEqual(set(result), set(targets))
+        self.assertEqual(self.requests[1]['teams'], [103, 104])
+        self.assertEqual(len(self.requests), 2)
+        self.assertIsNotNone(self.reader.last_context)
+
     def test_completed_classification_context_can_be_checked_while_game_is_busy(self):
         self.status['context_epoch'] = 7
         self.save_status()

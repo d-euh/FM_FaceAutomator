@@ -1,5 +1,44 @@
 # Squad classification investigation
 
+## Partial native comparison received 2026-11-23
+
+The uploaded `save-team-roles.json` identifies the supplied first-team save by its
+previously verified SHA-256. It has `native: null` and an error corresponding to
+`TeamReader.connection()` finding no fresh session heartbeat, with stale-session
+evidence present. This does not identify whether the game exited, paused updates,
+or stopped responding; no actual game crash or corrupted team data is established.
+
+The report retains 20 cached responses from one session/epoch/snapshot. Each has
+matching saved/native team UID, storing club UID, and type value, with no recorded
+row or cleanup error. Observed raw types are 0, 1, 3, 11, 12, 14, 16, 17 and 18.
+These are partial observations: final freshness/context and managed-club proof
+did not complete, so the report is not a verified 79-team comparison and cannot
+enable a global classifier.
+
+One useful observed distinction: the type-3 examples are selected by a highest
+youth-container property without an explicit matching `Club.ReservesTeam`.
+The reserve and youth-container references can also overlap, as already seen
+for Manchester United. Neither a type number nor a generic container's name is
+an independent replacement for the explicit club-role evidence.
+
+The one-time client previously propagated any `GameWait` straight to an error
+report. It now retries only that transient exception with a 120-second budget,
+preserving the same `TeamReader` instance. Its existing cache keys and final
+freshness checks control reuse; no old report is imported as a cache. Nontransient
+errors still stop immediately, and timeout retains unverified observations.
+The managed/control clubs are queried first without changing sample coverage.
+No app worker, native API, profile/hash guard, or DLL was changed.
+
+Regressions exercise transient recovery, bounded timeout, permanent-error
+propagation, and sample priority. A transport test with the real `TeamReader`
+receives one batch, simulates a stale heartbeat during the next batch, restores
+the heartbeat and verifies that only the missing teams are requested, with a
+fresh final context required. Actual Windows recovery and the remaining team
+relationships still need the updated diagnostic run.
+The focused Python suite passed 58 tests. Re-reading the actual first-team save
+confirmed the same source hash and 79-target set, with both control clubs now
+first in the query plan.
+
 ## Relationship survey and prepared native cross-check 2026-11-23
 
 Across the parsed club catalog, all 21,445 clubs have exactly one own team whose

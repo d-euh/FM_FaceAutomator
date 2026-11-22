@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from scripts import verify_save_team_roles as probe
 from scripts.verify_save_team_roles import compare_native, samples
-from team_reader import GameWait
+from team_reader import GameWait, TeamReadPending
 
 
 class SaveTeamRoleTests(unittest.TestCase):
@@ -72,6 +72,12 @@ class SaveTeamRoleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             samples(broken, self.records, [999])
 
+    def test_managed_club_precedes_other_representatives_without_losing_coverage(self):
+        clubs = dict(reversed(list(self.clubs.items())))
+        result = samples(clubs, self.records, [500])
+        self.assertEqual(result[0]['club_id'], 500)
+        self.assertEqual({t['team_id'] for c in result for t in c['teams']}, {0, 1, 2})
+
     def test_mismatched_ids_owners_cleanup_and_nonboolean_anchor_stop_comparison(self):
         original = deepcopy(self.rows)
         for field, value in (('UniqueId', 999), ('Club.UniqueId', 999),
@@ -112,10 +118,7 @@ class SaveTeamRoleTests(unittest.TestCase):
                 compare_native(plan, self.reader())
         self.assertEqual(self.calls, [])
 
-    def test_failed_runtime_writes_error_and_only_unverified_partial_observations(self):
-        def busy(*args):
-            raise GameWait('game busy')
-        reader = SimpleNamespace(resolve=busy, cache={('session', 3, 'a' * 64): self.rows[0]})
+    def run_main(self, reader):
         with tempfile.TemporaryDirectory() as folder:
             destination = Path(folder) / 'report.json'
             with (patch.object(probe, 'os', SimpleNamespace(name='nt')),
@@ -123,12 +126,55 @@ class SaveTeamRoleTests(unittest.TestCase):
                   patch.object(probe, 'TeamReader', return_value=reader),
                   patch.object(sys, 'argv', ['probe', 'test.fm', '--output', str(destination)]),
                   contextlib.redirect_stdout(io.StringIO())):
-                self.assertEqual(probe.main(), 1)
-            report = json.loads(destination.read_text(encoding='utf-8'))
-            self.assertIsNone(report['native'])
-            self.assertEqual(report['error'], 'game busy')
-            self.assertFalse(report['loaded_save_file_verified'])
-            self.assertEqual(report['unverified_native_results'][0]['result'], self.rows[0])
+                code = probe.main()
+            return code, json.loads(destination.read_text(encoding='utf-8'))
+
+    def test_failed_runtime_writes_error_and_only_unverified_partial_observations(self):
+        def failed(*args):
+            raise TeamReadPending('cleanup failure')
+        reader = SimpleNamespace(resolve=failed, clock=lambda: 0,
+                                 cache={('session', 3, 'a' * 64): self.rows[0]})
+        code, report = self.run_main(reader)
+        self.assertEqual(code, 1)
+        self.assertIsNone(report['native'])
+        self.assertEqual(report['error'], 'cleanup failure')
+        self.assertFalse(report['loaded_save_file_verified'])
+        self.assertEqual(report['unverified_native_results'][0]['result'], self.rows[0])
+
+    def test_main_resumes_temporary_wait_using_same_reader_and_partial_cache(self):
+        now, attempts = [0], []
+        cached = {('session', 3, 'a' * 64): self.rows[0]}
+        def resolve(*args):
+            attempts.append(args)
+            self.assertIs(reader.cache, cached)
+            if len(attempts) == 1:
+                raise GameWait('stale heartbeat')
+            return self.rows
+        def sleep(seconds):
+            now[0] += seconds
+        reader = SimpleNamespace(resolve=resolve, clock=lambda: now[0], sleep=sleep,
+                                 cache=cached, last_context={'session': 'session', 'generation': 3})
+        code, report = self.run_main(reader)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0], attempts[1])
+        self.assertNotIn('error', report)
+        self.assertIsNotNone(report['native'])
+
+    def test_main_bounds_temporary_wait_and_preserves_unverified_results_on_timeout(self):
+        now = [0]
+        def busy(*args):
+            raise GameWait('stale heartbeat')
+        def sleep(seconds):
+            now[0] += seconds
+        reader = SimpleNamespace(resolve=busy, clock=lambda: now[0], sleep=sleep,
+                                 cache={('session', 3, 'a' * 64): self.rows[0]})
+        code, report = self.run_main(reader)
+        self.assertEqual(code, 1)
+        self.assertEqual(now[0], 120)
+        self.assertIsNone(report['native'])
+        self.assertEqual(len(report['unverified_native_results']), 1)
+        self.assertIn('대기 시간이 초과', report['error'])
 
 
 if __name__ == '__main__':
