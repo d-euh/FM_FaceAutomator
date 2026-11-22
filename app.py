@@ -53,6 +53,7 @@ def set_app_icon(window):
 class App:
     def __init__(self, window, config_path):
         self.window, self.path = window, Path(config_path).resolve()
+        first_launch = not self.path.exists()
         self.events = queue.Queue()
         self.stop = threading.Event()
         self.cancel_current = threading.Event()
@@ -201,6 +202,8 @@ class App:
         self.window.after(100, self.auto_paths)
         self.window.after(500, self.drain)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
+        if first_launch:
+            self.window.after_idle(self.open_settings)
 
     def open_advanced(self):
         self.advanced_window.deiconify()
