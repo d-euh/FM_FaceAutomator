@@ -42,15 +42,12 @@ KIT_LABELS = {"home": "홈", "away": "원정", "third": "서드"}
 def set_app_icon(window):
     # __file__ resolves inside PyInstaller's bundled resource directory as well.
     icon_dir = Path(__file__).resolve().parent / "icons"
+    # Tk's Windows ICO loader selects fixed 16/32px frames. Give it a single
+    # high-resolution image so the shell can scale down for high-DPI displays.
+    window.app_icon = tk.PhotoImage(master=window, file=str(icon_dir / "ffa.png"))
+    window.iconphoto(True, window.app_icon)
     if os.name == "nt":
-        icon_path = str(icon_dir / "ffa.ico")
-        # The class default covers child windows; explicitly set the root's
-        # small and large icons too (WM_SETICON on Windows).
-        window.iconbitmap(default=icon_path)
-        window.iconbitmap(icon_path)
-    else:
-        window.app_icon = tk.PhotoImage(master=window, file=str(icon_dir / "ffa.png"))
-        window.iconphoto(True, window.app_icon)
+        window.iconphoto(False, window.app_icon)
 
 
 class App:
