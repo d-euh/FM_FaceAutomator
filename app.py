@@ -346,7 +346,12 @@ class App:
         ttk.Label(hero, textvariable=self.activity, style='CardTitle.TLabel').pack(anchor='w', pady=(10, 0))
         refresh = ttk.Frame(hero, style="Card.TFrame")
         refresh.pack(fill="x", pady=(12, 0))
-        ttk.Button(refresh, text="페이스온 새로고침", command=self.test_live_refresh).pack(anchor="w")
+        refresh_actions = ttk.Frame(refresh, style="Card.TFrame")
+        refresh_actions.pack(fill="x")
+        ttk.Button(refresh_actions, text="페이스온 새로고침", command=self.test_live_refresh).pack(side="left")
+        self.vars['live_refresh_enabled'] = tk.BooleanVar()
+        ttk.Checkbutton(refresh_actions, text='생성 후 자동 새로고침', variable=self.vars['live_refresh_enabled'],
+                        style='Card.TCheckbutton').pack(side='left', padx=(12, 0))
         ttk.Label(refresh, text="누르면 게임 내에 페이스온 변경사항이 적용됩니다.", style="CardMuted.TLabel", wraplength=440).pack(anchor="w", pady=(8, 0))
         self.live_status = tk.StringVar(value="게임 연결 확인 대기")
         ttk.Label(refresh, textvariable=self.live_status, style="CardMuted.TLabel", wraplength=440).pack(anchor="w", pady=(8, 0))
@@ -445,13 +450,12 @@ class App:
     def fields(self, parent):
         parent.configure(padding=14)
         parent.columnconfigure(0,weight=1)
-        parent.rowconfigure(1,weight=1)
+        parent.rowconfigure(2,weight=1)
         ttk.Label(parent,text='폴더 · 연결',style='Section.TLabel').grid(row=0,column=0,sticky='w',pady=(0,8))
         body = ttk.Frame(parent)
         body.grid(row=1,column=0,sticky='nsew')
         body.columnconfigure(0,weight=3)
         body.columnconfigure(1,weight=2)
-        body.rowconfigure(0,weight=1)
         left = ttk.Frame(body,style='Panel.Card.TFrame',padding=12)
         left.grid(row=0,column=0,sticky='nsew',padx=(0,12))
         left.columnconfigure(1,weight=1)
@@ -459,24 +463,23 @@ class App:
         right.grid(row=0,column=1,sticky='nsew')
         right.columnconfigure(0,weight=1)
         ttk.Label(left,text='파일 · Codex',style='CardTitle.TLabel').grid(row=0,column=0,columnspan=3,sticky='w',pady=(0,6))
+        ttk.Label(left,text='연결 폴더를 확인해주세요',style='CardMuted.TLabel').grid(row=1,column=0,columnspan=3,sticky='w',pady=(0,6))
         rows = [('source','연결할 세이브 파일','file'),('portraits_dir','기존 페이스팩 폴더','dir'),
                 ('kits_dir','유니폼 키트 폴더','dir'),('pack_dir','생성 페이스팩 저장 위치','dir'),('codex','Codex 실행 파일','exe')]
-        for index,(key,label,chooser) in enumerate(rows,1):
+        for index,(key,label,chooser) in enumerate(rows,2):
             self.vars[key] = tk.StringVar()
             ttk.Label(left,text=label,style='CardText.TLabel').grid(row=index,column=0,sticky='w',padx=(0,8),pady=4)
             ttk.Entry(left,textvariable=self.vars[key],width=22).grid(row=index,column=1,sticky='ew',pady=4)
             ttk.Button(left,text='선택',style='Compact.TButton',command=lambda k=key,c=chooser:self.choose(k,c)).grid(row=index,column=2,padx=(6,0))
         login = ttk.Frame(left,style='Card.TFrame')
-        login.grid(row=6,column=0,columnspan=3,sticky='ew',pady=6)
+        login.grid(row=7,column=0,columnspan=3,sticky='ew',pady=6)
         self.auth_status = tk.StringVar(value='로그인 상태 확인 중…')
         self.login_button = ttk.Button(login,text='ChatGPT 로그인',style='Compact.TButton',command=self.login_chatgpt)
         self.login_button.pack(side='left',padx=(0,10))
         ttk.Label(login,textvariable=self.auth_status,style='CardMuted.TLabel',wraplength=330).pack(side='left',fill='x',expand=True)
-        ttk.Label(left,text='합성에 사용할 유니폼',style='CardText.TLabel').grid(row=7,column=0,sticky='w',pady=6)
+        ttk.Label(left,text='합성에 사용할 유니폼',style='CardText.TLabel').grid(row=8,column=0,sticky='w',pady=6)
         self.vars['kit_variant'] = tk.StringVar()
-        ttk.Combobox(left,textvariable=self.vars['kit_variant'],values=list(KIT_LABELS.values()),state='readonly',width=12).grid(row=7,column=1,sticky='w')
-        self.vars['live_refresh_enabled'] = tk.BooleanVar()
-        ttk.Checkbutton(left,text='생성 후 자동 새로고침',variable=self.vars['live_refresh_enabled'],style='Card.TCheckbutton').grid(row=8,column=0,columnspan=3,sticky='w',pady=6)
+        ttk.Combobox(left,textvariable=self.vars['kit_variant'],values=list(KIT_LABELS.values()),state='readonly',width=12).grid(row=8,column=1,sticky='w')
         self.path_status = tk.StringVar(value='경로를 자동 확인합니다. 다른 항목만 직접 바꾸세요.')
         ttk.Label(left,textvariable=self.path_status,style='CardMuted.TLabel',wraplength=500).grid(row=9,column=0,columnspan=3,sticky='w',pady=(6,0))
 
@@ -493,10 +496,9 @@ class App:
         self.name_style_fields(right)
 
         sections = ttk.Frame(parent)
-        sections.grid(row=2,column=0,sticky='ew',pady=(8,0))
-        self.common_toggle = ttk.Button(sections,text='공통 지시 펼치기',style='Compact.TButton',command=self.toggle_common)
-        self.common_toggle.pack(side='left',padx=(0,8))
+        sections.grid(row=3,column=0,sticky='ew',pady=(8,0))
         self.common_frame = ttk.Frame(parent,style='Panel.Card.TFrame',padding=10)
+        self.common_frame.grid(row=2,column=0,sticky='nsew',pady=(8,0))
         self.prompt_fields(self.common_frame)
         self.support_toggle = ttk.Button(sections,text='문제 해결 펼치기',style='Compact.TButton',command=self.toggle_support)
         self.support_toggle.pack(side='left')
@@ -512,7 +514,7 @@ class App:
             ttk.Button(tools,text=label,style='Compact.TButton',command=callback).pack(side='left',padx=(0,8))
         ttk.Label(tools,text='진단 보고서 · ID 목록 · 사진/매핑 복구',style='CardMuted.TLabel').pack(side='left')
         footer = ttk.Frame(parent)
-        footer.grid(row=4,column=0,sticky='ew',pady=(8,0))
+        footer.grid(row=5,column=0,sticky='ew',pady=(8,0))
         ttk.Button(footer,text='설정 저장',style='Primary.TButton',command=self.save).pack(side='left')
         ttk.Button(footer,text='창 닫기',style='Compact.TButton',command=self.settings_window.withdraw).pack(side='right')
 
@@ -521,20 +523,13 @@ class App:
             self.support_frame.grid_remove()
             self.support_toggle.configure(text='문제 해결 펼치기')
         else:
-            self.common_frame.grid_remove()
-            self.common_toggle.configure(text='공통 지시 펼치기')
-            self.support_frame.grid(row=3,column=0,sticky='ew',pady=(6,0))
+            self.support_frame.grid(row=4,column=0,sticky='ew',pady=(6,0))
             self.support_toggle.configure(text='문제 해결 접기')
-
-    def toggle_common(self):
-        if self.common_frame.winfo_manager():
-            self.common_frame.grid_remove()
-            self.common_toggle.configure(text='공통 지시 펼치기')
-        else:
-            self.support_frame.grid_remove()
-            self.support_toggle.configure(text='문제 해결 펼치기')
-            self.common_frame.grid(row=3,column=0,sticky='ew',pady=(6,0))
-            self.common_toggle.configure(text='공통 지시 접기')
+            # Keep the fixed instructions and footer visible when the extra
+            # tools no longer fit in a small settings window.
+            self.settings_window.update_idletasks()
+            height = max(self.settings_window.winfo_height(), self.settings_window.winfo_reqheight())
+            self.settings_window.geometry(f'{self.settings_window.winfo_width()}x{height}')
 
     def name_style_fields(self, parent):
         panel = ttk.Frame(parent,style='Card.TFrame')
