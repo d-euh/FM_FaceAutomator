@@ -1,5 +1,43 @@
 # Squad classification investigation
 
+## Barcelona assignments supplied and checked 2026-11-23
+
+The user identified `2000467065` (오리안 고렌) as Barcelona B
+and `2000557918` (오스카 메디나) as Barcelona U19 in the supplied
+career. These are user-confirmed in-game assignments; the following registration
+and relationship fields were independently read from all three supplied saves.
+
+| User-confirmed assignment | Player ID | Registered team | Effective club | Team's storing club | Candidate type |
+|---|---:|---:|---:|---:|---:|
+| Barcelona B | 2000467065 | 1340 | 1708 | 1668 | 0 |
+| Barcelona U19 | 2000557918 | 29351 | 1708 | 1708 | 11 |
+
+Both registrations and candidate type values are identical across the three saves.
+The B player's `team_club_uid` is 1668, and that club's `parent_club_uid` is 1708.
+The parent's team list explicitly includes team 1340 with storing club 1668 and
+`is_affiliate=True`. The U19 team belongs directly to club 1708. Both players'
+contracts name the parent's main team 1364, so that contract reference cannot
+identify their actual squad assignment.
+
+This supplies the requested independent assignment evidence for the second club.
+It also confirms the slot counterexample: Barcelona's U19 occupies slot 1 and
+B team slot 2, whereas the controlled Manchester United reserve and youth teams
+occupy slots 1 and 2 respectively. Those positions are not general role rules.
+
+The candidate type 0 cannot distinguish a B team's own main team from the parent
+club's main team. The observed parent/child relationship must not be lost. Type
+11 now has a user-confirmed U19 example, but the candidate field is still not a
+validated saved `IsFirstTeam` or `Club.YouthTeam`/`ReservesTeam` reference. A
+controlled affiliate link alone does not establish which of the game's explicit
+reserve/youth properties selects it for every club structure.
+
+Verification: the existing read-only diagnostic completed in strict mode for
+both players in all three saves. Local assertions checked both registrations,
+the child's parent link, the parent's controlled-team entry, unchanged comparison
+fields, and the two candidate type values. These checks validate the observations,
+not a new classifier. Raw results remain under `/tmp`; only this evidence summary
+is committed. No production behavior, native API, or build support was changed.
+
 ## Actual controlled-save comparison 2026-11-23
 
 The user supplied the three controlled saves through the `analysis-v2` release.
