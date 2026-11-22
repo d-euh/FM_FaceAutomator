@@ -1,5 +1,59 @@
 # Squad classification investigation
 
+## Actual controlled-save comparison 2026-11-23
+
+The user supplied the three controlled saves through the `analysis-v2` release.
+All three were downloaded successfully and read sequentially with the pinned
+`fmsave 0.12.6` reader in strict mode. They are FM27 `27.1.0+2505117`, dated
+2028-07-07. This is the existing compatible-save build, not a newly supported
+native integration profile. The reader still warns that this build borrows some
+FM27 layouts; successful structural checks are not semantic verification.
+
+Both controlled players reproduce the earlier registration transition:
+first team 540, reserve 28346, youth 28347. The parsed club records for the
+five inspected clubs are byte-identical across the three saves. Moving these
+players changes registration, not those clubs' stored team lists/relationships.
+
+Additional byte inspection found candidate team-record fields, beyond the public
+reader's `Team` model. After checking the candidate header's team identity against
+the club team list and its owner reference against the club index, 44,337 of
+47,155 listed own teams have one matching candidate in each save. No duplicate
+candidate survives those checks. The candidate identity, owner, record kind,
+type value, and flag are unchanged across all three snapshots for those matches.
+This is research coverage, not proof of a complete or authoritative record reader;
+2,818 listed own teams remain unmatched by this candidate scan.
+
+For the three controlled Manchester United teams, the candidate type values are
+0, 10, and 12. These agree with the prior successful native `TeamType` probe in
+this document. The club's fourth listed team has candidate value 22; its actual
+squad role remains unverified. Fourteen candidate type values occur in the
+matched records, so the three controlled teams do not establish a global mapping.
+
+A concrete counterexample to using type values alone: the separately stored
+Barcelona B and Bayern II teams have candidate type 0, as do their parent clubs'
+main teams. The save reader links those teams into the parent club's controlled
+team list. This is a storage observation, not an in-game confirmation of how the
+parent club's `ReservesTeam` property resolves. Treating every candidate type 0
+as the selected parent club's first team would discard that distinction.
+
+Outcome: there is promising saved team-type evidence, but the saved equivalents
+of `IsFirstTeam` and the club's explicit reserve/youth relationships have not been
+identified and validated. No production classifier, dependency, native API or
+build support was changed. Existing restricted-scope safeguards remain in place.
+
+Next verification needs the actual first/reserve/youth relationships for a club
+with a separately stored B team and a different youth structure in this same
+career. An existing native team-bindings report with these references, or known
+in-game assignments with player IDs, supplies independent ground truth for
+further record inspection. Names, slot positions, or the candidate numbers alone
+are not that ground truth. The three saves cover assignment changes within one
+club, not a change to the reserve/youth relationships themselves.
+
+All original saves, decompressed sections, byte-inspection scripts, and extracted
+records remain outside Git under `/tmp`. No save was rewritten and no AI image
+generation or native game query was invoked. The source-inspection section below
+describes the earlier state before these saves became available.
+
 ## Save-only investigation resumed 2026-11-23
 
 Goal: resolve squad roles from the connected save without waiting for the running
