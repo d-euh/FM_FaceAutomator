@@ -1,5 +1,48 @@
 # Squad classification investigation
 
+## Save-only investigation resumed 2026-11-23
+
+Goal: resolve squad roles from the connected save without waiting for the running
+game. This section records source inspection, not a new in-game verification.
+
+The installed reader is `fmsave 0.12.6`. Upstream `rhiever/fmsave` main at
+`755fe9c` (release 0.14.3) was also inspected. Both versions expose the same
+`Team` fields: `team_id`, `slot`, `club_uid`, and `is_affiliate`.
+`models/clubs.py` explicitly says which reserve/youth side each own slot holds
+is unknown. Neither model exposes `IsFirstTeam` or the club's explicit reserve
+and youth relationships. `readers/clubs.py` builds slots by enumerating stored
+team IDs; that enumeration does not decode a role. Upstream's
+`experimental_span()` decodes fixture cores/rules, not those team relationships.
+An upgrade alone therefore does not supply the missing classification.
+
+Our `engine.read_source()` already retains each player's `team_id` as
+`registered_team_id`. Existing controlled-save results below verify registration
+changes for one club; they do not establish a general slot-to-role mapping.
+The existing `squad_diagnostics.py` report exports those same decoded fields,
+so repeating that JSON export alone will not reveal the missing raw relationship.
+The attached `team-metadata.json` contains runtime metadata, not a saved game.
+No actual `.fm` file is available in the current repository or attachment folders.
+
+Next evidence and acceptance criteria:
+
+1. Obtain an actual supported FM27 save plus the in-game first/reserve/youth
+   assignments of named players (include player IDs). The earlier three controlled
+   saves, if still available, are useful; one save with known assignments is enough
+   to begin inspecting records. Keep all real saves and extracted bytes out of Git.
+2. Locate the stored team records/club relationships and resolve their identities
+   against player registration and the observed assignments. Changes in a player's
+   registration identify the team, but do not by themselves identify a role field.
+3. Verify any candidate role/reference layout against a second club with a different
+   structure, including a separately stored B/reserve club where available. Do not
+   turn a correlation in slots, age, names, contracts, or numeric codes into a rule.
+4. Only then integrate the verified reader, retain direction-specific source and
+   destination evidence, and add synthetic regressions for malformed/missing refs
+   and free-agent gaps. Unknown roles must still prevent restricted-scope AI calls.
+
+No production parser, dependency, supported-build gate, native API, or classification
+behavior was changed during this source-inspection step. Whether the needed role
+relationships can be decoded from the available save remains unverified.
+
 ## Confirmed evidence
 
 User-controlled three-save test, FM27 27.1.0+2505117, same club and game date:
