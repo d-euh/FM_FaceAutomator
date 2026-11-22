@@ -1,4 +1,4 @@
-# FM Face Automator · v0.17.0 미리보기
+# FM Face Automator · v1.0
 
 FM Newgen Face Studio와 연결하지 않는 독립형 데스크톱 프로그램입니다. Windows 10용 실행 배치파일과 Python 소스를 제공합니다. 이 배포물에는 미리 빌드한 Windows EXE가 없습니다.
 

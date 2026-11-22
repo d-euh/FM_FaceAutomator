@@ -672,7 +672,6 @@ class App:
         heading = ttk.Frame(parent)
         heading.pack(fill="x")
         ttk.Label(heading, text="모든 선수에게 적용할 지시", style="CardTitle.TLabel").pack(side="left")
-        ttk.Label(heading,text='정지 후 설정 저장 · 개별 지시와 함께 전달',style='CardMuted.TLabel').pack(side='right')
         self.additional_text = tk.Text(parent, height=4, wrap="word", font="TkTextFont")
         self.additional_text.pack(fill="both", expand=True)
 

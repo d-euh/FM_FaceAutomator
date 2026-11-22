@@ -8,7 +8,7 @@ import sqlite3
 
 from live_refresh import bridge_root, read_json
 
-APP_VERSION = "0.17.0"
+APP_VERSION = "1.0"
 
 
 def squad_record(data):
