@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from PIL import Image
 import app
@@ -24,7 +24,11 @@ class AppIconTests(unittest.TestCase):
         window = Mock()
         with patch.object(app, '__file__', str(resource)), patch.object(app, 'os', SimpleNamespace(name='nt')), patch.object(app.sys, 'frozen', True, create=True):
             app.set_app_icon(window)
-        window.iconbitmap.assert_called_once_with(default=str(resource.parent / 'icons' / 'ffa.ico'))
+        icon_path = str(resource.parent / 'icons' / 'ffa.ico')
+        self.assertEqual(window.iconbitmap.call_args_list, [
+            call(default=icon_path),
+            call(icon_path),
+        ])
 
     def test_windows_taskbar_identity_is_set_before_creating_window(self):
         events = Mock()

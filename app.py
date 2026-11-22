@@ -43,7 +43,11 @@ def set_app_icon(window):
     # __file__ resolves inside PyInstaller's bundled resource directory as well.
     icon_dir = Path(__file__).resolve().parent / "icons"
     if os.name == "nt":
-        window.iconbitmap(default=str(icon_dir / "ffa.ico"))
+        icon_path = str(icon_dir / "ffa.ico")
+        # The class default covers child windows; explicitly set the root's
+        # small and large icons too (WM_SETICON on Windows).
+        window.iconbitmap(default=icon_path)
+        window.iconbitmap(icon_path)
     else:
         window.app_icon = tk.PhotoImage(master=window, file=str(icon_dir / "ffa.png"))
         window.iconphoto(True, window.app_icon)
