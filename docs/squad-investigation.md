@@ -1,5 +1,51 @@
 # Squad classification investigation
 
+## Relationship survey and prepared native cross-check 2026-11-23
+
+Across the parsed club catalog, all 21,445 clubs have exactly one own team whose
+team unique ID equals that club's database unique ID. Each of these records has
+raw type 0. This is a corpus-wide identity observation, not a substitute for the
+game's `IsFirstTeam` property; a separately stored B club has its own such team.
+
+The catalog contains 736 controlled-team entries. Of these, 734 have raw type 0,
+but two have raw type 11, the same candidate type as the user-confirmed Barcelona
+U19. That does not independently confirm those two teams' roles, but rules out
+treating a controlled-team link as sufficient evidence of a universally identical
+storage shape. The full table contains 35 raw type values. Neither age-like
+values, names, a slot, nor a type code is used to assign a squad role.
+
+Further semantic verification needs independent native relationships, which the
+cloud environment cannot obtain from an unconnected Windows game. Prepared
+`verify_save_team_roles.bat` / `scripts/verify_save_team_roles.py` to make that
+comparison in one run using the existing DLL and `TeamReader`. It selects one
+club per observed raw-type/flag/control-link combination, includes the previously
+observed control clubs and the save's managed club, then reads all listed teams
+of those clubs. Each provided save yields 25 clubs and 79 unique team targets,
+covering 27 observed combinations. The plan is bounded to 256 targets; requests
+retain the existing four-team batch size and native cleanup/state guards.
+
+The tool checks every returned team UID and storing club UID against the save.
+For each parent club, its matching-identity anchor must have native
+`IsFirstTeam=True`. It records actual parent reserve/youth reference matches
+separately from each child's own boolean, preserving both when a B team is its
+own club's first team. It does not infer a role or change the app classifier.
+Native `TeamType` agreement is reported as a comparison, not assumed.
+
+Source reads completed against all three real saves, including stable-copy and
+managed-club checks. Fake-reader tests cover controlled-team owner separation,
+parent references, differing sampled shapes, bad/missing identities, cleanup
+errors, malformed refs, busy-state propagation and request bounds. Actual Windows
+native results remain pending. Team UID/managed-club proofs cannot verify a
+physical loaded-save filename/hash; the report explicitly marks that limitation.
+Failed runs retain partial service observations separately as unverified data,
+never as completed comparisons. The focused Python run passed 54 tests across
+the new comparison/probe and existing squad diagnostic/classifier/team reader.
+
+Run instructions: [세이브·게임 팀 참조 대조](save-team-role-verification.ko.md).
+No native API, DLL, supported build range, paid generation, or production app
+behavior was changed. This tool is a source-checkout diagnostic, not an installer
+or a new end-user app feature.
+
 ## Counted team-table verification 2026-11-23
 
 Added the isolated research reader `scripts/probe_save_teams.py`; the app does not

@@ -465,6 +465,11 @@ Windows x64 실행 파일과 자체 런타임이 저장소에 포함되어 있�
 .\check_squad_assignments.bat
 ```
 
+세이브의 팀 레코드와 실행 중인 게임의 리저브·유소년 참조를 대조하는 조사에는
+소스 폴더의 `verify_save_team_roles.bat`를 사용합니다. 같은 검증 세이브를 게임에
+불러온 뒤 실행하고 `diagnostics/save-team-roles.json`을 첨부하세요.
+[실행 조건·수집 범위](docs/save-team-role-verification.ko.md)를 먼저 확인하세요.
+
 ## 검증 상태와 남은 작업
 
 | 항목 | 현재 상태 |
