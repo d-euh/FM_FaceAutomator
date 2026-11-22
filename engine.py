@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import hashlib
+import heapq
 from importlib.metadata import version as package_version
 import json
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import time
@@ -531,10 +533,14 @@ class Engine:
             lock.__exit__(None, None, None)
         self._editing_locks.clear()
         self.db.close()
+        self._asset_catalogs.clear()
 
     def asset_catalog(self, folder, refresh=False):
         cached = self._asset_catalogs.get(folder)
         if refresh or cached is None or time.monotonic() - cached[0] > 60:
+            # Release the previous large index before constructing its replacement.
+            self._asset_catalogs.pop(folder, None)
+            cached = None
             face_source = Path(folder).resolve() == Path(self.c['portraits_dir']).resolve()
             catalog = AssetCatalog(folder, exclude=[self.c['state_dir']] if face_source else source_exclusions(self.c, folder),
                                    allow_managed=face_source or Path(folder).resolve() == Path(self.c["pack_dir"]).resolve())
@@ -549,8 +555,9 @@ class Engine:
         except AssetError:
             if not was_cached:
                 raise
-            # Newly installed faces/kits can appear while the watcher is running.
-            return getattr(self.asset_catalog(folder, refresh=True), method)(*args)
+        # Leave the exception handler first so its traceback releases the old
+        # catalog before a missing reference triggers a fresh scan.
+        return getattr(self.asset_catalog(folder, refresh=True), method)(*args)
 
     def kit_reference(self, club_id, row=None):
         variant = player_kit_variant(self.c, row or {})
@@ -923,34 +930,45 @@ class Engine:
     def recent_results(self):
         """The five most recently generated, readable cards in this workspace."""
         from PIL import Image
-        results, candidates = [], []
-        for job in self.db.execute("SELECT id,data,artifact,status FROM jobs WHERE artifact IS NOT NULL AND status<>'deleted'"):
-            try:
-                path = Path(job["artifact"])
-                stamp = path.stat()
-                if path.is_file() and stamp.st_size <= 25 * 1024 * 1024:
-                    candidates.append((stamp.st_mtime_ns, job["id"], job, stamp))
-            except OSError:
-                continue
-        # A retry can change started without producing a new image. Sort by the
-        # completed artifact, rather than the job ID or latest request attempt.
-        for _, _, job, stamp in sorted(candidates, key=lambda item: item[:2], reverse=True):
-            try:
-                path = Path(job["artifact"])
-                with Image.open(path) as card:
-                    if card.format != "PNG" or card.size != (350, 350):
-                        continue
-                    name = card.info.get("PlayerName", "")
-                    card.verify()
-                player = json.loads(job["data"])
-                results.append({"id": job["id"], "artifact": str(path),
-                                "name": name or player.get("english_name") or player["name"],
-                                "club_name": portrait_player(player)["club_name"], "status": job["status"],
-                                "stamp": (stamp.st_mtime_ns, stamp.st_size)})
-            except (OSError, ValueError, KeyError, SyntaxError, Image.DecompressionBombError):
-                continue
-            if len(results) == 5:
+        results = []
+        older_than = None
+
+        def candidates():
+            for job in self.db.execute("SELECT id,artifact FROM jobs WHERE artifact IS NOT NULL AND status<>'deleted'"):
+                try:
+                    stamp = Path(job["artifact"]).stat()
+                    order = (stamp.st_mtime_ns, job["id"])
+                    if (older_than is None or order < older_than) and stat.S_ISREG(stamp.st_mode) and stamp.st_size <= 25 * 1024 * 1024:
+                        yield (*order, job["artifact"], stamp)
+                except OSError:
+                    continue
+
+        # Keep a bounded batch of metadata. Read full job data only for readable
+        # cards, and refill from older files when newer results are corrupt.
+        while len(results) < 5:
+            batch = heapq.nlargest(16, candidates())
+            if not batch:
                 break
+            older_than = batch[-1][:2]
+            for _, jid, artifact, stamp in batch:
+                try:
+                    with Image.open(artifact) as card:
+                        if card.format != "PNG" or card.size != (350, 350):
+                            continue
+                        name = card.info.get("PlayerName", "")
+                        card.verify()
+                    job = self.db.execute("SELECT data,status,artifact FROM jobs WHERE id=? AND status<>'deleted'", (jid,)).fetchone()
+                    if job is None or job["artifact"] != artifact:
+                        continue
+                    player = json.loads(job["data"])
+                    results.append({"id": jid, "artifact": artifact,
+                                    "name": name or player.get("english_name") or player["name"],
+                                    "club_name": portrait_player(player)["club_name"], "status": job["status"],
+                                    "stamp": (stamp.st_mtime_ns, stamp.st_size)})
+                except (OSError, ValueError, KeyError, TypeError, AttributeError, SyntaxError, Image.DecompressionBombError):
+                    continue
+                if len(results) == 5:
+                    break
         return results
 
     def update(self, job_id, status, note="", artifact=None):

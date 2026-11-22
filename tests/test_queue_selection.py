@@ -135,3 +135,20 @@ class QueueSelectionTests(unittest.TestCase):
             self.app.refresh_queue(self.engine)
             self.assertEqual(self.app.tree.item('1', 'values')[4], '게임 대기')
             self.assertIn('게임 대기 중', self.app.activity.get())
+
+    def test_screen_log_retains_newest_entries_with_bounded_lines_and_characters(self):
+        from app import LOG_LINE_LIMIT, LOG_CHARACTER_LIMIT
+        for number in range(LOG_LINE_LIMIT + 25):
+            self.app.append_log(f'memory-log-{number}')
+        text = self.app.log.get('1.0', 'end-1c')
+        self.assertNotIn('memory-log-0\n', text)
+        self.assertIn(f'memory-log-{LOG_LINE_LIMIT + 24}', text)
+        self.assertLessEqual(int(self.app.log.index('end-1c').split('.')[0]) - 1, LOG_LINE_LIMIT)
+        with patch('app.LOG_CHARACTER_LIMIT', 10000):
+            for _ in range(5):
+                self.app.append_log('x' * 7500 + 'newest-tail')
+            self.assertLessEqual(self.app.log.count('1.0', 'end-1c', 'chars')[0], 10000)
+        self.app.append_log('x' * (LOG_CHARACTER_LIMIT + 100) + 'newest-tail')
+        self.assertIn('긴 로그의 중간 부분 생략', self.app.log.get('1.0', 'end-1c'))
+        self.assertTrue(self.app.log.get('1.0', 'end-1c').endswith('newest-tail\n'))
+        self.assertEqual(self.app.log.cget('state'), 'disabled')

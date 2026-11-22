@@ -33,6 +33,9 @@ from transfer_types import TRANSFER_TYPES, event_type
 
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
+LOG_LINE_LIMIT = 2000
+LOG_CHARACTER_LIMIT = 512000
+LOG_MESSAGE_LIMIT = 8000
 KIT_LABELS = {"home": "홈", "away": "원정", "third": "서드"}
 
 
@@ -279,6 +282,7 @@ class App:
         else:
             self.log.pack(fill="x", pady=(8, 0))
             self.log_toggle.configure(text="작업 기록 접기")
+            self.window.after_idle(self.scroll_log_to_end)
 
     def page(self, scroll=False, parent=None):
         host = ttk.Frame(self.tabs if parent is None else parent)
@@ -1569,6 +1573,25 @@ class App:
             self.tree.yview_moveto(view[0])
         self.update_job_actions()
 
+    def scroll_log_to_end(self):
+        if self.log.winfo_ismapped():
+            self.log.see("end")
+
+    def append_log(self, text):
+        if len(text) > LOG_MESSAGE_LIMIT:
+            half = LOG_MESSAGE_LIMIT // 2
+            text = text[:half] + "\n… 긴 로그의 중간 부분 생략 …\n" + text[-half:]
+        self.log.configure(state="normal")
+        self.log.insert("end", time.strftime("%H:%M:%S ") + text + "\n")
+        characters = self.log.count("1.0", "end-1c", "chars")[0]
+        if characters > LOG_CHARACTER_LIMIT:
+            self.log.delete("1.0", f"1.0+{characters - LOG_CHARACTER_LIMIT}c")
+        lines = int(self.log.index("end-1c").split(".")[0]) - 1
+        if lines > LOG_LINE_LIMIT:
+            self.log.delete("1.0", f"{lines - LOG_LINE_LIMIT + 1}.0")
+        self.scroll_log_to_end()
+        self.log.configure(state="disabled")
+
     def drain(self):
         while not self.events.empty():
             text = self.events.get()
@@ -1600,10 +1623,7 @@ class App:
                 self.catalog_key = None
                 continue
             self.status.set(text)
-            self.log.configure(state="normal")
-            self.log.insert("end", time.strftime("%H:%M:%S ") + text + "\n")
-            self.log.see("end")
-            self.log.configure(state="disabled")
+            self.append_log(text)
         self.login_button.configure(state="disabled" if self.active() or self.auth_active() else "normal")
         self.update_controls()
         self.manual_panel.set_available(not self.request_active() and not (self.auth_active() and self.auth_logging_in) and
