@@ -1,5 +1,68 @@
 # Squad classification investigation
 
+## Counted team-table verification 2026-11-23
+
+Added the isolated research reader `scripts/probe_save_teams.py`; the app does not
+import it. It accepts decompressed bytes only for the observed save build
+`27.1.0+2505117`, walks a declared record count, checks every ordinal footer and
+distinct team unique ID, reads variable roster/name lengths, and requires every
+supplied club-team ownership reference to agree. Missing, conflicting, damaged,
+or ambiguous tables raise an error. It returns raw fields, never squad labels.
+The synthetic regression fixture contains no real save fragments or identities.
+
+All three actual `.fm` saves were opened sequentially with the pinned reader in
+strict mode. Club checks were enforced with `save.clubs()`, then ownership was
+taken directly from its club index. The counted research reader reached all
+55,063 team records, including the last record, and matched all 47,155 own-team
+club references. This supersedes the earlier 44,337-candidate scan and its 2,818
+unmatched entries. Explicitly named teams were one cause of those misses: two
+variable-length names sit between the ownership field and the identity footer.
+The national-team variant also has a counted optional prefix array. The old byte
+after a footer belongs to the following record; the walk now identifies each
+record's own variant at its start instead.
+
+The three tables have identical team identity, owner, raw type, national marker,
+raw flag, and name fields. Their roster counts change only as follows:
+
+| Assigned save | Main team 540 | Reserve 28346 | Youth 28347 |
+|---|---:|---:|---:|
+| First team | 24 | 37 | 17 |
+| Reserve | 22 | 39 | 17 |
+| Youth | 22 | 37 | 19 |
+
+Exactly the source and destination counts change by two in each move; total
+stored roster entries stay at 98,440. This independently supports the record
+boundaries and roster-count interpretation. It does not prove every roster entry
+is a distinct player across all teams.
+
+The nearby raw flag cannot be used directly as `IsFirstTeam`: the native-confirmed
+Manchester United main team has flag 0 and its youth team has flag 1, opposite
+to the native boolean. Inverting it is also not established. The explicitly
+named Bayern U19 record has the same candidate type 11 as user-confirmed Barcelona
+U19, but flag 0 rather than 1. Overall 1,597 nonzero-type records also have flag 0.
+These are reasons to investigate the flag, not independent in-game confirmations
+of those other teams' roles. Its exact meaning remains unknown; the parser
+intentionally does not interpret it.
+
+Verification includes synthetic tests for named UTF-8 teams, national prefix
+extensions, changed roster lengths, native owner index zero, mismatched owners,
+truncation, corrupt lengths/counts/footer ordinals, duplicate IDs, ambiguous
+tables, wrong builds, and national/club ownership collisions. Real-save inspection
+scripts and extracted records stay outside Git. Parsing an already decompressed
+section took about 1.1–1.2 seconds here; this excludes decompression/player reads
+and is not an app lookup-time or Windows benchmark.
+
+The focused Python run passed 40 tests covering this probe, the existing save
+assignment diagnostic, and the existing squad classifier. The app's full GUI,
+native runtime, and paid image-generation tests were not rerun for this isolated
+research module.
+
+Remaining blocker: complete framing and ownership are now demonstrated on this
+career, but these fields still do not establish the saved equivalents of the
+game's `IsFirstTeam`, `Club.ReservesTeam`, and explicit youth relationships. No
+native lookup was removed and no unverified numeric/age/slot classifier was
+enabled. These are three snapshots of one career, not three independent careers.
+
 ## Barcelona assignments supplied and checked 2026-11-23
 
 The user identified `2000467065` (오리안 고렌) as Barcelona B
