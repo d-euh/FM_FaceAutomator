@@ -152,3 +152,14 @@ class QueueSelectionTests(unittest.TestCase):
         self.assertIn('긴 로그의 중간 부분 생략', self.app.log.get('1.0', 'end-1c'))
         self.assertTrue(self.app.log.get('1.0', 'end-1c').endswith('newest-tail\n'))
         self.assertEqual(self.app.log.cget('state'), 'disabled')
+
+    def test_uploaded_app_icon_loads_through_normal_window_startup(self):
+        if os.name != 'nt':
+            self.assertEqual((self.root.app_icon.width(), self.root.app_icon.height()), (256, 256))
+            self.assertIn(str(self.root.app_icon), self.root.tk.call('image', 'names'))
+        child = tk.Toplevel(self.root)
+        try:
+            self.root.update()
+            self.assertTrue(child.winfo_exists())
+        finally:
+            child.destroy()

@@ -39,6 +39,16 @@ LOG_MESSAGE_LIMIT = 8000
 KIT_LABELS = {"home": "홈", "away": "원정", "third": "서드"}
 
 
+def set_app_icon(window):
+    # __file__ resolves inside PyInstaller's bundled resource directory as well.
+    icon_dir = Path(__file__).resolve().parent / "icons"
+    if os.name == "nt":
+        window.iconbitmap(default=str(icon_dir / "ffa.ico"))
+    else:
+        window.app_icon = tk.PhotoImage(master=window, file=str(icon_dir / "ffa.png"))
+        window.iconphoto(True, window.app_icon)
+
+
 class App:
     def __init__(self, window, config_path):
         self.window, self.path = window, Path(config_path).resolve()
@@ -77,6 +87,7 @@ class App:
         self.status = tk.StringVar(value="경로와 범위를 확인하고 감시를 시작하세요.")
         self.scope_summary = tk.StringVar(value="내가 맡은 구단만 · 방출·영입 모두")
         window.title("FM Face Automator")
+        set_app_icon(window)
         window.geometry("1220x870")
         window.minsize(1060, 750)
         family = "Malgun Gothic" if os.name == "nt" else "Noto Sans CJK KR"
@@ -1689,6 +1700,9 @@ def main():
             finally:
                 e.close()
     else:
+        if os.name == "nt":
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("d_euh.FMFaceAutomator")
         window = tk.Tk()
         App(window, args.config)
         window.mainloop()
