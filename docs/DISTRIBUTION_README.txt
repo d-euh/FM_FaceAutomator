@@ -20,8 +20,9 @@ FM Face Automator v1.0
 
 [처음 설치]
 1. ZIP을 완전히 풀고 FMFaceAutomator-Setup-v1.0.exe를 실행합니다.
-2. 설치 경로를 확인합니다. 기본값은 D:\FMFaceAutomator이며 변경할 수 있습니다.
-   D: 드라이브가 없으면 사용자 계정의 AppData\Local\Programs 아래에 설치합니다.
+2. 설치 경로를 확인합니다. 새 설치 기본값은 %LOCALAPPDATA%\Programs\FMFaceAutomator입니다.
+   일반적인 위치는 C:\Users\사용자이름\AppData\Local\Programs\FMFaceAutomator입니다.
+   설치 화면에서 D: 등 다른 위치로 바꿀 수 있으며, 기존 설치가 있으면 그 경로를 우선 사용합니다.
    앱이 설정·작업 기록을 저장할 수 있도록 쓰기 가능한 전용 폴더를 선택하세요.
 3. 설치를 마치면 시작 메뉴와 선택한 바탕화면 바로가기로 실행할 수 있습니다.
 4. 처음 실행할 때 경로 검색을 마치면 '폴더 · 연결' 창이 열립니다.

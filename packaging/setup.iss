@@ -4,7 +4,7 @@ AppId={{8AC53D3B-4059-4CBB-85C6-37492AF5B543}
 AppName=FM Face Automator
 AppVersion={#AppVersion}
 VersionInfoVersion={#FFAVersionInfo}
-DefaultDirName={code:DefaultInstallDir}
+DefaultDirName={localappdata}\Programs\FMFaceAutomator
 DefaultGroupName=FM Face Automator
 DisableProgramGroupPage=yes
 UsePreviousAppDir=yes
@@ -77,14 +77,6 @@ begin
      (DirExists(AddBackslash(Target) + '_internal') and
       not FileExists(AddBackslash(Target) + 'FMFaceAutomator.exe')) then
     Result := '드라이브 루트나 다른 프로그램의 폴더가 아닌 FM Face Automator 전용 폴더를 선택하세요.';
-end;
-
-function DefaultInstallDir(Param: String): String;
-begin
-  if DirExists('D:\') then
-    Result := 'D:\FMFaceAutomator'
-  else
-    Result := ExpandConstant('{localappdata}\Programs\FMFaceAutomator');
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;

@@ -5,7 +5,9 @@
 1. `FMFaceAutomator-v1.0-windows-x64.zip`을 내려받아 **압축을 완전히 풉니다.**
    ZIP에는 **`FMFaceAutomator-Setup-v1.0.exe`와 `README.txt`**만 들어갑니다.
    README를 읽고 Setup EXE를 실행합니다. 쓰기 가능한 전용 설치 폴더를 선택하세요.
-   기본값은 `D:\FMFaceAutomator`이며 D:가 없으면 사용자 AppData의 Programs 아래입니다.
+   새 설치 기본값은 `%LOCALAPPDATA%\Programs\FMFaceAutomator`입니다.
+   일반적으로 C드라이브의 사용자 AppData 아래이며 D: 등 다른 위치로 변경할 수 있습니다.
+   기존 설치가 있으면 그 경로를 우선 사용하며 데이터를 자동으로 다른 드라이브로 옮기지 않습니다.
    시작 메뉴와 선택한 바탕화면 바로가기를 만들며, 설치 완료 후 앱을 실행할 수 있습니다.
 2. 받는 PC에 Python, 가상환경 또는 Git은 필요하지 않습니다.
    Codex CLI와 로그인은 별도로 필요합니다. 공식 설치 안내:
