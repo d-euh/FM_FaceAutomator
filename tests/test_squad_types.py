@@ -312,3 +312,104 @@ class EngineSquadTests(unittest.TestCase):
         self.assertTrue(self.e.waiting_for_game)
         self.assertEqual(self.e.jobs()[0]['status'], 'pending')
         runner.assert_not_called()
+
+    def confirmed_squad_job(self):
+        context = {'session': 'a'*32, 'kind': 'context', 'generation': 1, 'human_team_index': 540}
+        self.e._team_reader.last_context = context
+        self.e._team_reader.resolve = Mock(return_value={540: native(540, 'first')})
+        self.e._team_reader.current_context = Mock(return_value=context)
+        job = self.e.next_job(time.time())
+        self.assertIsNotNone(job)
+        self.assertIn('squad_proof', json.loads(job['data']))
+        return job, context
+
+    def test_confirmed_squad_is_reused_at_apply_without_a_new_native_query(self):
+        from PIL import Image, PngImagePlugin
+        from gunzo import LAYOUT
+        job, context = self.confirmed_squad_job()
+        artifact = Path(self.c['source']).parent / 'retained-card.png'
+        metadata = PngImagePlugin.PngInfo()
+        metadata.add_text('Layout', LAYOUT)
+        metadata.add_text('PlayerName', 'Test')
+        Image.new('RGB', (350, 350), 'gray').save(artifact, pnginfo=metadata)
+        self.c['pack_dir'] = str(artifact.parent / 'pack')
+        self.e.update(job['id'], 'generated', artifact=str(artifact))
+        self.e._team_reader.resolve = Mock(side_effect=AssertionError('No native query during gameplay'))
+        self.e.apply(job['id'])
+        self.e._team_reader.resolve.assert_not_called()
+        self.assertEqual(self.e.jobs()[0]['status'], 'applied')
+        self.assertTrue((Path(self.c['pack_dir']) / '1.png').is_file())
+
+    def test_restart_can_reuse_persisted_proof_with_fresh_matching_game_context(self):
+        job, context = self.confirmed_squad_job()
+        self.e.close()
+        self.e = Engine(self.c)
+        self.addCleanup(self.e.close)
+        self.e._team_reader.current_context = Mock(return_value=context)
+        self.e._team_reader.resolve = Mock(side_effect=AssertionError('Persisted proof is valid'))
+        job = self.e.db.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
+        self.assertEqual(self.e.enrich_squads(job, reuse=True)['squad_evidence']['outgoing']['kind'], 'first')
+        self.e._team_reader.resolve.assert_not_called()
+
+    def test_session_load_generation_and_human_changes_invalidate_proof(self):
+        for change in ({'session': 'b'*32}, {'generation': 2}, {'human_team_index': 999}):
+            with self.subTest(change=change):
+                job, context = self.confirmed_squad_job()
+                self.e._team_reader.current_context = Mock(return_value=context | change)
+                self.e._team_reader.resolve = Mock(return_value={540: native(540, 'youth')})
+                row = self.e.enrich_squads(job, reuse=True)
+                self.e._team_reader.resolve.assert_called_once()
+                self.assertEqual(row['squad_evidence']['outgoing']['kind'], 'youth')
+                self.assertNotIn('squad_proof', row)
+
+    def test_scope_membership_and_snapshot_changes_invalidate_proof(self):
+        job, _ = self.confirmed_squad_job()
+        self.c['scope_rules']['squad_types'] = ['youth']
+        self.e._team_reader.resolve.reset_mock()
+        self.e.enrich_squads(job, reuse=True)
+        self.e._team_reader.resolve.assert_called_once()
+        self.c['scope_rules']['squad_types'] = ['first']
+        job, _ = self.confirmed_squad_job()
+        person = json.loads(self.e.db.execute('SELECT data FROM people').fetchone()[0])
+        person['registered_team_id'] = 901
+        with self.e.db:
+            self.e.db.execute('UPDATE people SET data=?', (json.dumps(person),))
+        self.e._team_reader.resolve.reset_mock()
+        self.e.enrich_squads(job, reuse=True)
+        self.e._team_reader.resolve.assert_called_once()
+        job, _ = self.confirmed_squad_job()
+        Path(self.c['source']).write_bytes(b'a different save snapshot')
+        self.e._team_reader.resolve.reset_mock()
+        row = self.e.enrich_squads(job, reuse=True)
+        self.e._team_reader.resolve.assert_called_once()
+        self.assertTrue(row['game_wait'])
+
+    def test_legacy_evidence_without_proof_cannot_skip_verification(self):
+        job = self.e.jobs()[0]
+        self.e._team_reader.resolve = Mock(return_value={540: native(540, 'first')})
+        self.e.enrich_squads(job, reuse=True)
+        self.e._team_reader.resolve.assert_called_once()
+
+    def test_temporary_heartbeat_wait_does_not_destroy_a_confirmed_proof(self):
+        from team_reader import GameWait
+        job, context = self.confirmed_squad_job()
+        self.e._team_reader.current_context = Mock(side_effect=GameWait('응답 대기'))
+        self.e._team_reader.resolve = Mock(side_effect=GameWait('응답 대기'))
+        row = self.e.enrich_squads(job, reuse=True)
+        self.assertIn('squad_proof', row)
+        self.assertTrue(row['game_wait'])
+        self.e._team_reader.current_context = Mock(return_value=context)
+        self.e._team_reader.resolve.reset_mock()
+        job = self.e.db.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
+        row = self.e.enrich_squads(job, reuse=True)
+        self.assertEqual(row['squad_evidence']['outgoing']['kind'], 'first')
+        self.assertNotIn('game_wait', row)
+        self.e._team_reader.resolve.assert_not_called()
+
+    def test_unavailable_game_context_cannot_authorize_reusing_old_evidence(self):
+        job, _ = self.confirmed_squad_job()
+        self.e._team_reader.current_context = Mock(side_effect=TeamReadPending('정리 실패'))
+        self.e._team_reader.resolve = Mock(side_effect=TeamReadPending('정리 실패'))
+        row = self.e.enrich_squads(job, reuse=True)
+        self.assertEqual(row['squad_evidence']['outgoing']['kind'], 'unknown')
+        self.assertNotIn('squad_proof', row)

@@ -96,3 +96,24 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(len(self.requests), requests)
         self.save_status()
         self.assertIn(540, self.reader.resolve([540], ['680'], 'b'*64))
+
+    def test_completed_classification_context_can_be_checked_while_game_is_busy(self):
+        self.status['context_epoch'] = 7
+        self.save_status()
+        self.reader.resolve([540], ['680'], 'b'*64)
+        verified = self.reader.last_context
+        requests = len(self.requests)
+        self.status.update(idle=False, binding_ready=False, epoch=3, reason='game_processing')
+        self.save_status()
+        self.assertEqual(self.reader.current_context(), verified)
+        self.assertEqual(len(self.requests), requests)
+        self.status['context_epoch'] = 8
+        self.save_status()
+        self.assertNotEqual(self.reader.current_context(), verified)
+
+    def test_old_plugin_context_uses_strict_query_epoch(self):
+        self.reader.resolve([540], ['680'], 'b'*64)
+        context = self.reader.last_context
+        self.status['epoch'] += 1
+        self.save_status()
+        self.assertNotEqual(self.reader.current_context(), context)

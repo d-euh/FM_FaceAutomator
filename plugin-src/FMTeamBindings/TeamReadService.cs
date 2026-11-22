@@ -24,7 +24,8 @@ public sealed class TeamReadService
     private TeamReadRequest? active;
     private TeamProbe? controller;
     private string? activePath;
-    private int activeEpoch, epoch;
+    private int activeEpoch, epoch, contextEpoch;
+    private bool lastContextUnsafe;
     private bool lastIdle, faulted;
     private int? lastHuman;
     private double lastStatus;
@@ -54,10 +55,17 @@ public sealed class TeamReadService
         try { File.WriteAllBytes(temporary,JsonSerializer.SerializeToUtf8Bytes(value)); File.Move(temporary,file,true); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
-    public object State => new { session, epoch, available = !faulted, reason = faulted ? "cleanup_failed_restart_required" : reason, completed, active = active?.id,
+    public object State => new { session, epoch, context_epoch = contextEpoch, available = !faulted, reason = faulted ? "cleanup_failed_restart_required" : reason, completed, active = active?.id,
         queries_started = controller?.queries_started, recent };
     public void Tick(double elapsed, bool idle, string stateReason)
     {
+        // Reusing a completed classification never authorizes native calls while busy.
+        // Loading, a different manager or unknown state invalidates that evidence.
+        var contextUnsafe = !idle && stateReason is not ("game_busy" or "game_processing");
+        var contextChanged = lastHuman != observer.HumanTeamIndex || contextUnsafe && !lastContextUnsafe;
+        if (contextChanged)
+        { contextEpoch++; Dirty = true; }
+        lastContextUnsafe = contextUnsafe;
         if (lastIdle && !idle || lastHuman != observer.HumanTeamIndex) { epoch++; Dirty = true; }
         lastIdle = idle; lastHuman = observer.HumanTeamIndex;
         var nextReason = !idle ? stateReason : !runtime.Ready ? "binding_owner_not_ready" : "ready";
@@ -106,10 +114,10 @@ public sealed class TeamReadService
                 break;
             }
         }
-        if (elapsed-lastStatus >= 1)
+        if (elapsed-lastStatus >= 1 || contextChanged)
         {
-            Write(Path.Combine(SessionDir,"status.json"),new { protocol = 1, profile = Profile, plugin_version = "0.4.1",
-                session, pid = Environment.ProcessId, epoch, heartbeat = Utc, available = !faulted,
+            Write(Path.Combine(SessionDir,"status.json"),new { protocol = 1, profile = Profile, plugin_version = "0.4.2",
+                session, pid = Environment.ProcessId, epoch, context_epoch = contextEpoch, heartbeat = Utc, available = !faulted,
                 idle, binding_ready = runtime.Ready, human_team_index = observer.HumanTeamIndex, reason = faulted ? "cleanup_failed_restart_required" : reason });
             lastStatus = elapsed;
         }

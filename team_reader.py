@@ -12,7 +12,7 @@ import uuid
 from live_refresh import write_json
 
 PROFILE = 'fm27-steam-26620374-teams-v1'
-VERSION = '0.4.1'
+VERSION = '0.4.2'
 
 
 class TeamReadPending(ValueError):
@@ -35,14 +35,14 @@ def read(file):
     return json.loads(file.read_text(encoding='utf-8-sig'))
 
 
-def connection(root, now):
+def connection(root, now, require_idle=True):
     found = []
     stale = False
     for file in sorted((root/'sessions').glob('*/status.json'))[-64:]:
         try:
             value = read(file)
             sid, pid = value['session'], value['pid']
-            if (value.get('protocol') == 1 and value.get('profile') == PROFILE and value.get('plugin_version') in ('0.4.0', VERSION)
+            if (value.get('protocol') == 1 and value.get('profile') == PROFILE and value.get('plugin_version') in ('0.4.0', '0.4.1', VERSION)
                     and isinstance(sid,str) and re.fullmatch('[a-f0-9]{32}',sid) and type(pid) is int and pid > 0
                     and file.parent.name == f'{pid}-{sid}' and type(value.get('epoch')) is int):
                 age = now - float(value['heartbeat'])
@@ -61,7 +61,7 @@ def connection(root, now):
         raise TeamReadPending('팀 조회 정리 오류 · 게임을 재시작한 뒤 다시 시도하세요.')
     if status.get('available') is not True:
         raise TeamReadPending('팀 조회 연결을 확인하세요.')
-    if status.get('idle') is not True or status.get('binding_ready') is not True:
+    if require_idle and (status.get('idle') is not True or status.get('binding_ready') is not True):
         raise GameWait('게임의 진행/저장이 끝나고 세이브가 열리면 자동으로 재개합니다.')
     return directory,status
 
@@ -71,8 +71,24 @@ class TeamReader:
         self.root = Path(root) if root is not None else root_path()
         self.clock, self.sleep = clock,sleep
         self.cache = {}
+        self.last_context = None
+
+    @staticmethod
+    def classification_context(status):
+        # Older DLLs invalidate on every busy epoch, preserving their strict behavior.
+        context = status.get('context_epoch')
+        return {'session': status['session'], 'human_team_index': status.get('human_team_index'),
+                'generation': context if type(context) is int else status['epoch'],
+                'kind': 'context' if type(context) is int else 'query'}
+
+    def current_context(self):
+        if self.root is None:
+            return None
+        _, status = connection(self.root, self.clock(), require_idle=False)
+        return self.classification_context(status)
 
     def resolve(self, indexes, managed, snapshot, cancel=None):
+        self.last_context = None
         if self.root is None:
             raise TeamReadPending('팀 구분 연결 대기 · Windows FM27에서 팀 조회 플러그인을 실행하세요.')
         directory,status = connection(self.root,self.clock())
@@ -97,11 +113,14 @@ class TeamReader:
         _,fresh = connection(self.root,self.clock())
         if (fresh['session'],fresh['epoch']) != (session,epoch):
             raise GameWait('게임 상태가 변경되어 팀 구분을 다시 확인합니다.')
+        if self.classification_context(fresh) != self.classification_context(status):
+            raise GameWait('불러온 게임이 변경되어 팀 구분을 다시 확인합니다.')
         if managed:
             proof = self.cache.get((session,epoch,snapshot,human),{})
             club = (proof.get('values',{}).get('Club.UniqueId') or {})
             if club.get('error') or type(club.get('scalar')) is not int or str(club['scalar']) not in managed:
                 raise TeamReadPending('연결한 세이브와 실행 중인 게임의 담당 구단이 다릅니다.')
+        self.last_context = self.classification_context(fresh)
         return {i:self.cache[(session,epoch,snapshot,i)] for i in indexes}
 
     def request(self, directory, status, indexes, snapshot, cancel):

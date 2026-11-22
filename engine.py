@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import hashlib
 from importlib.metadata import version as package_version
 import json
 import os
@@ -684,7 +685,7 @@ class Engine:
                 row.pop('last_squad_registration', None)
                 row["league_ids"] = clubs.get(row["club_id"], {}).get("league_ids", row.get("league_ids", []))
                 for field in ("from_club_id", "from_club_name", "from_league_ids", 'transfer_type', 'transfer_type_reason',
-                              'from_team_id', 'from_registered_club_id', 'squad_evidence', 'squad_lookup_note'):
+                              'from_team_id', 'from_registered_club_id', 'squad_evidence', 'squad_lookup_note', 'squad_proof'):
                     row.pop(field, None)
                 old_club = before["club_id"] if before and before["identity"] == row["identity"] else ""
                 if not old_club and before and before["identity"] == row["identity"]:
@@ -1144,7 +1145,40 @@ class Engine:
         if lock:
             lock.__exit__(None, None, None)
 
-    def enrich_squads(self, job, cancel=None):
+    def squad_proof_key(self, row):
+        stamp = json.loads(self.meta('source_stamp') or 'null')
+        membership = ('id', 'identity', 'club_id', 'registered_team_id', 'registered_club_id',
+                      'club_basis', 'from_club_id', 'from_team_id', 'from_registered_club_id',
+                      'league_ids', 'from_league_ids')
+        settings = ('scope_rules', 'player_ids', 'exclude_player_ids', 'max_age')
+        values = {'snapshot': snapshot_key(self.c['source'], stamp),
+                  'membership': {key: row.get(key) for key in membership},
+                  'settings': {key: self.c.get(key) for key in settings},
+                  'managed': sorted(json.loads(self.meta('managed') or '[]'))}
+        return hashlib.sha256(json.dumps(values, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+
+    def reuse_squad_proof(self, row):
+        proof = row.get('squad_proof')
+        if not isinstance(proof, dict) or proof.get('key') != self.squad_proof_key(row):
+            return False
+        evidence = proof.get('evidence')
+        if not isinstance(evidence, dict):
+            return False
+        sides = scope_rules.matching_sides(row, self.c, json.loads(self.meta('managed') or '[]'))
+        if squad_types.decision(dict(row, squad_evidence=evidence), self.c['scope_rules'], sides) != 'allow':
+            return False
+        try:
+            context = self._team_reader.current_context()
+            stamp = json.loads(self.meta('source_stamp') or 'null')
+            valid = context is not None and proof.get('context') == context and list(file_stamp(self.c['source'])) == stamp
+            if valid:
+                row['squad_evidence'] = evidence
+                row['squad_lookup_note'] = ''
+            return valid
+        except (TeamReadPending, OSError, ValueError):
+            return False
+
+    def enrich_squads(self, job, cancel=None, reuse=False):
         row = json.loads(job['data'])
         row.pop('game_wait', None)
         if row.get('manual_request') or not squad_types.restricted(self.c):
@@ -1155,6 +1189,11 @@ class Engine:
             if (actual['identity'],actual['club_id']) == (row['identity'],row['club_id']):
                 for key in ('registered_team_id','registered_club_id','club_basis'):
                     if key in actual: row[key] = actual[key]
+        if reuse and self.reuse_squad_proof(row):
+            with self.db:
+                self.db.execute('UPDATE jobs SET data=? WHERE id=?', (json.dumps(row, ensure_ascii=False), job['id']))
+            return row
+        previous_proof = row.pop('squad_proof', None)
         sides = scope_rules.matching_sides(row,self.c,json.loads(self.meta('managed') or '[]'))
         evidence, targets = {},{}
         for side in sides:
@@ -1188,10 +1227,16 @@ class Engine:
         except TeamReadPending as exc:
             if isinstance(exc, GameWait):
                 row['game_wait'] = True
+                if reuse and isinstance(previous_proof, dict) and previous_proof.get('key') == self.squad_proof_key(row):
+                    row['squad_proof'] = previous_proof
             note = str(exc)
             for side in targets: evidence[side] = {'kind':'unknown','reason':note}
         row['squad_evidence'] = evidence
         row['squad_lookup_note'] = note
+        if (squad_types.decision(row, self.c['scope_rules'], sides) == 'allow'
+                and isinstance(self._team_reader.last_context, dict)):
+            row['squad_proof'] = {'key': self.squad_proof_key(row),
+                                  'context': self._team_reader.last_context, 'evidence': evidence}
         with self.db:
             self.db.execute('UPDATE jobs SET data=? WHERE id=?',(json.dumps(row,ensure_ascii=False),job['id']))
         return row
@@ -1564,7 +1609,7 @@ class Engine:
         job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job or job["status"] not in ("generated", "apply_failed"):
             raise ValueError("적용할 수 있는 생성 결과가 아닙니다.")
-        row = self.enrich_squads(job)
+        row = self.enrich_squads(job, reuse=True)
         reason = scope_reason(row,self.c,json.loads(self.meta('managed') or '[]')) if not row.get('manual_request') else '대상'
         if reason == squad_types.WAIT:
             error = GameWait if row.get('game_wait') else TeamReadPending

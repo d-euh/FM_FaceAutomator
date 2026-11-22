@@ -1,4 +1,4 @@
-# FM Team Binding Reader 0.4.1
+# FM Team Binding Reader 0.4.2
 
 Separate BepInEx 6 Unity IL2CPP diagnostic for FM27 Steam build 26620374.
 Use `install_team_bindings.bat` with FM27 closed. Start FM27 and load the same save
@@ -88,3 +88,12 @@ fully closed. Every tick still checks idle state, and any busy interval resets
 the stable timer. Build hashes, signatures, group capacity and cleanup are unchanged.
 The scheduler is covered by fake-runtime tests and a DLL build. Actual Windows
 FM27 timing and loading of this version require in-game confirmation.
+
+Version 0.4.2 adds context_epoch for reusing completed classifications. Ordinary
+processing and recognized busy states preserve it. Loading, human-team changes
+and unknown states invalidate it and publish a heartbeat immediately. The query
+epoch still cancels active native reads whenever the game becomes busy. The app
+reuses evidence only for matching save snapshots, player registration, selection
+and fresh session/context heartbeats. Old jobs without such evidence are queried
+once. Context transitions are verified with fake-runtime tests and a DLL build.
+Actual Windows FM27 behavior of this version requires in-game confirmation.

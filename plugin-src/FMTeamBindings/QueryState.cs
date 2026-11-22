@@ -44,8 +44,9 @@ namespace FMTeamBindings
                 }
                 if (active.Count != 1) { Reason = "loaded_game_not_ready"; return false; }
                 var owner = active[0];
-                if (Call(owner, "get_IsLoading") is true || Call(owner, "get_IsInProcessingCardState") is true
-                    || Call(owner, "get_m_isProcessingInstantResult") is true) { Reason = "game_loading_or_processing"; return false; }
+                if (Call(owner, "get_IsLoading") is true) { Reason = "game_loading"; return false; }
+                if (Call(owner, "get_IsInProcessingCardState") is true
+                    || Call(owner, "get_m_isProcessingInstantResult") is true) { Reason = "game_processing"; return false; }
                 var flags = Call(owner, "get_m_gameStateFlags")!;
                 var state = Call(Call(owner, "get_m_continueState")!, "get_Value")!;
                 if (!flags.GetType().IsEnum || !state.GetType().IsEnum) throw new InvalidOperationException("unexpected_state_type");

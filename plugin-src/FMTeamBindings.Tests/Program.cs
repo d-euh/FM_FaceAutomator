@@ -207,6 +207,21 @@ try {
         && response.RootElement.GetProperty("results")[0].GetProperty("native_team_index").GetInt32()==123,
         "File IPC drives one bounded group and returns correct correlation/target");
     Check(service.completed==1 && ownerBindings.Roots==0 && !File.Exists(Path.Combine(inbox,req.id+".json")), "IPC completion cleans request and private root");
+    static int ContextGeneration(TeamReadService value) => JsonSerializer.SerializeToElement(value.State).GetProperty("context_epoch").GetInt32();
+    var beforeProgress = ContextGeneration(service);
+    service.Tick(6,false,"game_processing");
+    Check(ContextGeneration(service)==beforeProgress, "Ordinary processing preserves completed classification context");
+    service.Tick(7,true,"idle");
+    Check(ContextGeneration(service)==beforeProgress, "Returning to idle preserves the same context");
+    service.Tick(7.1,false,"game_loading");
+    Check(ContextGeneration(service)>beforeProgress, "Loading invalidates completed classifications");
+    using var loadingStatus=JsonDocument.Parse(File.ReadAllText(statusFile));
+    Check(loadingStatus.RootElement.GetProperty("context_epoch").GetInt32()==ContextGeneration(service), "Context changes publish immediately without waiting for heartbeat");
+    service.Tick(8,true,"idle");
+    var beforeUnknown=ContextGeneration(service);
+    service.Tick(8.1,false,"state_unavailable");
+    Check(ContextGeneration(service)>beforeUnknown, "Unknown game state cannot retain a reusable classification");
+
 } finally { if(Directory.Exists(serviceFolder)) Directory.Delete(serviceFolder,true); }
 Console.WriteLine("PASS: local file IPC request, typed native-group adapter, response correlation and cleanup end to end with fake game API.");
 

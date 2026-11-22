@@ -11,7 +11,7 @@ from refresh_diagnostics import (INSTALL_RECORD, ROOT, EXPECTED_BUILD, game_proc
                                  install_component, validate_game)
 from team_metadata import find_games
 
-TOOL_VERSION = '0.4.1'
+TOOL_VERSION = '0.4.2'
 FOLDER = 'FMTeamBindings'
 DLL = 'FMTeamBindings.dll'
 MAX_REPORT = 8 * 1024 * 1024
