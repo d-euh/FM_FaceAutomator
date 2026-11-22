@@ -537,7 +537,11 @@ class Engine:
 
     def asset_catalog(self, folder, refresh=False):
         cached = self._asset_catalogs.get(folder)
-        if refresh or cached is None or time.monotonic() - cached[0] > 60:
+        now = time.monotonic()
+        if cached is not None and not refresh and now - cached[0] > 60:
+            refresh = cached[1].changed()
+            self._asset_catalogs[folder] = cached = (now, cached[1])
+        if refresh or cached is None:
             # Release the previous large index before constructing its replacement.
             self._asset_catalogs.pop(folder, None)
             cached = None
@@ -846,6 +850,18 @@ class Engine:
         current = json.loads(latest[0])
         scoped = dict(row, age=current.get("age"), league_ids=current.get("league_ids", row.get("league_ids", [])))
         return (current["identity"], current["club_id"]) == (row["identity"], row["club_id"]) and (row.get('manual_request') is True or self.scope(scoped))
+
+    def dashboard_state(self):
+        return {
+            'workspace': self.c['state_dir'],
+            'counts': dict(self.db.execute('SELECT status,count(*) FROM jobs GROUP BY status')),
+            'catalog_key': (self.c['state_dir'], self.meta('source_stamp'), self.meta('catalog_key'), self.meta('catalog_updated')),
+            'clubs': json.loads(self.meta('club_catalog') or '[]'),
+            'managed': json.loads(self.meta('managed') or '[]'),
+            'league_status': json.loads(self.meta('league_status') or '{}'),
+            'recent': self.recent_results(), 'jobs': self.jobs(),
+            'live_status': self.meta('live_refresh_status'),
+        }
 
     def jobs(self):
         return [dict(r) for r in self.db.execute("SELECT jobs.*,COALESCE(job_custom.editing,0) AS editing, "

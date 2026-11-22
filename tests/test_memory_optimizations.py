@@ -5,9 +5,12 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 import weakref
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from PIL import Image, PngImagePlugin
 from assets import AssetCatalog
+from manual_ui import ManualPanel
 import test_queue_controls as fixtures
 
 
@@ -46,6 +49,47 @@ class MemoryOptimizationTests(unittest.TestCase):
         self.e.close()
         gc.collect()
         self.assertIsNone(old())
+
+    def test_expired_unchanged_catalog_is_reused_but_xml_changes_are_seen(self):
+        folder = self.e.c['portraits_dir']
+        catalog = self.e.asset_catalog(folder)
+        checked = self.e._asset_catalogs[folder][0]
+        with patch('engine.time.monotonic', return_value=checked + 61), patch('engine.AssetCatalog', side_effect=AssertionError('unnecessary rebuild')):
+            self.assertIs(self.e.asset_catalog(folder), catalog)
+        xml = Path(folder) / 'config.xml'
+        xml.write_text('<record><list><record from="2" to="graphics/pictures/person/404/portrait"/></list></record>')
+        with patch('engine.time.monotonic', return_value=checked + 122):
+            replacement = self.e.asset_catalog(folder)
+        self.assertIsNot(replacement, catalog)
+        self.assertEqual(replacement.face('404')[0], Path(folder) / '2.png')
+
+    def test_manual_preview_is_small_and_original_reference_is_unchanged(self):
+        photo = self.fixture.root / 'large.png'
+        with Image.new('RGB', (2048, 1024), 'gray') as image:
+            image.save(photo)
+        original = photo.read_bytes()
+        panel = SimpleNamespace(player={'id': '1'}, parent=Mock(), reference_name=Mock(),
+                                remove_photo_button=Mock(), draw_reference=Mock())
+        with patch('manual_ui.filedialog.askopenfilename', return_value=str(photo)):
+            ManualPanel.choose_reference(panel)
+        self.addCleanup(panel.reference_image.close)
+        self.assertEqual(panel.reference_image.size, (512, 256))
+        self.assertEqual(panel.reference_path, str(photo))
+        self.assertEqual(photo.read_bytes(), original)
+
+    def test_catalog_detects_xml_rewrite_even_when_size_and_mtime_are_preserved(self):
+        folder = self.e.c['portraits_dir']
+        xml = Path(folder) / 'config.xml'
+        xml.write_text('<record><record from="2" to="graphics/pictures/person/404/portrait"/></record>')
+        catalog = self.e.asset_catalog(folder)
+        original = xml.stat()
+        xml.write_text(xml.read_text().replace('/404/', '/405/'))
+        os.utime(xml, ns=(original.st_atime_ns, original.st_mtime_ns))
+        checked = self.e._asset_catalogs[folder][0]
+        with patch('engine.time.monotonic', return_value=checked + 61):
+            replacement = self.e.asset_catalog(folder)
+        self.assertIsNot(replacement, catalog)
+        self.assertEqual(replacement.face('405')[0], Path(folder) / '2.png')
 
     def test_recent_cards_refill_past_corruption_and_detect_an_old_file_rewritten(self):
         paths = []

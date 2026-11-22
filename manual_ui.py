@@ -102,7 +102,7 @@ class ManualPanel:
         if not chosen:
             return
         try:
-            data = reference_png(chosen)
+            data = reference_png(chosen, size=(512, 512))
             with Image.open(BytesIO(data)) as image:
                 preview = image.copy()
         except (OSError, ValueError) as exc:

@@ -1,12 +1,14 @@
 """Read-only discovery and ID mapping for existing FM facepacks and 2D kits."""
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from io import BytesIO
+import hashlib
 import os
 from pathlib import Path
 import re
 import random
+import stat
 import xml.etree.ElementTree as ET
 
 
@@ -48,6 +50,18 @@ class MissingKitError(AssetError):
 
 def _under(path, root):
     return path == root or path.is_relative_to(root)
+
+
+def asset_stamp(path):
+    try:
+        info = path.stat()
+        checksum = None
+        if stat.S_ISREG(info.st_mode) and path.name.lower() == 'config.xml' and info.st_size <= 64 * 1024 * 1024:
+            with path.open('rb') as stream:
+                checksum = hashlib.file_digest(stream, 'sha256').digest()
+        return info.st_mtime_ns, info.st_size, info.st_ino, checksum
+    except OSError:
+        return None
 
 
 def source_exclusions(config, folder):
@@ -119,6 +133,7 @@ class AssetCatalog:
         self.textures = 0
         self.texture_paths = set()
         self.candidates = {}
+        self.stamps = {}
         configs = []
         directories, files = 0, 0
         for folder, dirs, names in os.walk(self.root, followlinks=False, onerror=self._walk_error):
@@ -128,6 +143,7 @@ class AssetCatalog:
             if directories > 20000:
                 raise AssetError("검색 폴더가 너무 큽니다. 개별 페이스팩/키트 폴더를 선택하세요.")
             base = Path(folder)
+            self.stamps[base] = asset_stamp(base)
             managed = (base / ".fm-face-owner").is_file()
             shared = (base / ".fm-face-shared").is_file()
             if managed and not shared and not allow_managed:
@@ -155,6 +171,7 @@ class AssetCatalog:
         for path in configs:
             if stop is not None and stop.is_set():
                 raise AssetError("검색을 취소했습니다.")
+            self.stamps[path] = asset_stamp(path)
             self._read_config(path)
         for stem in list(self.direct):
             self.direct[stem].difference_update(self.texture_paths)
@@ -163,6 +180,9 @@ class AssetCatalog:
 
     def _walk_error(self, error):
         self.warnings.append(f"폴더 읽기 실패: {error.filename}")
+
+    def changed(self):
+        return any(asset_stamp(path) != stamp for path, stamp in self.stamps.items())
 
     def _folder_priority(self, folder):
         return tuple(part.casefold() for part in folder.relative_to(self.root).parts)
@@ -202,11 +222,15 @@ class AssetCatalog:
             # Graphics mappings never need a DTD or entities.
             if b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
                 raise ValueError("DTD/엔티티를 포함한 XML")
-            records = []
+            records = deque()
             textures = 0
             texture_paths = set()
             # Don't publish a partially parsed malformed XML into the catalog.
-            for _, element in ET.iterparse(BytesIO(data), events=("end",)):
+            parents = []
+            for event, element in ET.iterparse(BytesIO(data), events=('start', 'end')):
+                if event == 'start':
+                    parents.append(element)
+                    continue
                 if element.tag == "record" and "to" in element.attrib:
                     target = element.get("to", "").replace("\\", "/").strip("/")
                     face, kit = FACE.fullmatch(target), KIT.fullmatch(target)
@@ -220,10 +244,14 @@ class AssetCatalog:
                         records.append((face.group(1).lower() if face else None,
                                         (kit.group(1), kit_variant(kit.group(2))) if kit else None, path))
                 element.clear()
+                parents.pop()
+                if parents:
+                    parents[-1].remove(element)
             self.textures += textures
             self.texture_paths.update(texture_paths)
             priority = self._folder_priority(xml.parent)
-            for face, kit, path in records:
+            while records:
+                face, kit, path = records.popleft()
                 if face:
                     self._record_face(face, path, priority)
                 if path is None:
@@ -316,7 +344,7 @@ class AssetCatalog:
         return found
 
 
-def reference_png(path):
+def reference_png(path, size=None):
     """Decode the chosen file only and stage its actual content as PNG."""
     from PIL import Image, ImageOps
     path = Path(path)
@@ -325,6 +353,8 @@ def reference_png(path):
     with Image.open(path) as image:
         if image.width > 8192 or image.height > 8192:
             raise AssetError("참조 이미지가 너무 큽니다. 8192px 이하의 이미지를 사용하세요.")
+        if size is not None:
+            image.thumbnail(size, Image.Resampling.LANCZOS)
         image.load()
         staged = ImageOps.exif_transpose(image).convert("RGBA")
         out = BytesIO()

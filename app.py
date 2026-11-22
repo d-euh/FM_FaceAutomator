@@ -63,6 +63,8 @@ class App:
         self.thread = None
         self.watching = False
         self.request_thread = None
+        self.dashboard_thread = None
+        self.dashboard_token = 0
         self.auth_thread = None
         self.auth_logging_in = False
         self.auth_cancel = threading.Event()
@@ -85,6 +87,8 @@ class App:
         self.queue_drag = None
         self.player_search_token = 0
         self.manual_search_token = 0
+        self.search_lock = threading.Lock()
+        self.search_requests, self.search_threads, self.search_cancel = {}, {}, {}
         self.manual_refresh_requested = False
         self.status = tk.StringVar(value="경로와 범위를 확인하고 감시를 시작하세요.")
         self.scope_summary = tk.StringVar(value="내가 맡은 구단만 · 방출·영입 모두")
@@ -386,22 +390,20 @@ class App:
             draft = self.config if self.active() else self.config | {"scope_rules": self.scope_panel.value()} | self.scope_panel.player_config()
             self.scope_summary.set(scope_rules.describe(draft))
 
-    def update_dashboard(self, engine):
-        counts = {r[0]: r[1] for r in engine.db.execute("SELECT status,count(*) FROM jobs GROUP BY status")}
+    def update_dashboard(self, state):
+        counts = state['counts']
         for key, var in self.metric_vars.items():
             var.set(str(counts.get(key, 0)))
-        catalog_key = (self.config["state_dir"], engine.meta("source_stamp"), engine.meta("catalog_key"), engine.meta("catalog_updated"))
+        catalog_key = state['catalog_key']
         if catalog_key != self.catalog_key:
             self.catalog_key = catalog_key
-            self.scope_panel.set_catalog(json.loads(engine.meta("club_catalog") or "[]"),
-                                         json.loads(engine.meta("managed") or "[]"), json.loads(engine.meta("league_status") or "{}"))
-            self.manual_panel.set_catalog(json.loads(engine.meta('club_catalog') or '[]'), self.config['state_dir'])
-        state = self.config["state_dir"]
+            self.scope_panel.set_catalog(state['clubs'], state['managed'], state['league_status'])
+            self.manual_panel.set_catalog(state['clubs'], state['workspace'])
         selected = self.recent_results[self.recent_index]["id"] if self.recent_results and self.recent_index else None
-        if state != self.recent_state:
+        if state['workspace'] != self.recent_state:
             selected = None
-        self.recent_state = state
-        self.recent_results = engine.recent_results()
+        self.recent_state = state['workspace']
+        self.recent_results = state['recent']
         self.recent_index = next((i for i, item in enumerate(self.recent_results) if item["id"] == selected), 0)
         self.show_recent()
 
@@ -990,10 +992,12 @@ class App:
                 messagebox.showerror("감지 진단", str(exc))
 
     def selected(self):
-        selection = self.tree.selection()
-        return int(selection[0]) if len(selection) == 1 else None
+        selection = self.selected_ids()
+        return selection[0] if len(selection) == 1 else None
 
     def selected_ids(self):
+        if not self.queue_signature or self.queue_signature[0] != self.config['state_dir']:
+            return []
         selected = set(self.tree.selection())
         return [int(item) for item in self.tree.get_children() if item in selected]
 
@@ -1003,29 +1007,42 @@ class App:
 
     def search_scope_players(self, query, ids):
         self.player_search_token += 1
-        token = self.player_search_token
-        database = str(Path(self.config['state_dir']) / 'queue.sqlite')
-        def search():
-            try:
-                available, selected = find_players(database, query, ids)
-                note = None
-            except Exception:
-                available, selected, note = [], [], '선수 목록을 불러오지 못했습니다.'
-            self.events.put({'players': token, 'database': database, 'available': available, 'selected': selected, 'note': note})
-        threading.Thread(target=search, daemon=True).start()
+        self.search_players('players', self.player_search_token, query, ids)
 
     def search_manual_players(self, query, ids):
         self.manual_search_token += 1
-        token = self.manual_search_token
+        self.search_players('manual_players', self.manual_search_token, query, ids)
+
+    def search_players(self, kind, token, query, ids):
+        if self.discovery_stop.is_set():
+            return
         database = str(Path(self.config['state_dir']) / 'queue.sqlite')
-        def search():
+        with self.search_lock:
+            self.search_requests[kind] = (token, database, query, tuple(ids))
+            if kind in self.search_cancel:
+                self.search_cancel[kind].set()
+            if kind not in self.search_threads:
+                thread = threading.Thread(target=self.run_player_search, args=(kind,), daemon=True)
+                self.search_threads[kind] = thread
+                thread.start()
+
+    def run_player_search(self, kind):
+        while True:
+            with self.search_lock:
+                request = self.search_requests.pop(kind, None)
+                if request is None or self.discovery_stop.is_set():
+                    self.search_threads.pop(kind, None)
+                    self.search_cancel.pop(kind, None)
+                    return
+                token, database, query, ids = request
+                cancel = self.search_cancel[kind] = threading.Event()
             try:
-                available, selected = find_players(database, query, ids)
+                available, selected = find_players(database, query, ids, cancel=cancel)
                 note = None
             except Exception:
                 available, selected, note = [], [], '선수 목록을 불러오지 못했습니다.'
-            self.events.put({'manual_players': token, 'database': database, 'available': available, 'selected': selected, 'note': note})
-        threading.Thread(target=search, daemon=True).start()
+            if not cancel.is_set() and not self.discovery_stop.is_set():
+                self.events.put({kind: token, 'database': database, 'available': available, 'selected': selected, 'note': note})
 
     def select(self, event=None):
         count = len(self.tree.selection())
@@ -1161,12 +1178,16 @@ class App:
             return 'break'
 
     def clear_queue(self):
+        if not self.queue_signature or self.queue_signature[0] != self.config['state_dir']:
+            self.status.set('작업 목록이 갱신된 후 다시 실행하세요.')
+            return
         self.cancel_queue_drag()
         engine = Engine(self.config)
         try:
             result = engine.clear_queue()
-            self.refresh_queue(engine)
-            self.update_dashboard(engine)
+            state = engine.dashboard_state()
+            self.refresh_queue(state)
+            self.update_dashboard(state)
             note = f"대기열 {result['removed']}개 삭제"
             if result['retained']:
                 note += f" · 생성·저장·편집 중 {result['retained']}개 유지"
@@ -1190,8 +1211,9 @@ class App:
                     removed += int(engine.remove_job(jid))
                 except ValueError:
                     skipped += 1
-            self.refresh_queue(engine)
-            self.update_dashboard(engine)
+            state = engine.dashboard_state()
+            self.refresh_queue(state)
+            self.update_dashboard(state)
             self.events.put(f'선택 작업 {removed}개 삭제' + (f' · 상태 변경으로 {skipped}개 제외' if skipped else ''))
         except Exception as exc:
             self.status.set(str(exc))
@@ -1211,8 +1233,9 @@ class App:
                 changed = engine.move_job(jid, target_id, after)
             else:
                 changed = engine.remove_job(jid) if action == 'delete' else engine.reorder_job(jid, action)
-            self.refresh_queue(engine)
-            self.update_dashboard(engine)
+            state = engine.dashboard_state()
+            self.refresh_queue(state)
+            self.update_dashboard(state)
             if changed:
                 self.events.put('선택 작업 삭제 완료' if action == 'delete' else '우선순위 변경 완료')
         except Exception as exc:
@@ -1525,19 +1548,20 @@ class App:
         finally:
             engine.close()
 
-    def refresh_queue(self, engine):
+    def refresh_queue(self, state):
+        self.dashboard_token += 1
         if self.queue_drag is not None:
-            if self.queue_drag['workspace'] != engine.c['state_dir']:
+            if self.queue_drag['workspace'] != state['workspace']:
                 self.cancel_queue_drag()
             else:
                 return
-        jobs = engine.jobs()
-        signature = (engine.c['state_dir'], tuple((job['id'],job['data'],job['status'],job['note'],job['editing'],job['has_custom']) for job in jobs))
+        jobs = state['jobs']
+        signature = (state['workspace'], tuple((job['id'],job['data'],job['status'],job['note'],job['editing'],job['has_custom']) for job in jobs))
         if signature == self.queue_signature:
             self.update_job_actions()
             return
         selected, view = self.tree.selection(), self.tree.yview()
-        if self.queue_signature and self.queue_signature[0] != engine.c['state_dir']:
+        if self.queue_signature and self.queue_signature[0] != state['workspace']:
             self.tree.delete(*self.tree.get_children())
             selected, view = (), (0,1)
         self.queue_signature = signature
@@ -1604,10 +1628,65 @@ class App:
         self.scroll_log_to_end()
         self.log.configure(state="disabled")
 
+    def reset_dashboard(self):
+        self.dashboard_token += 1
+        self.cancel_queue_drag()
+        self.tree.delete(*self.tree.get_children())
+        self.queue_signature = None
+        self.job_records = {}
+        self.update_job_actions()
+        self.clear_preview()
+        for variable in self.metric_vars.values():
+            variable.set('0')
+        self.catalog_key = None
+        self.scope_panel.set_catalog([], [], {})
+        self.manual_panel.set_catalog([], self.config['state_dir'])
+
+    def poll_dashboard(self):
+        if self.discovery_stop.is_set() or (self.dashboard_thread is not None and self.dashboard_thread.is_alive()):
+            return
+        self.dashboard_token += 1
+        token = self.dashboard_token
+        config = self.config | {'live_refresh_enabled': bool(self.config.get('live_refresh_enabled') or self.manual_refresh_requested)}
+        active = self.active()
+        manual_refresh = self.manual_refresh_requested
+        def read():
+            engine = None
+            try:
+                engine = Engine(config)
+                if not active or manual_refresh:
+                    engine.pump_live_refresh()
+                event = {'state': engine.dashboard_state()}
+            except Exception as exc:
+                event = {'error': str(exc)}
+            finally:
+                if engine:
+                    engine.close()
+            if not self.discovery_stop.is_set():
+                self.events.put({'dashboard': token, 'workspace': config['state_dir'], **event})
+        self.dashboard_thread = threading.Thread(target=read, daemon=True)
+        self.dashboard_thread.start()
+
     def drain(self):
+        if self.queue_signature and self.queue_signature[0] != self.config['state_dir']:
+            self.reset_dashboard()
         while not self.events.empty():
             text = self.events.get()
             if isinstance(text, dict) and 'worker_done' in text:
+                continue
+            if isinstance(text, dict) and 'dashboard' in text:
+                if text['dashboard'] == self.dashboard_token and text['workspace'] == self.config['state_dir']:
+                    if 'error' in text:
+                        self.status.set(text['error'])
+                    else:
+                        try:
+                            state = text['state']
+                            self.refresh_queue(state)
+                            self.update_dashboard(state)
+                            self.live_status.set((state['live_status'] or '게임 연결 확인 대기')
+                                                 if self.config.get('live_refresh_enabled') or self.manual_refresh_requested else '자동 새로고침 꺼짐')
+                        except Exception as exc:
+                            self.status.set(str(exc))
                 continue
             if isinstance(text, dict) and 'manual_job' in text:
                 if text['workspace_id'] == self.config['state_dir']:
@@ -1642,37 +1721,21 @@ class App:
                                         (not self.active() or (self.watching and not self.stop.is_set())))
         database = Path(self.config["state_dir"]) / "queue.sqlite"
         if database.exists():
-            engine = None
-            try:
-                engine = Engine(self.config | {"live_refresh_enabled": bool(self.config.get("live_refresh_enabled") or self.manual_refresh_requested)})
-                if not self.active() or self.manual_refresh_requested:
-                    engine.pump_live_refresh()
-                self.live_status.set(engine.meta("live_refresh_status") or "게임 갱신 연결 확인 대기" if self.config.get("live_refresh_enabled") or self.manual_refresh_requested else "자동 새로고침 꺼짐")
-                self.update_dashboard(engine)
-                self.refresh_queue(engine)
-            except Exception as exc:
-                self.status.set(str(exc))
-            finally:
-                if engine:
-                    engine.close()
+            self.poll_dashboard()
         else:
-            self.job_records = {}
-            self.update_job_actions()
-            if self.dashboard_key is not None:
-                self.clear_preview()
-            for variable in self.metric_vars.values():
-                variable.set("0")
-            if self.catalog_key is not None:
-                self.catalog_key = None
-                self.scope_panel.set_catalog([], [], {})
-                self.manual_panel.set_catalog([], self.config['state_dir'])
+            if self.queue_signature is not None or self.catalog_key is not None:
+                self.reset_dashboard()
         self.window.after(1500, self.drain)
 
     def close(self):
         self.cancel_queue_drag()
         self.discovery_stop.set()
         self.auth_cancel.set()
-        if self.active() or self.auth_active() or self.request_active():
+        with self.search_lock:
+            self.search_requests.clear()
+            for cancel in self.search_cancel.values():
+                cancel.set()
+        if self.active() or self.auth_active() or self.request_active() or (self.dashboard_thread is not None and self.dashboard_thread.is_alive()):
             if self.active():
                 self.pause()
             self.status.set("종료 대기 · 현재 작업과 로그인 창을 정리한 뒤 닫습니다.")
@@ -1681,7 +1744,7 @@ class App:
             self.window.destroy()
 
     def finish_close(self):
-        if self.active() or self.auth_active() or self.request_active():
+        if self.active() or self.auth_active() or self.request_active() or (self.dashboard_thread is not None and self.dashboard_thread.is_alive()):
             self.window.after(500, self.finish_close)
         else:
             self.window.destroy()

@@ -6,13 +6,15 @@ import sqlite3
 from contextlib import closing
 
 
-def find_players(database, query="", selected_ids=(), limit=150):
+def find_players(database, query="", selected_ids=(), limit=150, *, cancel=None):
     database = Path(database)
-    if not database.is_file():
+    if not database.is_file() or (cancel is not None and cancel.is_set()):
         return [], []
     columns = "id,json_extract(data,'$.name') AS name,json_extract(data,'$.english_name') AS english_name,json_extract(data,'$.club_name') AS club_name,json_extract(data,'$.club_id') AS club_id,json_extract(data,'$.identity') AS identity"
     with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
         db.row_factory = sqlite3.Row
+        if cancel is not None:
+            db.set_progress_handler(lambda: int(cancel.is_set()), 1000)
         db.create_function("casefold", 1, lambda text: str(text or "").casefold())
         query = query.strip().casefold()
         rows = db.execute(f"SELECT {columns} FROM people WHERE ?='' OR id=? OR instr(casefold(json_extract(data,'$.name') || ' ' || COALESCE(json_extract(data,'$.english_name'),'') || ' ' || COALESCE(json_extract(data,'$.club_name'),'')),?)>0 ORDER BY casefold(json_extract(data,'$.name')),id LIMIT ?", (query, query, query, min(150, max(1, limit)))).fetchall()
