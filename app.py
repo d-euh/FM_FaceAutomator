@@ -53,7 +53,7 @@ def set_app_icon(window):
 class App:
     def __init__(self, window, config_path):
         self.window, self.path = window, Path(config_path).resolve()
-        first_launch = not self.path.exists()
+        self.open_settings_after_discovery = not self.path.exists()
         self.events = queue.Queue()
         self.stop = threading.Event()
         self.cancel_current = threading.Event()
@@ -202,8 +202,6 @@ class App:
         self.window.after(100, self.auto_paths)
         self.window.after(500, self.drain)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
-        if first_launch:
-            self.window.after_idle(self.open_settings)
 
     def open_advanced(self):
         self.advanced_window.deiconify()
@@ -211,6 +209,7 @@ class App:
         self.advanced_window.focus_set()
 
     def open_settings(self):
+        self.open_settings_after_discovery = False
         self.settings_window.deiconify()
         self.settings_window.lift()
         self.settings_window.focus_set()
@@ -711,6 +710,8 @@ class App:
         scan_id = self.path_scan
         self.path_scanning = True
         self.path_status.set("폴더·최신 세이브·Codex 경로 자동 확인 중… 확인된 경로는 기본값에 채웁니다.")
+        if self.open_settings_after_discovery:
+            self.status.set("초기 설정 · 경로 자동 확인 중… 완료되면 폴더 · 연결 창이 열립니다.")
         snapshot = {key: self.vars[key].get() for key in ("source", "portraits_dir", "kits_dir", "pack_dir", "graphics_root", "codex")}
         config = dict(self.config)
         for key, value in snapshot.items():
@@ -749,6 +750,8 @@ class App:
         self.path_status.set(text)
         self.last_discovery_inputs = {key: self.vars[key].get() for key in result["snapshot"]}
         self.events.put(text)
+        if self.open_settings_after_discovery:
+            self.open_settings()
         if self.start_after_discovery:
             self.start_after_discovery = False
             self.start()

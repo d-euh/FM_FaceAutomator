@@ -29,12 +29,31 @@ class FirstLaunchTests(unittest.TestCase):
         for timer in self.root.tk.call('after', 'info'):
             self.root.after_cancel(timer)
 
+    def discovery_result(self, app, updates=None, notes=None):
+        return dict(path_scan=app.path_scan,
+                    snapshot={key: app.vars[key].get() for key in ('source', 'portraits_dir', 'kits_dir', 'pack_dir', 'graphics_root', 'codex')},
+                    updates=updates or {}, notes=notes or [])
+
     def test_first_launch_opens_settings_once_and_next_launch_starts_at_home(self):
         app = App(self.root, self.path)
         self.root.update()
+        self.assertEqual(app.settings_window.state(), 'withdrawn')
+        source = str(self.path.parent / 'career.fm')
+        result = self.discovery_result(app, {'source': source})
+        app.path_scan += 1
+        app.accept_paths(result)
+        self.assertEqual(app.settings_window.state(), 'withdrawn')
+        result['path_scan'] = app.path_scan
+        app.accept_paths(result)
+        self.root.update()
         self.assertEqual(app.settings_window.state(), 'normal')
+        self.assertEqual(app.vars['source'].get(), source)
+        self.assertTrue(app.path_status.get().startswith('경로 확인 완료'))
         self.assertTrue(self.path.is_file())
         app.settings_window.withdraw()
+        self.root.update()
+        self.assertEqual(app.settings_window.state(), 'withdrawn')
+        app.accept_paths(self.discovery_result(app))
         self.root.update()
         self.assertEqual(app.settings_window.state(), 'withdrawn')
         self.cancel_callbacks()
@@ -53,3 +72,22 @@ class FirstLaunchTests(unittest.TestCase):
         self.assertEqual(app.settings_window.state(), 'withdrawn')
         self.assertEqual(app.tabs.select(), str(app.home_tab))
         self.assertEqual(self.path.read_text(encoding='utf-8'), saved)
+        app.accept_paths(self.discovery_result(app))
+        self.root.update()
+        self.assertEqual(app.settings_window.state(), 'withdrawn')
+
+    def test_failed_search_still_opens_first_launch_settings_for_manual_selection(self):
+        app = App(self.root, self.path)
+        app.accept_paths(self.discovery_result(app, notes=['검색 실패']))
+        self.root.update()
+        self.assertEqual(app.settings_window.state(), 'normal')
+        self.assertIn('검색 경고 1건', app.path_status.get())
+
+    def test_manual_open_and_close_during_search_is_not_reopened_on_completion(self):
+        app = App(self.root, self.path)
+        app.open_settings()
+        self.root.update()
+        app.settings_window.withdraw()
+        app.accept_paths(self.discovery_result(app))
+        self.root.update()
+        self.assertEqual(app.settings_window.state(), 'withdrawn')
