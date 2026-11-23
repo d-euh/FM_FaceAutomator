@@ -11,6 +11,7 @@ from engine import DEFAULTS, Engine, detection_messages, file_stamp, normalise
 from save_teams import BUILD, VERSION, read_roles, roles_from_table
 from scope_rules import DEFAULT_SCOPE
 from gunzo import LAYOUT
+from team_reader import GameWait
 
 
 def role(index, club, kind):
@@ -198,7 +199,7 @@ class SaveSquadEngineTests(unittest.TestCase):
                 self.assertEqual(row['squad_evidence']['outgoing']['kind'], 'unknown')
         self.engine._team_reader.resolve.assert_not_called()
 
-    def test_existing_workspace_forces_one_read_without_duplicate_jobs(self):
+    def test_existing_game_wait_resumes_after_save_backend_migration_without_game_query(self):
         self.ingest(500, 1)
         self.ingest(501, 3)
         snapshot = normalise({'players': [dict(id=1, uid=10, name='Alex Example', club_id=501,
@@ -206,12 +207,23 @@ class SaveSquadEngineTests(unittest.TestCase):
             'source_stamp': list(file_stamp(self.c['source'])), 'squad_status': dict(mode='save', build=BUILD, version=VERSION),
             'save_squads': {'1': role(1, 500, 'reserve'), '3': role(3, 501, 'first')}})
         self.engine.setmeta('squad_status', '{}')
+        self.engine._team_reader.resolve.side_effect = GameWait(
+            '게임의 진행/저장이 끝나고 세이브가 열리면 자동으로 재개합니다.')
+        self.assertIsNone(self.engine.next_job(1000))
+        self.assertTrue(json.loads(self.job()['data'])['game_wait'])
+        self.engine._team_reader.resolve.reset_mock()
+        self.engine._team_reader.resolve.side_effect = AssertionError('Game still advancing')
         before = len(self.engine.jobs())
         with patch('engine.read_source', return_value=snapshot) as read:
             Engine.refresh(self.engine)
             Engine.refresh(self.engine)
         self.assertEqual(read.call_count, 1)
         self.assertEqual(len(self.engine.jobs()), before)
+        resumed = self.engine.next_job(1000)
+        self.assertIsNotNone(resumed)
+        self.assertNotIn('game_wait', json.loads(resumed['data']))
+        self.engine._team_reader.resolve.assert_not_called()
+        self.engine._team_reader.current_context.assert_not_called()
 
     def test_malformed_optional_status_does_not_break_legacy_snapshot_ingestion(self):
         Path(self.c['source']).write_bytes(b'fixture')
