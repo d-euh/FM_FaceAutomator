@@ -1,5 +1,43 @@
 # Squad classification investigation
 
+## Complete independent club report received 2026-11-23
+
+The updated holdout run completed after 222.599 seconds. It records a transient
+heartbeat wait but has no final error or unverified-results section, and has a
+final query context for the managed team's session. This is actual Windows
+evidence that the revised client can recover from a wait during a long run.
+
+The report covers all planned 24 clubs / 75 distinct teams. Excluding the two
+retained control clubs, 22 clubs / 68 teams are disjoint from the calibration
+cohort at both club-ID and team-ID level. Its source SHA-256 matches the original
+controlled first-team save and the independently generated local sample plan.
+
+The received report's `matches` booleans were not taken on trust. A local read-only
+assertion check reconstructed references again from the saved plan and verified:
+
+- Every received team index, UID, storing club UID, type and first-team boolean.
+- All seven properties for every sampled anchor, including valid null references:
+  168 slots agree, of which **154 belong to the 22 previously unseen clubs**.
+- All 525 repeated property observations returned through the 75 queried team
+  rows also agree with their parent context. These are repeated observations,
+  not 525 independent club-role relationships.
+- All source rows and target sets agree with the local holdout plan; controls
+  are the only overlap with the original cohort.
+
+Across calibration and holdout this gives 47 clubs, 147 distinct queried teams
+and 329 distinct anchor/property slots. There were no mismatches in either
+cohort. Both cohorts are from the same career and game date. Types 22 and 37
+still lack a separate holdout representative; other careers and unobserved flag
+states are not established by these results.
+
+Conclusion: the candidate's reconstruction of the tested native references has
+passed the planned separate-club check. This does not itself assign squad labels
+or integrate the reader into the app. In particular, generic container names and
+a controlled B team's own `IsFirstTeam` boolean retain the contextual caveats
+documented below. Production source/proof handling and arrival/departure scope
+integration remain separate work. No app worker, DLL, game API or settings were
+modified during this verification step. Raw user reports remain outside Git.
+
 ## Partial independent report and wait-budget correction 2026-11-23
 
 The uploaded holdout report contains 52 of the planned 75 team responses from one

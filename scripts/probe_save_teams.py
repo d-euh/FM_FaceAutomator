@@ -116,9 +116,9 @@ def read_team_table(data, build, owners):
 
 
 def candidate_references(club):
-    """Experimental reconstruction fitted to one native report, not a classifier.
+    """Research reconstruction checked on two club cohorts in one career, not a classifier.
 
-    The low flag bit and type sets require independent validation. In particular,
+    Other careers, rare types and unobserved flag states remain unverified. In particular,
     container/YouthTeam3 names do not establish that their targets are youth teams.
     """
     observed = {0, 1, 3, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 36, 37}
