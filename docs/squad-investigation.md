@@ -1,5 +1,62 @@
 # Squad classification investigation
 
+## Application integration 2026-11-23
+
+The verified decoder now lives in `save_teams.py`; the original research import
+path remains a compatibility shim. App source reads for save build
+`27.1.0+2505117` decode the table once and reconstruct references using the native
+observations. Production restricts type/prefix-state combinations to those
+observed in the supplied reports and reference-based roles to at most three
+participating subteams, the largest observed structure. Unseen shapes remain
+unknown; a verified primary team does not depend on unverified sibling refs.
+The existing role validator is reused with evidence explicitly marked
+`source: save`, not presented as an actual live API response. Owner mismatch
+(including a controlled B team relative to its parent) remains unknown as before.
+
+`read_source()` returns shared team evidence and a backend status. `Engine.ingest`
+updates its owned `save_squads` SQLite table atomically with the player baseline
+and snapshot metadata. Evidence is not copied into every player's row or loaded
+as a full JSON map for each job. Upgraded workspaces force one source read even
+when the file stamp is unchanged; existing settings, baseline, jobs, paid results
+and images are retained. The parser version controls subsequent refreshes.
+
+Restricted-scope preflight reads matching team/club evidence from that snapshot
+without a live game context. Arrivals use the latest registered team. Departures
+freeze the previous snapshot's known evidence when leaving a club and retain it
+in the last-registration record across free-agent gaps. Older jobs without this
+new evidence retain their recorded source-team IDs and resolve them from the
+saved table. Invalid historical owner/index/version data stays unknown.
+Save-based authorization proofs are tied to source snapshot, membership,
+direction/settings and reader version, not a running game epoch. File writes
+still wait for a stable save; no new pre-save live query is introduced.
+
+Decode failure on the supported build stays in save mode with an explicit error
+and no native fallback or AI authorization. Existing supported older-save builds
+retain their previous native path. No native API, DLL, Steam profile/hash guard,
+or graphics-refresh behavior was changed. The build scope was not widened.
+
+Validation includes restart/proof reuse, migration without duplicate jobs,
+direction-specific transfers and a free-agent gap, unknown-structure no-AI/no-DLL
+behavior, source-change waits, invalid historical evidence, unverified fourth
+subteams, and applying an already rendered image while preserving unrelated
+PNG/XML records. Original saves are not rewritten. Full real-file decoding and
+ingestion were also run without a game process: 95,386 players, 47,155 teams,
+20.139 seconds read and 1.484 seconds ingest on this Linux cloud host. All 154
+role observations across the two native reports (147 distinct teams) agree with
+the existing classifier, including its unknown-owner cases.
+
+The same host's pre-change source read measured 17.428 seconds / 768.9 MiB peak
+RSS; the new full read/ingest process peaked at 793.4 MiB. These are process
+measurements, not Windows app benchmarks or proof of bounded whole-app RAM.
+The new path removes subsequent live team-query waits; it does not eliminate
+save decompression/player parsing. Windows EXE build and integrated Windows app
+execution remain unverified here. Synthetic transfers and paid-image reuse tests
+are separate from the user's actual native-report evidence.
+The shared table also records its own source stamp, so updating a baseline with
+an older app cannot make stale team data appear current. The final Python suite
+passed 435 tests, including this cache-stamp regression and malformed optional
+metadata handling. No additional dependencies were introduced.
+
 ## Complete independent club report received 2026-11-23
 
 The updated holdout run completed after 222.599 seconds. It records a transient

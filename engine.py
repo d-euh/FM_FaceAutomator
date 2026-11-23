@@ -27,6 +27,7 @@ import facepack
 import scope_rules
 import squad_types
 from team_reader import GameWait, TeamReader, TeamReadPending, snapshot_key
+import save_teams
 import live_refresh
 from league_catalog import read_catalog
 from workspaces import select_workspace, source_key
@@ -361,6 +362,9 @@ def detection_messages(summary):
     league_status = summary.get("league_status", {})
     if league_status.get("error"):
         messages.append(league_status["error"])
+    squad_status = summary.get('squad_status') or {}
+    if isinstance(squad_status, dict) and squad_status.get('error'):
+        messages.append(squad_status['error'])
     return messages
 
 
@@ -387,6 +391,7 @@ def read_source(config):
                 if save.info.game != "FM27" or (not save.info.known_build and save.info.build not in COMPATIBLE_FM27_BUILDS):
                     raise ValueError(f"검증 대상 외 게임 빌드: {save.info.game} {save.info.build}")
                 clubs = {c.uid: c for c in save.clubs()}
+                saved_squads, squad_status = save_teams.read_roles(save, clubs)
                 catalog, league_status = read_catalog(save, clubs, save.info.game_date, scope_rules.needs_leagues(config))
                 managed = []
                 for m in save.managed_clubs():
@@ -423,6 +428,7 @@ def read_source(config):
                                     "catalog_key": "leagues" if scope_rules.needs_leagues(config) else "clubs",
                                     "game_date": str(save.info.game_date or ""),
                                     "build": save.info.build,
+                                    "save_squads": saved_squads, "squad_status": squad_status,
                                     "reader_mode": "registered" if save.info.known_build else "compatible"})
     else:
         raise ValueError("입력은 .fm 세이브 또는 정규화된 .json이어야 합니다.")
@@ -496,6 +502,7 @@ class Engine:
           CREATE TABLE IF NOT EXISTS job_order(job_id INTEGER PRIMARY KEY, position INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS paid_results(job_id INTEGER PRIMARY KEY, folder TEXT NOT NULL, options TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS queue_hidden(job_id INTEGER PRIMARY KEY);
+          CREATE TABLE IF NOT EXISTS save_squads(team_id INTEGER PRIMARY KEY, club_id TEXT NOT NULL, data TEXT NOT NULL);
         """)
         original = self.meta("source")
         if original and source_key(original) != source_key(config["source"]):
@@ -665,6 +672,8 @@ class Engine:
                    "queued": 0, "tracked": [], "changes": [], "missing_player_ids": [],
                    "managed_club_ids": snapshot.get("managed_club_ids", [])}
         summary["league_status"] = snapshot.get("league_status", {})
+        status = snapshot.get('squad_status') or {}
+        summary['squad_status'] = dict(status) if isinstance(status, dict) and Path(self.c['source']).suffix.lower() == '.fm' else {}
         requested = set(self.c["player_ids"])
         with self.db:
             # Count only distinct, successfully parsed on-disk updates. First
@@ -696,7 +705,7 @@ class Engine:
                 row.pop('last_squad_registration', None)
                 row["league_ids"] = clubs.get(row["club_id"], {}).get("league_ids", row.get("league_ids", []))
                 for field in ("from_club_id", "from_club_name", "from_league_ids", 'transfer_type', 'transfer_type_reason',
-                              'from_team_id', 'from_registered_club_id', 'squad_evidence', 'squad_lookup_note', 'squad_proof'):
+                              'from_team_id', 'from_registered_club_id', 'from_squad_role', 'squad_evidence', 'squad_lookup_note', 'squad_proof'):
                     row.pop(field, None)
                 old_club = before["club_id"] if before and before["identity"] == row["identity"] else ""
                 if not old_club and before and before["identity"] == row["identity"]:
@@ -712,11 +721,15 @@ class Engine:
                             'registered_team_id': before.get('last_registered_team_id')})
                 source_registration = None
                 if previous_registration and previous_registration['club_id'] == old_club:
-                    source_registration = previous_registration
+                    source_registration = dict(previous_registration)
+                    if (row['club_id'] != old_club and 'evidence' not in source_registration
+                            and self.save_squad_backend()):
+                        source_registration['evidence'] = self.saved_squad(source_registration['team_id'], old_club)
                 observed_registration = squad_types.registration(row)
                 if observed_registration or previous_registration:
-                    row['last_squad_registration'] = observed_registration or previous_registration
+                    row['last_squad_registration'] = observed_registration or source_registration or previous_registration
                 event = dict(row, from_team_id=source_registration['team_id'] if source_registration else None,
+                             from_squad_role=source_registration.get('evidence') if source_registration else None,
                              from_registered_club_id=source_registration['club_id'] if source_registration else old_club,
                              from_club_id=old_club,
                              from_club_name=clubs.get(old_club, {}).get("name", before["club_name"] if before else ""),
@@ -771,6 +784,16 @@ class Engine:
                     self.db.execute("UPDATE jobs SET status='superseded',note='선수 목록에서 사라짐' WHERE player_id=? AND status IN ('pending','blocked','generated','running','apply_failed')", (old[0],))
                     self.db.execute("DELETE FROM people WHERE id=?", (old[0],))
             self.setmeta("baseline", "1")
+            self.db.execute('DELETE FROM save_squads')
+            status = summary['squad_status']
+            if Path(self.c['source']).suffix.lower() == '.fm' and status.get('version') == save_teams.VERSION:
+                status['source_stamp'] = snapshot.get('source_stamp')
+                self.db.executemany('INSERT INTO save_squads VALUES (?,?,?)',
+                    ((int(index), role['club_id'], json.dumps(role, ensure_ascii=False))
+                     for index, role in snapshot.get('save_squads', {}).items()))
+            else:
+                status = {}
+            self.setmeta('squad_status', json.dumps(status, ensure_ascii=False))
             self.finish_new_jobs(new_jobs)
             if "source_stamp" in snapshot:
                 self.setmeta("source_stamp", json.dumps(snapshot["source_stamp"]))
@@ -788,7 +811,10 @@ class Engine:
     def refresh(self):
         stamp = list(file_stamp(self.c["source"]))
         need_catalog = self.meta("club_catalog") is None or (scope_rules.needs_leagues(self.c) and self.meta("catalog_key") != "leagues")
-        if json.loads(self.meta("source_stamp") or "null") != stamp or need_catalog:
+        squad_status = json.loads(self.meta('squad_status') or '{}')
+        need_squads = Path(self.c['source']).suffix.lower() == '.fm' and (
+            squad_status.get('version') != save_teams.VERSION or squad_status.get('source_stamp') != stamp)
+        if json.loads(self.meta("source_stamp") or "null") != stamp or need_catalog or need_squads:
             return self.ingest(read_source(self.c))
         return 0
 
@@ -1179,13 +1205,37 @@ class Engine:
         if lock:
             lock.__exit__(None, None, None)
 
+    def save_squad_backend(self):
+        status = json.loads(self.meta('squad_status') or '{}')
+        return (status.get('mode') == 'save' and status.get('version') == save_teams.VERSION
+                and status.get('build') == save_teams.BUILD)
+
+    def saved_squad(self, index, club):
+        found = self.db.execute('SELECT club_id,data FROM save_squads WHERE team_id=?', (index,)).fetchone()
+        status = json.loads(self.meta('squad_status') or '{}')
+        stamp = json.loads(self.meta('source_stamp') or 'null')
+        current = status.get('source_stamp') == stamp
+        if current and found and found['club_id'] == str(club):
+            evidence = json.loads(found['data'])
+        else:
+            evidence = {'kind': 'unknown', 'source': 'save', 'build': save_teams.BUILD,
+                        'registered_team_id': index, 'club_id': str(club),
+                        'reason': ('세이브 팀 구분 캐시가 현재 스냅샷과 다릅니다.' if not current else None)
+                                  or status.get('error') or ('세이브 팀의 저장 구단과 판정 구단이 다릅니다.' if found
+                                   else '세이브에서 등록 팀의 구분을 확인하지 못했습니다.')}
+        return evidence | {'reader_version': save_teams.VERSION,
+            'snapshot': snapshot_key(self.c['source'], stamp)}
+
     def squad_proof_key(self, row):
         stamp = json.loads(self.meta('source_stamp') or 'null')
+        status = json.loads(self.meta('squad_status') or '{}')
         membership = ('id', 'identity', 'club_id', 'registered_team_id', 'registered_club_id',
                       'club_basis', 'from_club_id', 'from_team_id', 'from_registered_club_id',
-                      'league_ids', 'from_league_ids')
+                      'league_ids', 'from_league_ids', 'from_squad_role')
         settings = ('scope_rules', 'player_ids', 'exclude_player_ids', 'max_age')
         values = {'snapshot': snapshot_key(self.c['source'], stamp),
+                  'squad_reader': status.get('version'),
+                  'squad_table_snapshot': status.get('source_stamp'),
                   'membership': {key: row.get(key) for key in membership},
                   'settings': {key: self.c.get(key) for key in settings},
                   'managed': sorted(json.loads(self.meta('managed') or '[]'))}
@@ -1202,7 +1252,8 @@ class Engine:
         if squad_types.decision(dict(row, squad_evidence=evidence), self.c['scope_rules'], sides) != 'allow':
             return False
         try:
-            context = self._team_reader.current_context()
+            context = ({'source': 'save', 'version': save_teams.VERSION} if self.save_squad_backend()
+                       else self._team_reader.current_context())
             stamp = json.loads(self.meta('source_stamp') or 'null')
             valid = context is not None and proof.get('context') == context and list(file_stamp(self.c['source'])) == stamp
             if valid:
@@ -1245,6 +1296,7 @@ class Engine:
                     reason = '새 구단 선수단 등록 대기 · 등록 팀 ID를 확인할 수 없습니다.'
                 evidence[side] = {'kind':'unknown','reason':reason}
         note = ''
+        saved_backend = self.save_squad_backend()
         try:
             if targets:
                 with self.db:
@@ -1252,12 +1304,28 @@ class Engine:
                 if Path(self.c['source']).suffix.lower() != '.fm':
                     raise TeamReadPending('팀 구분은 연결한 FM 세이브와 게임에서 확인합니다.')
                 stamp = json.loads(self.meta('source_stamp') or 'null')
-                native = self._team_reader.resolve(list(dict.fromkeys(v[0] for v in targets.values())),
-                    json.loads(self.meta('managed') or '[]'),snapshot_key(self.c['source'],stamp),cancel)
+                if saved_backend:
+                    if list(file_stamp(self.c['source'])) != stamp:
+                        raise GameWait('세이브 변경 중 · 다음 점검에서 팀 구분을 다시 확인합니다.')
+                    for side, (index, club) in targets.items():
+                        frozen = row.get('from_squad_role') if side == 'outgoing' else None
+                        if frozen is not None:
+                            valid = (isinstance(frozen, dict) and frozen.get('source') == 'save'
+                                     and frozen.get('reader_version') == save_teams.VERSION
+                                     and frozen.get('build') == save_teams.BUILD
+                                     and frozen.get('kind') in ('first', 'reserve', 'youth', 'unknown')
+                                     and type(frozen.get('registered_team_id')) is int
+                                     and frozen.get('registered_team_id') == index and frozen.get('club_id') == str(club))
+                            evidence[side] = frozen if valid else {'kind': 'unknown', 'reason': '이전 세이브의 팀 구분 근거를 확인할 수 없습니다.'}
+                        else:
+                            evidence[side] = self.saved_squad(index, club)
+                else:
+                    native = self._team_reader.resolve(list(dict.fromkeys(v[0] for v in targets.values())),
+                        json.loads(self.meta('managed') or '[]'),snapshot_key(self.c['source'],stamp),cancel)
+                    for side,(index,club) in targets.items():
+                        evidence[side] = squad_types.native_role(native.get(index),club)
                 if list(file_stamp(self.c['source'])) != stamp:
                     raise GameWait('세이브 변경 중 · 다음 점검에서 팀 구분을 다시 확인합니다.')
-                for side,(index,club) in targets.items():
-                    evidence[side] = squad_types.native_role(native.get(index),club)
         except TeamReadPending as exc:
             if isinstance(exc, GameWait):
                 row['game_wait'] = True
@@ -1267,10 +1335,12 @@ class Engine:
             for side in targets: evidence[side] = {'kind':'unknown','reason':note}
         row['squad_evidence'] = evidence
         row['squad_lookup_note'] = note
+        context = ({'source': 'save', 'version': save_teams.VERSION} if saved_backend
+                   else self._team_reader.last_context)
         if (squad_types.decision(row, self.c['scope_rules'], sides) == 'allow'
-                and isinstance(self._team_reader.last_context, dict)):
+                and isinstance(context, dict)):
             row['squad_proof'] = {'key': self.squad_proof_key(row),
-                                  'context': self._team_reader.last_context, 'evidence': evidence}
+                                  'context': context, 'evidence': evidence}
         with self.db:
             self.db.execute('UPDATE jobs SET data=? WHERE id=?',(json.dumps(row,ensure_ascii=False),job['id']))
         return row

@@ -1,5 +1,7 @@
 # FM Face Automator · v1.0
 
+**현재 팀 구분:** 검증한 세이브 빌드 `27.1.0+2505117`은 저장된 팀 레코드·구단 참조를 사용해 게임 조회 없이 판정합니다. 영입은 새 팀, 방출은 이전 팀을 기준으로 처리하고 자유계약 경유 시 이전 근거도 보존합니다. 미검증 유형·상태·관계는 AI 호출 없이 보류합니다. 기존 구형 세이브의 DLL 경로와 별도 게임 그래픽 새로고침 기능은 유지합니다. 아래 v0.x의 DLL 설명은 당시 변경 이력이며 현재 사용법은 [README.md](README.md#선수단-구분-필터-사용-v0170--팀-조회-dll-042)를 참고하세요.
+
 FM Newgen Face Studio와 연결하지 않는 독립형 Windows 데스크톱 프로그램입니다. 저장소에는 소스와 Windows 배포 ZIP 빌드 기능을 제공합니다. 받는 사용자는 배포 ZIP을 풀어 Python 설치 없이 실행할 수 있습니다. 미리 빌드한 Windows EXE는 이 저장소에 커밋하지 않습니다.
 
 배포·설치·업데이트는 **[v1.0 빠른 시작 안내](docs/QUICK_START.ko.md)**와 [배포용 README 원문](docs/DISTRIBUTION_README.txt)을 참고하세요. Windows x64에서 Inno Setup 6.3 이상을 설치하고 `build_windows.bat`를 실행하면 **`dist\FMFaceAutomator-v1.0-windows-x64.zip`**을 만듭니다. ZIP에는 **`FMFaceAutomator-Setup-v1.0.exe`와 `README.txt`만** 들어갑니다. Setup은 프로그램·DLL 설치 도구와 바로가기를 설치하며, 기존 프로그램 폴더를 선택하면 프로그램 파일을 백업한 뒤 업데이트하고 설정·작업 기록·페이스팩은 보존합니다. 앱 제거 시에도 사용자 자료와 백업은 남습니다. 기존 `dist\FMFaceAutomator`는 빌드 시 교체하지 않습니다. 기존 포터블 ZIP 방식은 `build_windows.bat --portable`로 유지합니다.
