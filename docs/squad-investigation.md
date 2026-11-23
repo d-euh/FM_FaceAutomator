@@ -1,5 +1,38 @@
 # Squad classification investigation
 
+## Partial independent report and wait-budget correction 2026-11-23
+
+The uploaded holdout report contains 52 of the planned 75 team responses from one
+session/epoch/snapshot, but `native` is null and the run ended at its wait timeout.
+All 52 received team UIDs, storing club UIDs and types match the saved sample.
+Anchors are available for 18 clubs including the two controls: 16 genuinely new
+club anchors supply 112 reference observations, all matching the frozen candidate.
+This is encouraging independent **partial** evidence, not a completed coherent
+holdout result: final connection/context checks and six new club anchors are
+still missing. It must not enable production classification.
+
+Review found a client-side timing defect: the 120-second transient-wait deadline
+started before the entire multi-batch resolve, so successful query time consumed
+the budget too. A slow run could therefore time out on its first transient wait,
+even after making substantial progress. This defect is reproduced synthetically;
+the uploaded report did not capture enough timing/last-wait detail to establish
+that it explains the actual interruption completely.
+
+The diagnostic now resets its no-progress wait baseline when additional cache
+keys appear. This only tracks progress; actual reuse still requires the existing
+session/epoch/snapshot and final managed-club/freshness checks. It retains a
+ten-minute total retry budget, preserves permanent-error handling, and records
+`last_wait_reason` and `query_elapsed_seconds`. Native requests retain their own
+bounded waits and cleanup; no request is forced through a busy game.
+
+Regressions cover a 130-second successful partial collection followed by a brief
+wait and recovery, unchanged-cache timeout, and repeated new epochs eventually
+exhausting the total retry budget. No DLL, game API, app worker or classification
+rule was modified. Actual Windows recovery and the remaining independent samples
+still need an updated diagnostic run.
+The focused Python suite passed 65 tests. All 52 partial observations were also
+checked against the locally generated holdout plan, including its source hash.
+
 ## Complete native calibration and independent sample plan 2026-11-23
 
 The second uploaded report completed: 25 clubs, 79 distinct team rows, no error

@@ -195,26 +195,36 @@ def main():
                   'loaded_save_file_verified': False, 'source': plan, 'native': None,
                   'note': 'Team identities and managed club are checked; the loaded save filename is not exposed by the service.'}
         reader = TeamReader()
+        started = last_progress = reader.clock()
+        received = set(reader.cache)
         try:
-            started, next_notice = reader.clock(), 0
+            next_notice = 0
             while True:
                 try:
                     report['native'] = compare_native(plan, reader)
                     break
-                except GameWait:
+                except GameWait as wait:
                     now = reader.clock()
-                    if now - started >= 120:
-                        raise ValueError('게임 연결 대기 시간이 초과됐습니다. FM27 화면을 확인하고 다시 실행하세요.')
+                    report['last_wait_reason'] = str(wait)
+                    current = set(reader.cache)
+                    if current - received:
+                        last_progress = now
+                    received = current
+                    if now - started >= 600:
+                        raise ValueError('전체 검증 시간이 초과됐습니다. FM27 화면과 마지막 대기 사유를 확인하세요.')
+                    if now - last_progress >= 120:
+                        raise ValueError('새 응답 없이 게임 연결 대기 시간이 초과됐습니다. FM27 화면을 확인하세요.')
                     if now >= next_notice:
                         print('게임 연결 대기 중 · 도구를 유지하고 FM27 화면을 확인하세요.', flush=True)
                         next_notice = now + 5
-                    reader.sleep(min(2, 120 - (now - started)))
+                    reader.sleep(min(2, 120 - (now - last_progress), 600 - (now - started)))
         except Exception as exc:
             report['error'] = str(exc)
             # Keep failed/partial observations for diagnosis, never as verified comparisons.
             report['unverified_native_results'] = [
                 {'session': key[0], 'epoch': key[1], 'snapshot': key[2], 'result': row}
                 for key, row in reader.cache.items()]
+        report['query_elapsed_seconds'] = round(reader.clock() - started, 3)
         write_atomic(args.output, json.dumps(report, ensure_ascii=False, indent=2).encode('utf-8'))
         print('진단 저장: ' + str(args.output.resolve()), flush=True)
         if report.get('error'):

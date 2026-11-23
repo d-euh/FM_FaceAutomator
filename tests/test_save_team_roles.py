@@ -202,6 +202,42 @@ class SaveTeamRoleTests(unittest.TestCase):
         self.assertEqual(len(report['unverified_native_results']), 1)
         self.assertIn('대기 시간이 초과', report['error'])
 
+    def test_successful_batches_do_not_consume_no_progress_wait_budget(self):
+        now, attempts, cached = [0], [], {}
+        def resolve(*args):
+            attempts.append(args)
+            if len(attempts) == 1:
+                now[0] += 130
+                cached[('session', 3, 'a' * 64)] = self.rows[0]
+                raise GameWait('stale heartbeat after successful batches')
+            return self.rows
+        def sleep(seconds):
+            now[0] += seconds
+        reader = SimpleNamespace(resolve=resolve, clock=lambda: now[0], sleep=sleep,
+                                 cache=cached, last_context={'session': 'session', 'generation': 3})
+        code, report = self.run_main(reader)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(report['query_elapsed_seconds'], 132)
+        self.assertNotIn('error', report)
+        self.assertIn('successful batches', report['last_wait_reason'])
+
+    def test_continually_changing_query_epochs_still_have_an_overall_time_bound(self):
+        now, cached = [0], {}
+        def changing(*args):
+            now[0] += 121
+            cached[('session', len(cached) + 1, 'a' * 64)] = self.rows[0]
+            raise GameWait('game keeps changing')
+        def sleep(seconds):
+            now[0] += seconds
+        reader = SimpleNamespace(resolve=changing, clock=lambda: now[0], sleep=sleep, cache=cached)
+        code, report = self.run_main(reader)
+        self.assertEqual(code, 1)
+        self.assertGreaterEqual(report['query_elapsed_seconds'], 600)
+        self.assertLess(report['query_elapsed_seconds'], 725)
+        self.assertIsNone(report['native'])
+        self.assertIn('전체 검증 시간이 초과', report['error'])
+
 
 if __name__ == '__main__':
     unittest.main()
