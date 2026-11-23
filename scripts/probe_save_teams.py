@@ -61,7 +61,8 @@ def _record(data, start, ordinal):
             'start': start, 'footer': position, 'end': position + _FOOTER.size,
             'record_kind': kind, 'roster_count': roster_count, 'owner_index': owner,
             'raw_type': raw_type, 'raw_national': raw_national, 'raw_flag': raw_flag,
-            'raw_age': raw_age, 'names': tuple(names)}
+            'raw_age': raw_age, 'raw_flags': data[start + 1] if kind == 10 else None,
+            'names': tuple(names)}
 
 
 def _walk(data, header, count):
@@ -112,3 +113,28 @@ def read_team_table(data, build, owners):
     if found is None:
         raise ValueError('No complete team table matches club ownership evidence')
     return found
+
+
+def candidate_references(club):
+    """Experimental reconstruction fitted to one native report, not a classifier.
+
+    The low flag bit and type sets require independent validation. In particular,
+    container/YouthTeam3 names do not establish that their targets are youth teams.
+    """
+    observed = {0, 1, 3, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 36, 37}
+    for row in club['teams']:
+        if (type(row.get('raw_type')) is not int or row['raw_type'] not in observed
+                or row.get('raw_national') != 0 or type(row.get('raw_flags')) is not int
+                or not 0 <= row['raw_flags'] <= 255):
+            raise ValueError('Unverified candidate team shape')
+    eligible = [row for row in club['teams']
+                if row['team_id'] != club['anchor_team_id'] and not row['raw_flags'] & 1]
+    def first(types):
+        return next((row['team_id'] for row in eligible if row['raw_type'] in types), None)
+    result = {'Club.ReservesTeam': first({1, 9, 10, 16, 21}),
+              'Club.YouthTeam': first({11, 12, 18, 36, 37})}
+    for index, name in enumerate(('TeamContainer.HighestLevelYouthTeam',
+                                  'TeamContainer.SecondHighestLevelYouthTeam',
+                                  'Club.YouthTeam3', 'Club.YouthTeam4', 'Club.YouthTeam5')):
+        result[name] = eligible[index]['team_id'] if index < len(eligible) else None
+    return result

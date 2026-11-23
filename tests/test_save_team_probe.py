@@ -1,11 +1,11 @@
 import struct
 import unittest
 
-from scripts.probe_save_teams import BUILD, read_team_table
+from scripts.probe_save_teams import BUILD, candidate_references, read_team_table
 
 
 def record(ordinal, owner=7, *, national=False, extra=0, names=('', ''),
-           roster=(), raw_type=0, raw_flag=0, uid=None):
+           roster=(), raw_type=0, raw_flag=0, uid=None, flags=0):
     # Synthetic counted record; no real save bytes or game identities.
     if national:
         prefix = bytearray(88 + 10 * extra)
@@ -13,6 +13,7 @@ def record(ordinal, owner=7, *, national=False, extra=0, names=('', ''),
     else:
         prefix = bytearray(34)
         prefix[0] = 10
+        prefix[1] = flags
     players = struct.pack('<H', len(roster)) + b''.join(struct.pack('<I', p) for p in roster)
     tail = bytes(18) + bytes((raw_type, int(national), raw_flag, 100, 255, 0))
     tail += struct.pack('<I', owner)
@@ -87,6 +88,33 @@ class SaveTeamProbeTests(unittest.TestCase):
                             (table(record(0, national=True)), BUILD)):
             with self.subTest(build=build), self.assertRaises(ValueError):
                 read_team_table(data, build, {0: 7})
+
+    def test_keeps_prefix_flags_separate_from_tail_flag(self):
+        data = table(record(0, flags=21, raw_flag=1))
+        row = read_team_table(data, BUILD, {0: 7})['records'][0]
+        self.assertEqual((row['raw_flags'], row['raw_flag']), (21, 1))
+
+    def test_candidate_preserves_controlled_first_team_in_generic_container(self):
+        def row(tid, typ, flags=0):
+            return dict(team_id=tid, raw_type=typ, raw_national=0, raw_flags=flags)
+        club = dict(anchor_team_id=10, teams=[row(10, 0), row(11, 1, 1),
+                    row(12, 11), row(13, 0), row(14, 0)])
+        predicted = candidate_references(club)
+        self.assertIsNone(predicted['Club.ReservesTeam'])
+        self.assertEqual(predicted['Club.YouthTeam'], 12)
+        self.assertEqual(predicted['TeamContainer.HighestLevelYouthTeam'], 12)
+        self.assertEqual(predicted['TeamContainer.SecondHighestLevelYouthTeam'], 13)
+        self.assertEqual(predicted['Club.YouthTeam3'], 14)
+        self.assertFalse(any(key in predicted for key in ('kind', 'is_first_team')))
+        club['teams'][1]['raw_flags'] = 0
+        self.assertEqual(candidate_references(club)['Club.ReservesTeam'], 11)
+
+    def test_candidate_rejects_unobserved_shapes_instead_of_guessing_roles(self):
+        original = dict(team_id=0, raw_type=0, raw_national=0, raw_flags=0)
+        for changes in ({'raw_type': 255}, {'raw_type': True}, {'raw_flags': None},
+                        {'raw_national': 1}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                candidate_references(dict(anchor_team_id=0, teams=[original | changes]))
 
 
 if __name__ == '__main__':

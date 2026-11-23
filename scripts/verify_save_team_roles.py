@@ -10,7 +10,7 @@ import shutil
 import tempfile
 
 from engine import check_save_reader, write_atomic
-from scripts.probe_save_teams import BUILD, read_team_table
+from scripts.probe_save_teams import BUILD, candidate_references, read_team_table
 from squad_diagnostics import initial_directory, stamp
 from team_reader import GameWait, PROFILE, TeamReader
 
@@ -23,7 +23,7 @@ REFERENCES = ('Club.ReservesTeam', 'Club.YouthTeam', 'Club.YouthTeam3',
               'TeamContainer.SecondHighestLevelYouthTeam')
 
 
-def samples(clubs, records, managed):
+def samples(clubs, records, managed, holdout=False):
     """Cover observed raw-type/name-flag/control-link combinations, without labelling them."""
     preferred = CONTROL_CLUBS | set(managed)
     selected = {uid for uid, c in clubs.items() if c['id'] in preferred}
@@ -35,6 +35,20 @@ def samples(clubs, records, managed):
             if key not in seen:
                 selected.add(uid)
                 seen.add(key)
+    if holdout:
+        baseline = selected
+        baseline_teams = {t['team_id'] for uid in baseline for t in clubs[uid]['teams']}
+        selected = {uid for uid, c in clubs.items() if c['id'] in preferred}
+        seen = set()
+        for uid, club in clubs.items():
+            if uid in baseline or any(t['team_id'] in baseline_teams for t in club['teams']):
+                continue
+            for team in club['teams']:
+                row = records[team['team_id']]
+                key = (row['raw_type'], row['raw_flag'], team['is_affiliate'])
+                if key not in seen:
+                    selected.add(uid)
+                    seen.add(key)
     result = []
     for uid, club in clubs.items():
         if uid not in selected:
@@ -54,7 +68,7 @@ def samples(clubs, records, managed):
     return result
 
 
-def read_save(source):
+def read_save(source, holdout=False):
     import fmsave
     check_save_reader()
     source = Path(source).resolve()
@@ -81,14 +95,15 @@ def read_save(source):
                            if m.club_uid in clubs and type(clubs[m.club_uid]['id']) is int]
                 if not managed:
                     raise ValueError('담당 구단을 확인할 수 있는 세이브가 필요합니다.')
-                plan = samples(clubs, table['records'], managed)
+                plan = samples(clubs, table['records'], managed, holdout)
                 build, date = save.info.build, str(save.info.game_date or '')
         with copy.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         if stamp(source) != before:
             raise ValueError('분석 도중 세이브가 변경됐습니다. 저장이 끝난 뒤 다시 실행하세요.')
     return {'file': source.name, 'sha256': digest, 'build': build, 'game_date': date,
-            'managed_club_ids': managed, 'samples': plan}
+            'managed_club_ids': managed, 'sample_mode': 'holdout' if holdout else 'calibration',
+            'samples': plan}
 
 
 def scalar(row, key):
@@ -130,13 +145,30 @@ def compare_native(plan, reader):
             raw_type = scalar(native, 'TeamType')
             teams.append({'saved': saved, 'native': native, 'parent_reference_matches': matches,
                           'type_matches': type(raw_type) is int and raw_type == saved['raw_type']})
-        compared.append({**club, 'teams': teams})
+        comparison = {**club, 'teams': teams}
+        try:
+            predicted = candidate_references(club)
+            comparison['candidate_references'] = predicted
+            comparison['reference_comparison'] = {}
+            for key, expected in predicted.items():
+                ref = anchor.get('values', {}).get(key)
+                valid = isinstance(ref, dict) and not ref.get('error') and (
+                    (ref.get('is_null') is True and ref.get('record_index') is None)
+                    or (not ref.get('is_null') and ref.get('record_table') == 'Team'
+                    and type(ref.get('record_index')) is int))
+                actual = ref.get('record_index') if valid and not ref.get('is_null') else None
+                comparison['reference_comparison'][key] = {
+                    'predicted': expected, 'native': actual, 'matches': bool(valid and actual == expected)}
+        except ValueError as exc:
+            comparison['candidate_error'] = str(exc)
+        compared.append(comparison)
     return {'context': reader.last_context, 'clubs': compared}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('save', nargs='?', type=Path)
+    parser.add_argument('--holdout', action='store_true', help='Compare new representative clubs, retaining control clubs.')
     parser.add_argument('--output', type=Path, default=ROOT / 'diagnostics' / 'save-team-roles.json')
     args = parser.parse_args()
     window = None
@@ -156,7 +188,7 @@ def main():
         if args.save.suffix.lower() != '.fm' or args.output.suffix.lower() != '.json':
             raise ValueError('입력은 .fm, 출력은 별도의 .json 파일이어야 합니다.')
         print('세이브 복사본의 팀 구조를 읽는 중...', flush=True)
-        plan = read_save(args.save)
+        plan = read_save(args.save, args.holdout)
         count = len({t['team_id'] for c in plan['samples'] for t in c['teams']})
         print(f"{len(plan['samples'])}개 구단 · {count}개 팀 조회 중 · 게임 시간을 진행하지 마세요.", flush=True)
         report = {'kind': 'fm_save_native_team_comparison', 'schema_version': 1, 'profile': PROFILE,

@@ -1,5 +1,56 @@
 # Squad classification investigation
 
+## Complete native calibration and independent sample plan 2026-11-23
+
+The second uploaded report completed: 25 clubs, 79 distinct team rows, no error
+or unverified-results section, and a final query context. Every team UID, storing
+club UID and `TeamType` agrees with the matching controlled first-team save.
+Seventeen distinct type values are covered; all 30 native `IsFirstTeam=True`
+rows have type 0 and the remaining 49 have nonzero types. The physical loaded
+filename remains operator-confirmed rather than exposed by the service.
+
+Important semantic observations:
+
+- Barcelona B is its storing club's first team, but not the parent's
+  `Club.ReservesTeam`; it is the parent's second generic youth-container entry.
+- The generic highest container also selects explicit reserve teams. Likewise,
+  `Club.YouthTeam3` can select a controlled club's own main team. These property
+  names alone must not become squad labels.
+- The same type 1, 9 or 16 can have an explicit reserve reference in one club and
+  no matching reference in another. The type alone is insufficient.
+
+The counted team reader now exposes the club record's prefix flags separately
+from its tail flag. A research-only `candidate_references()` uses the observed
+type sets, the prefix's low bit, and the parent's ordered own/controlled team list
+to reconstruct references. It excludes the parent's identity anchor, not every
+type-0 child. It does not read age, contracts or player slots to classify teams.
+Unsupported type/flag shapes raise rather than receive a guessed role.
+
+This candidate matches all 175 distinct anchor-property slots (25 clubs x 7
+properties), and all 553 observations when the same properties returned through
+the 79 team rows are included. **This is fitting/reconstruction against the data
+used to derive the rule, not independent validation.** The low bit's full meaning
+and behavior in other structures/careers remain unverified. It must not replace
+the production classifier on these results alone.
+
+The diagnostic now has `--holdout` mode and records candidate/native comparisons
+without replacing either. Besides the two control clubs, it excludes every
+original sample club and every previously queried team. The provided first-team
+save selects 22 new clubs / 68 new teams (24 clubs / 75 teams including controls).
+They cover 25 of the original 27 type/flag/control-link combinations independently;
+types 22 and 37 in their observed shapes lack a separate representative. They
+remain unvalidated by the holdout even if all other comparisons pass.
+
+Synthetic regressions cover prefix/tail flag separation, generic containers
+containing controlled main teams, low-bit candidate behavior, unknown shapes,
+nonoverlapping holdout selection and retaining contradictory native evidence.
+No native API, DLL, paid generation, support profile, or production app behavior
+changed. Actual holdout responses are the next required independent evidence;
+the existing saves need not be uploaded again.
+The focused Python run passed 63 tests. A fresh read of the original `.fm` file
+reproduced all 175 anchor comparisons, and the generated holdout plan was checked
+for both club and team disjointness outside the retained controls.
+
 ## Partial native comparison received 2026-11-23
 
 The uploaded `save-team-roles.json` identifies the supplied first-team save by its

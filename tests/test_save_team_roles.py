@@ -19,6 +19,8 @@ class SaveTeamRoleTests(unittest.TestCase):
         self.records = [dict(team_id=0, unique_id=500, raw_type=0, raw_flag=0),
                         dict(team_id=1, unique_id=501, raw_type=0, raw_flag=0),
                         dict(team_id=2, unique_id=800, raw_type=11, raw_flag=1)]
+        for row in self.records:
+            row.update(raw_flags=0, raw_national=0)
         self.clubs = {40: dict(id=500, name='Northbridge', teams=[
                         dict(team_id=0, club_uid=40, is_affiliate=False),
                         dict(team_id=1, club_uid=41, is_affiliate=True),
@@ -77,6 +79,30 @@ class SaveTeamRoleTests(unittest.TestCase):
         result = samples(clubs, self.records, [500])
         self.assertEqual(result[0]['club_id'], 500)
         self.assertEqual({t['team_id'] for c in result for t in c['teams']}, {0, 1, 2})
+
+    def test_holdout_excludes_training_teams_even_when_their_club_was_not_a_parent_sample(self):
+        records = self.records + [dict(team_id=3, unique_id=502, raw_type=0, raw_flag=0),
+                                  dict(team_id=4, unique_id=801, raw_type=11, raw_flag=1)]
+        clubs = deepcopy(self.clubs)
+        clubs[42] = dict(id=502, name='Eastbridge', teams=[
+            dict(team_id=3, club_uid=42, is_affiliate=False),
+            dict(team_id=4, club_uid=42, is_affiliate=False)])
+        baseline = samples(clubs, records, [500])
+        held = samples(clubs, records, [500], holdout=True)
+        self.assertEqual({c['club_id'] for c in baseline}, {500})
+        self.assertEqual({c['club_id'] for c in held}, {500, 502})
+        old_teams = {t['team_id'] for c in baseline for t in c['teams']}
+        new_teams = {t['team_id'] for c in held if c['club_id'] != 500 for t in c['teams']}
+        self.assertFalse(old_teams & new_teams)
+
+    def test_candidate_disagreement_is_reported_without_changing_native_evidence(self):
+        result = compare_native(self.plan, self.reader())
+        parent = next(c for c in result['clubs'] if c['club_id'] == 500)
+        mismatch = parent['reference_comparison']['Club.ReservesTeam']
+        self.assertIsNone(mismatch['predicted'])
+        self.assertEqual(mismatch['native'], 1)
+        self.assertFalse(mismatch['matches'])
+        self.assertEqual(parent['teams'][1]['parent_reference_matches'], ['Club.ReservesTeam'])
 
     def test_mismatched_ids_owners_cleanup_and_nonboolean_anchor_stop_comparison(self):
         original = deepcopy(self.rows)
