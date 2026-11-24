@@ -11,7 +11,6 @@ from engine import DEFAULTS, Engine, detection_messages, file_stamp, normalise
 from save_teams import BUILD, VERSION, read_roles, roles_from_table
 from scope_rules import DEFAULT_SCOPE
 from gunzo import LAYOUT
-from team_reader import GameWait
 
 
 def role(index, club, kind):
@@ -54,7 +53,8 @@ class SaveRoleDecoderTests(unittest.TestCase):
         self.assertIn('error', status)
         source.info.build = '27.0.0+2486695'
         roles, status = read_roles(source, {})
-        self.assertEqual(status['mode'], 'native')
+        self.assertEqual(status['mode'], 'save')
+        self.assertIn('미지원', status['error'])
 
     def test_unverified_fourth_participating_subteam_does_not_gain_a_youth_label(self):
         clubs, rows = self.fixture()
@@ -78,8 +78,6 @@ class SaveSquadEngineTests(unittest.TestCase):
         self.engine = Engine(self.c)
         self.addCleanup(self.engine.db.close)
         self.engine.refresh = lambda: 0
-        self.engine._team_reader.resolve = Mock(side_effect=AssertionError('No game query'))
-        self.engine._team_reader.current_context = Mock(side_effect=AssertionError('No game context'))
         self.counter = 0
 
     def ingest(self, club, team, old_kind='reserve', *, error=None):
@@ -104,7 +102,6 @@ class SaveSquadEngineTests(unittest.TestCase):
         row = self.engine.enrich_squads(self.job())
         self.assertEqual(row['squad_evidence']['outgoing']['kind'], 'reserve')
         self.assertEqual(self.engine.saved_squad(1, '500')['kind'], 'youth')
-        self.engine._team_reader.resolve.assert_not_called()
 
     def test_free_agent_gap_preserves_old_role_and_new_arrival_uses_destination(self):
         self.ingest(500, 1)
@@ -117,7 +114,6 @@ class SaveSquadEngineTests(unittest.TestCase):
         self.c['scope_rules'].update(clubs={'501': 'incoming'}, squad_types=['first'])
         row = self.engine.enrich_squads(self.job())
         self.assertEqual(row['squad_evidence']['incoming']['kind'], 'first')
-        self.engine._team_reader.resolve.assert_not_called()
 
     def test_unknown_save_structure_blocks_ai_and_does_not_use_dll(self):
         self.ingest(500, 1, error='unsupported team structure')
@@ -125,8 +121,20 @@ class SaveSquadEngineTests(unittest.TestCase):
         runner = Mock()
         self.assertFalse(self.engine.run_one(runner))
         runner.assert_not_called()
-        self.engine._team_reader.resolve.assert_not_called()
         self.assertEqual(self.engine.jobs()[0]['status'], 'blocked')
+
+    def test_unsupported_save_blocks_without_connection_wait_or_ai(self):
+        self.ingest(500, 1)
+        self.ingest(501, 3)
+        self.engine.setmeta('squad_status', json.dumps(dict(mode='save', version=VERSION,
+            build='27.0.0+2486695', error='세이브 팀 구분 미지원 빌드')))
+        runner = Mock()
+        self.assertFalse(self.engine.run_one(runner))
+        runner.assert_not_called()
+        self.assertFalse(self.engine.waiting_for_game)
+        self.assertEqual(self.engine.jobs()[0]['status'], 'blocked')
+        self.assertIn('미지원', self.engine.jobs()[0]['note'])
+        self.assertFalse(hasattr(self.engine, '_team_reader'))
 
     def test_save_proof_reuses_without_game_or_second_team_lookup_and_survives_restart(self):
         self.ingest(500, 1)
@@ -134,12 +142,35 @@ class SaveSquadEngineTests(unittest.TestCase):
         self.engine.enrich_squads(self.job())
         reopened = Engine(self.c)
         self.addCleanup(reopened.db.close)
-        reopened._team_reader.current_context = Mock(side_effect=AssertionError('Game not running'))
-        reopened._team_reader.resolve = Mock(side_effect=AssertionError('Game not running'))
         reopened.saved_squad = Mock(side_effect=AssertionError('Saved proof should be reused'))
         row = reopened.enrich_squads(self.job(), reuse=True)
         self.assertEqual(row['squad_evidence']['outgoing']['kind'], 'reserve')
-        reopened._team_reader.current_context.assert_not_called()
+
+    def test_scope_and_registration_changes_invalidate_saved_proof(self):
+        self.ingest(500, 1)
+        self.ingest(501, 3)
+        self.c['scope_rules'].update(clubs={'501': 'incoming'}, squad_types=['first'])
+        row = self.engine.enrich_squads(self.job())
+        self.assertTrue(self.engine.reuse_squad_proof(row))
+        self.c['scope_rules']['squad_types'] = ['youth']
+        self.assertFalse(self.engine.reuse_squad_proof(row))
+        self.c['scope_rules']['squad_types'] = ['first']
+        person = json.loads(self.engine.db.execute('SELECT data FROM people').fetchone()[0])
+        person['registered_team_id'] = 1
+        self.engine.db.execute('UPDATE people SET data=?', (json.dumps(person),))
+        changed = self.engine.enrich_squads(self.job(), reuse=True)
+        self.assertEqual(changed['squad_evidence']['incoming']['kind'], 'unknown')
+        self.assertNotIn('squad_proof', changed)
+
+    def test_old_native_context_cannot_authorize_reusing_evidence(self):
+        self.ingest(500, 1)
+        self.ingest(501, 3)
+        row = self.engine.enrich_squads(self.job())
+        row['squad_proof']['context'] = {'session': 'a' * 32, 'generation': 1}
+        self.engine.db.execute('UPDATE jobs SET data=? WHERE id=?', (json.dumps(row), self.job()['id']))
+        self.assertFalse(self.engine.reuse_squad_proof(row))
+        self.assertEqual(self.engine.enrich_squads(self.job(), reuse=True)['squad_proof']['context'],
+                         {'source': 'save', 'version': VERSION})
 
     def test_save_change_holds_before_ai_instead_of_accepting_old_proof(self):
         self.ingest(500, 1)
@@ -149,7 +180,6 @@ class SaveSquadEngineTests(unittest.TestCase):
         runner = Mock()
         self.assertFalse(self.engine.run_one(runner))
         runner.assert_not_called()
-        self.engine._team_reader.resolve.assert_not_called()
         self.assertTrue(self.engine.waiting_for_game)
 
     def test_existing_generated_image_applies_without_game_or_paid_recall_and_keeps_other_mappings(self):
@@ -175,8 +205,6 @@ class SaveSquadEngineTests(unittest.TestCase):
         self.assertEqual(self.engine.pack_mapping((pack / 'config.xml').read_bytes()), {'1': '1', '77': '77'})
         self.assertEqual(self.engine.jobs()[0]['status'], 'applied')
         self.assertEqual(self.engine.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
-        self.engine._team_reader.resolve.assert_not_called()
-        self.engine._team_reader.current_context.assert_not_called()
 
     def test_controlled_team_owner_mismatch_does_not_become_parent_first_team(self):
         self.ingest(500, 1)
@@ -197,7 +225,6 @@ class SaveSquadEngineTests(unittest.TestCase):
                 self.engine.db.execute('UPDATE jobs SET data=? WHERE id=?', (json.dumps(data), self.job()['id']))
                 row = self.engine.enrich_squads(self.job())
                 self.assertEqual(row['squad_evidence']['outgoing']['kind'], 'unknown')
-        self.engine._team_reader.resolve.assert_not_called()
 
     def test_existing_game_wait_resumes_after_save_backend_migration_without_game_query(self):
         self.ingest(500, 1)
@@ -206,13 +233,10 @@ class SaveSquadEngineTests(unittest.TestCase):
             registered_club_id='501', registered_team_id=3)], 'managed_club_ids': ['500'],
             'source_stamp': list(file_stamp(self.c['source'])), 'squad_status': dict(mode='save', build=BUILD, version=VERSION),
             'save_squads': {'1': role(1, 500, 'reserve'), '3': role(3, 501, 'first')}})
-        self.engine.setmeta('squad_status', '{}')
-        self.engine._team_reader.resolve.side_effect = GameWait(
-            '게임의 진행/저장이 끝나고 세이브가 열리면 자동으로 재개합니다.')
-        self.assertIsNone(self.engine.next_job(1000))
+        self.engine.setmeta('squad_status', json.dumps(dict(mode='native', version=VERSION,
+            build=BUILD, source_stamp=list(file_stamp(self.c['source'])))))
+        self.engine.wait_for_game(self.job()['id'], 'pending', '기존 DLL 게임 진행 대기')
         self.assertTrue(json.loads(self.job()['data'])['game_wait'])
-        self.engine._team_reader.resolve.reset_mock()
-        self.engine._team_reader.resolve.side_effect = AssertionError('Game still advancing')
         before = len(self.engine.jobs())
         with patch('engine.read_source', return_value=snapshot) as read:
             Engine.refresh(self.engine)
@@ -222,8 +246,6 @@ class SaveSquadEngineTests(unittest.TestCase):
         resumed = self.engine.next_job(1000)
         self.assertIsNotNone(resumed)
         self.assertNotIn('game_wait', json.loads(resumed['data']))
-        self.engine._team_reader.resolve.assert_not_called()
-        self.engine._team_reader.current_context.assert_not_called()
 
     def test_malformed_optional_status_does_not_break_legacy_snapshot_ingestion(self):
         Path(self.c['source']).write_bytes(b'fixture')

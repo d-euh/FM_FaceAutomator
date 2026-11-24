@@ -126,12 +126,13 @@ class ReleaseTests(unittest.TestCase):
         with zipfile.ZipFile(archive) as stream:
             names = stream.namelist()
             self.assertNotIn('FMFaceAutomator/config.json', names)
-            for name in ('install_game_plugins.bat', 'update_windows.bat'):
+            for name in ('install_live_refresh.bat', 'update_windows.bat'):
                 script = stream.read('FMFaceAutomator/' + name).decode('ascii')
                 self.assertIn('FMFaceTools.exe', script)
                 self.assertNotIn('python', script.lower())
                 self.assertNotIn('.venv', script)
-            self.assertIn('FMFaceAutomator/_internal/tools/FMTeamMetadata/LICENSE.TXT', names)
+            self.assertFalse(any('FMTeamBindings' in name or 'FMTeamMetadata' in name for name in names))
+            self.assertNotIn('FMFaceAutomator/install_team_bindings.bat', names)
         with self.assertRaisesRegex(ValueError, '사용자 파일'):
             prepare_release(self.source, self.guide, '1.0')
 
@@ -203,13 +204,18 @@ class ReleasePluginTests(unittest.TestCase):
             (directory / (folder + '.dll')).write_bytes(payload)
             (directory / 'SHA256SUMS').write_text(hashlib.sha256(payload).hexdigest() + '  ' + folder + '.dll')
 
-    def test_installs_both_plugins_preserving_loader_and_unrelated_plugins(self):
+    def test_installs_only_refresh_preserving_existing_team_dll_loader_and_unrelated_plugins(self):
+        old_team = self.game / 'BepInEx/plugins/FMTeamBindings/FMTeamBindings.dll'
+        old_team.parent.mkdir(parents=True)
+        old_team.write_bytes(b'preserve existing team plugin')
+        (self.bundle / 'FMTeamBindings/FMTeamBindings.dll').unlink()
         other = self.game / 'BepInEx/plugins/Other/Other.dll'
         other.parent.mkdir(parents=True)
         other.write_bytes(b'keep')
         with patch('release_tools.game_process_running', return_value=False):
             targets = install_plugins(self.game, bundle=self.bundle)
-        self.assertEqual(len(targets), 2)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(old_team.read_bytes(), b'preserve existing team plugin')
         self.assertTrue(all(path.is_file() for path in targets))
         self.assertEqual(other.read_bytes(), b'keep')
         self.assertEqual((self.game / 'BepInEx/core/BepInEx.Core.dll').read_bytes(), b'6.0.0-be.793')

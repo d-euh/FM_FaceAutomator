@@ -1,6 +1,22 @@
 """Squad categories come from native relationships, never age or save-slot guesses."""
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
+
+class TeamReadPending(ValueError):
+    pass
+
+
+class GameWait(TeamReadPending):
+    """A changing save can resume after a stable snapshot is available."""
+
+
+def snapshot_key(source, stamp):
+    return hashlib.sha256(json.dumps([str(Path(source).resolve()), stamp], ensure_ascii=False).encode()).hexdigest()
+
 KINDS = {'first':'1군', 'reserve':'리저브', 'youth':'유소년'}
 WAIT = '팀 구분 확인 대기'
 

@@ -15,17 +15,13 @@ def resource_root():
     return Path(__file__).resolve().parent
 
 
-def install_plugins(game, *, team=True, refresh=True, bundle=None):
+def install_plugins(game, *, bundle=None):
     """Use existing installers and gates; do not change any native API or DLL."""
     if game_process_running():
         raise ValueError('FM27을 완전히 종료한 뒤 설치하세요.')
     game = validate_game(game)
     bundle = Path(bundle) if bundle is not None else resource_root() / 'plugins'
-    components = []
-    if team:
-        components.append(('FMTeamBindings', 'FMTeamBindings.dll'))
-    if refresh:
-        components.append(('FMFaceRefresh', 'FMFaceRefresh.dll'))
+    components = [('FMFaceRefresh', 'FMFaceRefresh.dll')]
     # Verify every supplied DLL before installing the first one.
     for folder, filename in components:
         data = (bundle / folder / filename).read_bytes()
@@ -40,8 +36,7 @@ def main():
     from tkinter import filedialog, messagebox
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for name in ('install-all', 'install-team', 'install-refresh', 'update', 'export-diagnostics',
-                 'export-team', 'export-metadata'):
+    for name in ('install-refresh', 'update', 'export-diagnostics'):
         modes.add_argument('--' + name, action='store_true')
     parser.add_argument('--game', type=Path)
     parser.add_argument('--destination', type=Path)
@@ -67,39 +62,28 @@ def main():
             target = export_bundle(chosen, config_path=root / 'config.json', root=root)
             text = f'진단 저장 완료: {target}\n설정 경로가 포함되며 이미지·지시·인증 정보는 포함하지 않습니다.'
         else:
-            from team_metadata import find_games
             game = args.game
             if game is None:
-                choices = find_games(root)
+                choices = find_steam_games()
+                try:
+                    saved = Path(json.loads((root / '.refresh-diagnostics.json').read_text(encoding='utf-8-sig'))['game'])
+                    if (saved / 'fm.exe').is_file():
+                        choices = [saved.resolve()] + [p for p in choices if p.resolve() != saved.resolve()]
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
                 game = choices[0] if len(choices) == 1 else None
             if game is None:
                 chosen = filedialog.askopenfilename(parent=window, title='FM27 설치 폴더의 fm.exe 선택', filetypes=[('FM27', 'fm.exe')])
                 if not chosen:
                     return 0
                 game = Path(chosen).parent
-            if args.export_team or args.export_metadata:
-                filename = 'team-bindings.json' if args.export_team else 'team-metadata.json'
-                chosen = args.destination or filedialog.asksaveasfilename(parent=window, title='팀 진단 저장',
-                             initialfile=filename, defaultextension='.json', filetypes=[('JSON', '*.json')])
-                if not chosen:
-                    return 0
-                if args.export_team:
-                    from team_bindings import export_report
-                    target = export_report(game, chosen)
-                else:
-                    from team_metadata import interop_folder, export_metadata
-                    from refresh_diagnostics import steam_manifest
-                    game, interop = interop_folder(validate_game(game))
-                    target, _ = export_metadata(interop, chosen, build=steam_manifest(game)['build'])
-                text = f'팀 진단 저장 완료: {target}\n이 JSON 파일을 첨부해 주세요.'
-            else:
-                installed = install_plugins(game, team=not args.install_refresh, refresh=not args.install_team)
-                from engine import write_atomic
-                write_atomic(root / '.refresh-diagnostics.json', json.dumps({'game': str(Path(game).resolve())}).encode('utf-8'))
-                text = ('게임 연동 DLL 설치 완료\n' + '\n'.join(map(str, installed)) +
-                        '\n\nFM27을 실행하고 연결할 세이브를 불러오세요.\n'
-                        '앱의 홈 → 페이스온 새로고침으로 실제 반영을 확인하세요.\n'
-                        '자동 반영은 같은 버튼 오른쪽의 생성 후 자동 새로고침을 켜고 설정을 저장하세요.')
+            installed = install_plugins(game, bundle=resource_root() / 'plugins')
+            from engine import write_atomic
+            write_atomic(root / '.refresh-diagnostics.json', json.dumps({'game': str(Path(game).resolve())}).encode('utf-8'))
+            text = ('게임 그래픽 새로고침 DLL 설치 완료\n' + '\n'.join(map(str, installed)) +
+                    '\n\nFM27을 실행하고 연결할 세이브를 불러오세요.\n'
+                    '앱의 홈 → 페이스온 새로고침으로 실제 반영을 확인하세요.\n'
+                    '자동 반영은 같은 버튼 오른쪽의 생성 후 자동 새로고침을 켜고 설정을 저장하세요.')
         print(text, flush=True)
         messagebox.showinfo('FM Face Automator', text, parent=window)
         return 0

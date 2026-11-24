@@ -3,8 +3,9 @@ from PyInstaller.utils.hooks import collect_all
 
 root = Path(SPECPATH).parent
 datas = [(str(root / 'icons' / name), 'icons') for name in ('ffa.png', 'ffa.ico')]
-datas += [(str(root / 'fonts'), 'fonts'), (str(root / 'plugins'), 'plugins'),
-          (str(root / 'tools' / 'FMTeamMetadata'), 'tools/FMTeamMetadata')]
+datas += [(str(root / 'fonts'), 'fonts')]
+datas += [(str(root / 'plugins' / name), 'plugins/' + name)
+          for name in ('FMFaceRefresh', 'FMFaceRefreshDiagnostics')]
 binaries, hiddenimports = [], []
 for package in ('fmsave', 'backports.zstd', 'PIL'):
     package_data, package_binaries, package_imports = collect_all(package)

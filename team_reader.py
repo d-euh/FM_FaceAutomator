@@ -1,7 +1,6 @@
 """Local, bounded native team-read requests. No Codex/image generation happens here."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,12 +14,7 @@ PROFILE = 'fm27-steam-26620374-teams-v1'
 VERSION = '0.4.2'
 
 
-class TeamReadPending(ValueError):
-    pass
-
-
-class GameWait(TeamReadPending):
-    """A temporary game state that can resume without user retry."""
+from squad_types import GameWait, TeamReadPending, snapshot_key
 
 
 def root_path():
@@ -165,7 +159,3 @@ class TeamReader:
             for file in (request,response):
                 try: file.unlink(missing_ok=True)
                 except OSError: pass  # An active native read can briefly hold a Windows file handle; expiry still closes the query.
-
-
-def snapshot_key(source, stamp):
-    return hashlib.sha256(json.dumps([str(Path(source).resolve()),stamp],ensure_ascii=False).encode()).hexdigest()

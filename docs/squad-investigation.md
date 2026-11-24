@@ -1,5 +1,19 @@
 # Squad classification investigation
 
+## Live team lookup removed 2026-11-24
+
+Production classification uses only the verified save decoder. Native fallback,
+team-reader connection checks, team DLL installation/export launchers and bundled
+team DLL/metadata resources have been removed. Unsupported save builds stay
+unknown and restricted tasks block before AI. Existing native authorizations
+cannot be reused as save proofs. Legacy native-mode workspaces force a source
+refresh even when its stamp is unchanged. Graphics-refresh DLL behavior and its
+Steam/hash gates are unchanged. Existing game-folder DLLs are not deleted.
+
+Historical native sources and verification tools remain for reproducibility;
+they are not imported or shipped by the app. The sections below describe earlier
+investigation stages and are not current installation instructions.
+
 ## Application integration 2026-11-23
 
 The verified decoder now lives in `save_teams.py`; the original research import

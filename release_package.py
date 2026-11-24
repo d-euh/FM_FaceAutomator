@@ -12,12 +12,8 @@ import zipfile
 
 MANIFEST = 'release-manifest.json'
 LAUNCHERS = {
-    'install_game_plugins.bat': '--install-all',
-    'install_team_bindings.bat': '--install-team',
     'install_live_refresh.bat': '--install-refresh',
     'export_diagnostics.bat': '--export-diagnostics',
-    'export_team_bindings.bat': '--export-team',
-    'export_team_metadata.bat': '--export-metadata',
     'update_windows.bat': '--update',
 }
 ROOT_FILES = {'FMFaceAutomator.exe', 'FMFaceTools.exe', 'QUICK_START.ko.md', *LAUNCHERS}
@@ -27,13 +23,8 @@ REQUIRED = {
     '_internal/fonts/koverwatch.ttf', '_internal/fonts/BebasNeue.otf',
     '_internal/fonts/venus rising rg.ttf',
     '_internal/fonts/README.md',
-    '_internal/tools/FMTeamMetadata/FMTeamMetadata.exe',
-    '_internal/tools/FMTeamMetadata/SHA256SUMS',
-    '_internal/tools/FMTeamMetadata/LICENSE.TXT',
-    '_internal/tools/FMTeamMetadata/THIRD-PARTY-NOTICES.TXT',
-    '_internal/tools/FMTeamMetadata/README.md',
 }
-for folder, dll in (('FMTeamBindings', 'FMTeamBindings.dll'), ('FMFaceRefresh', 'FMFaceRefresh.dll'),
+for folder, dll in (('FMFaceRefresh', 'FMFaceRefresh.dll'),
                     ('FMFaceRefreshDiagnostics', 'FMFaceRefresh.Diagnostics.dll')):
     REQUIRED.update({f'_internal/plugins/{folder}/{dll}', f'_internal/plugins/{folder}/SHA256SUMS'})
 

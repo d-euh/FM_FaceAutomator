@@ -26,7 +26,7 @@ from assets import AssetCatalog, AssetError, MissingFaceError, MissingKitError, 
 import facepack
 import scope_rules
 import squad_types
-from team_reader import GameWait, TeamReader, TeamReadPending, snapshot_key
+from squad_types import GameWait, TeamReadPending, snapshot_key
 import save_teams
 import live_refresh
 from league_catalog import read_catalog
@@ -478,7 +478,6 @@ def process_lock(folder):
 class Engine:
     def __init__(self, config):
         self.c = config
-        self._team_reader = TeamReader()
         self._editing_locks = {}
         self._asset_catalogs = {}
         self._last_preflight_retry = 0
@@ -813,7 +812,8 @@ class Engine:
         need_catalog = self.meta("club_catalog") is None or (scope_rules.needs_leagues(self.c) and self.meta("catalog_key") != "leagues")
         squad_status = json.loads(self.meta('squad_status') or '{}')
         need_squads = Path(self.c['source']).suffix.lower() == '.fm' and (
-            squad_status.get('version') != save_teams.VERSION or squad_status.get('source_stamp') != stamp)
+            squad_status.get('version') != save_teams.VERSION or squad_status.get('mode') != 'save'
+            or squad_status.get('source_stamp') != stamp)
         if json.loads(self.meta("source_stamp") or "null") != stamp or need_catalog or need_squads:
             return self.ingest(read_source(self.c))
         return 0
@@ -1242,6 +1242,8 @@ class Engine:
         return hashlib.sha256(json.dumps(values, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
 
     def reuse_squad_proof(self, row):
+        if not self.save_squad_backend():
+            return False
         proof = row.get('squad_proof')
         if not isinstance(proof, dict) or proof.get('key') != self.squad_proof_key(row):
             return False
@@ -1252,8 +1254,7 @@ class Engine:
         if squad_types.decision(dict(row, squad_evidence=evidence), self.c['scope_rules'], sides) != 'allow':
             return False
         try:
-            context = ({'source': 'save', 'version': save_teams.VERSION} if self.save_squad_backend()
-                       else self._team_reader.current_context())
+            context = {'source': 'save', 'version': save_teams.VERSION}
             stamp = json.loads(self.meta('source_stamp') or 'null')
             valid = context is not None and proof.get('context') == context and list(file_stamp(self.c['source'])) == stamp
             if valid:
@@ -1302,7 +1303,7 @@ class Engine:
                 with self.db:
                     self.db.execute("UPDATE jobs SET note='팀 구분 조회 중' WHERE id=? AND status='pending'",(job['id'],))
                 if Path(self.c['source']).suffix.lower() != '.fm':
-                    raise TeamReadPending('팀 구분은 연결한 FM 세이브와 게임에서 확인합니다.')
+                    raise TeamReadPending('팀 구분은 지원되는 FM 세이브에서 확인합니다.')
                 stamp = json.loads(self.meta('source_stamp') or 'null')
                 if saved_backend:
                     if list(file_stamp(self.c['source'])) != stamp:
@@ -1320,10 +1321,8 @@ class Engine:
                         else:
                             evidence[side] = self.saved_squad(index, club)
                 else:
-                    native = self._team_reader.resolve(list(dict.fromkeys(v[0] for v in targets.values())),
-                        json.loads(self.meta('managed') or '[]'),snapshot_key(self.c['source'],stamp),cancel)
-                    for side,(index,club) in targets.items():
-                        evidence[side] = squad_types.native_role(native.get(index),club)
+                    status = json.loads(self.meta('squad_status') or '{}')
+                    raise TeamReadPending(status.get('error') or '세이브 팀 구분을 확인하지 못했습니다. 지원되는 세이브를 연결하세요.')
                 if list(file_stamp(self.c['source'])) != stamp:
                     raise GameWait('세이브 변경 중 · 다음 점검에서 팀 구분을 다시 확인합니다.')
         except TeamReadPending as exc:
@@ -1335,8 +1334,7 @@ class Engine:
             for side in targets: evidence[side] = {'kind':'unknown','reason':note}
         row['squad_evidence'] = evidence
         row['squad_lookup_note'] = note
-        context = ({'source': 'save', 'version': save_teams.VERSION} if saved_backend
-                   else self._team_reader.last_context)
+        context = {'source': 'save', 'version': save_teams.VERSION} if saved_backend else None
         if (squad_types.decision(row, self.c['scope_rules'], sides) == 'allow'
                 and isinstance(context, dict)):
             row['squad_proof'] = {'key': self.squad_proof_key(row),

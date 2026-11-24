@@ -38,12 +38,12 @@ Name: "desktopicon"; Description: "바탕화면 바로가기 만들기"; GroupDe
 
 [Icons]
 Name: "{group}\FM Face Automator"; Filename: "{app}\FMFaceAutomator.exe"; WorkingDir: "{app}"
-Name: "{group}\게임 연동 DLL 설치"; Filename: "{app}\FMFaceTools.exe"; Parameters: "--install-all"; WorkingDir: "{app}"
+Name: "{group}\게임 그래픽 새로고침 DLL 설치"; Filename: "{app}\FMFaceTools.exe"; Parameters: "--install-refresh"; WorkingDir: "{app}"
 Name: "{group}\FM Face Automator 제거"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\FM Face Automator"; Filename: "{app}\FMFaceAutomator.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\FMFaceTools.exe"; Parameters: "--install-all"; Description: "게임 연동 DLL 설치 (FM27 종료·BepInEx 설치 필요)"; Flags: postinstall unchecked skipifsilent waituntilterminated
+Filename: "{app}\FMFaceTools.exe"; Parameters: "--install-refresh"; Description: "게임 그래픽 새로고침 DLL 설치 (FM27 종료·BepInEx 설치 필요)"; Flags: postinstall unchecked skipifsilent waituntilterminated
 Filename: "{app}\FMFaceAutomator.exe"; Description: "FM Face Automator 실행"; Flags: postinstall nowait skipifsilent
 
 [Code]

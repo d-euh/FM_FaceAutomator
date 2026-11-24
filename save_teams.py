@@ -182,7 +182,8 @@ def roles_from_table(clubs, records):
 def read_roles(save, clubs):
     """Decode once per save; no game process or native bridge is accessed."""
     if save.info.build != BUILD:
-        return {}, {'mode': 'native', 'version': VERSION, 'build': save.info.build}
+        return {}, {'mode': 'save', 'version': VERSION, 'build': save.info.build,
+                    'error': '세이브 팀 구분 미지원 빌드: ' + str(save.info.build)}
     status = {'mode': 'save', 'version': VERSION, 'build': BUILD}
     try:
         with save._context.section('game_db') as data:
