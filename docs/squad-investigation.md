@@ -1,5 +1,24 @@
 # Squad classification investigation
 
+## Closed-game generation verification 2026-11-25
+
+The user subsequently confirmed actual in-game visual refresh in their patched
+game environment. This is user-reported visual confirmation, not a new captured
+callback/reload trace; it does not extend the two pinned build/hash profiles.
+
+Code tracing and regressions confirm game connectivity is not a precondition for
+save-derived squad classification, automatic queued generation or manual
+requests. A missing plugin session only leaves the independent graphics-refresh
+request waiting. With automatic refresh enabled and an empty bridge, watch_step
+completed an automatic job, then a direct request completed; both reached applied,
+PNG/XML existed, waiting_for_game stayed false, no game request was sent, and an
+extra worker pass made no duplicate generation request. A restricted-squad,
+already-rendered result also applied with no game and retained unrelated mappings.
+Codex/image output was mocked: no paid AI or Windows/game process was launched.
+The existing implementation required no behavior change; only regressions were
+added/strengthened. Source writes still require a stable file, and unknown squad
+roles still block restricted tasks independently of whether the game is running.
+
 ## Graphics-refresh 0.2.4 runtime connection observed 2026-11-25
 
 A subsequent user live diagnostic shows the patch profile

@@ -371,6 +371,31 @@ class EngineTests(unittest.TestCase):
         self.assertIn("저장 상태는 유지", self.e.meta("live_refresh_status"))
         self.assertFalse(self.e.run_one(lambda *a, **k: self.fail("Saved faces must not be synthesized again")))
 
+    def test_closed_game_does_not_block_automatic_or_direct_generation_with_refresh_enabled(self):
+        self.c['live_refresh_enabled'] = True
+        jid = self.transfer()
+        self.refs()
+        bridge = self.root / 'closed-game-bridge'
+        with patch('live_refresh.bridge_root', return_value=bridge):
+            outcome = self.e.watch_step(self.good_runner, now=time.time() + 4)
+            self.assertTrue(outcome['processed'])
+            self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?', (jid,)).fetchone()[0], 'applied')
+            self.assertFalse(self.e.waiting_for_game)
+            self.assertIn('연결 대기', self.e.meta('live_refresh_status'))
+            with self.e.db:
+                self.e.setmeta('club_catalog', json.dumps([{'id': '20', 'name': 'Club 20'}]))
+            manual = self.e.enqueue_manual('900001', '20')
+            self.assertTrue(self.e.run_one(self.good_runner, job_id=manual))
+            self.assertEqual(self.e.db.execute('SELECT status FROM jobs WHERE id=?', (manual,)).fetchone()[0], 'applied')
+            self.assertFalse(self.e.waiting_for_game)
+            self.assertIn('연결 대기', self.e.meta('live_refresh_status'))
+            self.assertNotIn('request_id', json.loads(self.e.meta('live_refresh_pending')))
+            self.assertTrue((Path(self.c['pack_dir']) / '900001.png').is_file())
+            self.assertTrue((Path(self.c['pack_dir']) / 'config.xml').is_file())
+            self.assertEqual(self.e.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 2)
+            self.assertFalse(self.e.run_one(lambda *a, **k: self.fail('No repeated image request while game is closed')))
+        self.assertFalse((bridge / 'requests').exists())
+
     def test_live_refresh_bookkeeping_failure_cannot_undo_committed_png_xml(self):
         self.c["live_refresh_enabled"] = True
         self.transfer()

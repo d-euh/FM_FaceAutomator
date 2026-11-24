@@ -228,7 +228,11 @@ class SaveSquadEngineTests(unittest.TestCase):
         self.c['pack_dir'] = str(pack)
         self.engine.update(job['id'], 'generated', artifact=str(artifact))
         self.engine.render_paid_result = Mock(side_effect=AssertionError('Reuse rendered artifact'))
-        self.engine.apply(job['id'])
+        self.c['live_refresh_enabled'] = True
+        with patch('live_refresh.bridge_root', return_value=self.root / 'closed-game-bridge'):
+            self.engine.apply(job['id'])
+        self.assertFalse(self.engine.waiting_for_game)
+        self.assertIn('연결 대기', self.engine.meta('live_refresh_status'))
         self.assertEqual((pack / '1.png').read_bytes(), artifact.read_bytes())
         self.assertEqual((pack / '77.png').read_bytes(), b'unrelated original image')
         self.assertEqual(self.engine.pack_mapping((pack / 'config.xml').read_bytes()), {'1': '1', '77': '77'})
