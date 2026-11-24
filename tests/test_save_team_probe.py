@@ -83,6 +83,15 @@ class SaveTeamProbeTests(unittest.TestCase):
             with self.subTest(length=len(data)), self.assertRaises(ValueError):
                 read_team_table(data, BUILD, {0: 7})
 
+    def test_patch_build_uses_same_strict_framing_and_owner_validation(self):
+        data = table(record(0))
+        result = read_team_table(data, '27.1.1+2511875', {0: 7})
+        self.assertEqual(result['records'][0]['team_id'], 0)
+        with self.assertRaises(ValueError):
+            read_team_table(data, '27.1.1+2511875', {0: 8})
+        with self.assertRaises(ValueError):
+            read_team_table(data[:-1], '27.1.1+2511875', {0: 7})
+
     def test_rejects_other_builds_and_national_club_owner_collisions(self):
         for data, build in ((table(record(0)), 'unverified'),
                             (table(record(0, national=True)), BUILD)):

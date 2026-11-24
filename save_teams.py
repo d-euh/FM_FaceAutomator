@@ -6,6 +6,7 @@ import struct
 
 
 BUILD = '27.1.0+2505117'
+SUPPORTED_BUILDS = (BUILD, '27.1.1+2511875')
 VERSION = 'save-squads-v1'
 _U32 = struct.Struct('<I')
 _FOOTER = struct.Struct('<III')
@@ -81,7 +82,7 @@ def read_team_table(data, build, owners):
     ``owners`` maps save-local team IDs to native club indexes, supplied by the
     separately parsed club index. Index zero is valid. No slots or role guesses.
     """
-    if build != BUILD:
+    if build not in SUPPORTED_BUILDS:
         raise ValueError('Unverified team-table build')
     if not owners or any(type(t) is not int or type(c) is not int or t < 0 or c < 0
                          for t, c in owners.items()):
@@ -146,9 +147,11 @@ VERIFIED_STATES = {(0, 0), (1, 0), (1, 16), (1, 21), (3, 0), (3, 1),
                    (36, 16), (37, 16)}
 
 
-def roles_from_table(clubs, records):
+def roles_from_table(clubs, records, build=BUILD):
     """Reuse the existing role validator with explicitly save-derived evidence."""
     from squad_types import native_role
+    if build not in SUPPORTED_BUILDS:
+        raise ValueError('Unverified team-table build')
     result = {}
     for uid, club in clubs.items():
         own = [t for t in club['teams'] if t['club_uid'] == uid and not t['is_affiliate']]
@@ -174,27 +177,27 @@ def roles_from_table(clubs, records):
                                     'is_null': target is None} for key, target in (refs or {}).items()})
                 # This shape only shares validation; it is not a native query result.
                 evidence = native_role({'native_team_index': index, 'values': values}, str(club['id']))
-            result[str(index)] = evidence | {'source': 'save', 'build': BUILD,
+            result[str(index)] = evidence | {'source': 'save', 'build': build,
                 'registered_team_id': index, 'club_id': str(club['id']), 'team_unique_id': row['unique_id']}
     return result
 
 
 def read_roles(save, clubs):
     """Decode once per save; no game process or native bridge is accessed."""
-    if save.info.build != BUILD:
+    if save.info.build not in SUPPORTED_BUILDS:
         return {}, {'mode': 'save', 'version': VERSION, 'build': save.info.build,
                     'error': '세이브 팀 구분 미지원 빌드: ' + str(save.info.build)}
-    status = {'mode': 'save', 'version': VERSION, 'build': BUILD}
+    status = {'mode': 'save', 'version': VERSION, 'build': save.info.build}
     try:
         with save._context.section('game_db') as data:
             index = save._context.club_index()
             native_by_uid = {uid: idx for idx, uid in index.uid_by_club_index.items()}
             owners = {tid: native_by_uid[uid] for tid, (uid, _) in index.team_to_club.items()}
-            table = read_team_table(data, BUILD, owners)
+            table = read_team_table(data, save.info.build, owners)
         catalog = {uid: {'id': c.unique_id, 'teams': [
             {'team_id': t.team_id, 'club_uid': t.club_uid, 'is_affiliate': t.is_affiliate}
             for t in c.teams]} for uid, c in clubs.items() if c.unique_id is not None}
-        roles = roles_from_table(catalog, table['records'])
+        roles = roles_from_table(catalog, table['records'], save.info.build)
         status['unknown_teams'] = sum(r['kind'] == 'unknown' for r in roles.values())
         return roles, status
     except (ValueError, AttributeError, KeyError, TypeError) as exc:

@@ -8,13 +8,13 @@ from unittest.mock import Mock, patch
 from PIL import Image, PngImagePlugin
 
 from engine import DEFAULTS, Engine, detection_messages, file_stamp, normalise
-from save_teams import BUILD, VERSION, read_roles, roles_from_table
+from save_teams import BUILD, SUPPORTED_BUILDS, VERSION, read_roles, roles_from_table
 from scope_rules import DEFAULT_SCOPE
 from gunzo import LAYOUT
 
 
-def role(index, club, kind):
-    return dict(source='save', build=BUILD, registered_team_id=index, club_id=str(club),
+def role(index, club, kind, build=BUILD):
+    return dict(source='save', build=build, registered_team_id=index, club_id=str(club),
                 team_unique_id=800 + index, kind=kind)
 
 
@@ -34,6 +34,20 @@ class SaveRoleDecoderTests(unittest.TestCase):
         self.assertEqual([result[str(i)]['kind'] for i in range(4)], ['first', 'reserve', 'youth', 'first'])
         self.assertEqual(result['3']['club_id'], '501')
         self.assertTrue(all(r['source'] == 'save' for r in result.values()))
+
+    def test_both_supported_builds_use_same_rules_and_preserve_actual_build(self):
+        clubs, rows = self.fixture()
+        for build in SUPPORTED_BUILDS:
+            with self.subTest(build=build):
+                result = roles_from_table(clubs, rows, build)
+                self.assertEqual([result[str(i)]['kind'] for i in range(4)],
+                                 ['first', 'reserve', 'youth', 'first'])
+                self.assertTrue(all(r['build'] == build for r in result.values()))
+                _, status = read_roles(NS(info=NS(build=build)), {})
+                self.assertEqual(status['build'], build)
+                self.assertIn('error', status)
+        with self.assertRaises(ValueError):
+            roles_from_table(clubs, rows, '27.1.2+9999999')
 
     def test_unknown_sibling_holds_reference_based_roles_but_does_not_erase_verified_first_team(self):
         for change in ({'raw_type': 255}, {'raw_flags': 64}, {'unique_id': 999}):
@@ -80,17 +94,17 @@ class SaveSquadEngineTests(unittest.TestCase):
         self.engine.refresh = lambda: 0
         self.counter = 0
 
-    def ingest(self, club, team, old_kind='reserve', *, error=None):
+    def ingest(self, club, team, old_kind='reserve', *, error=None, build=BUILD):
         self.counter += 1
         Path(self.c['source']).write_bytes(b'fixture' * self.counter)
-        status = dict(mode='save', build=BUILD, version=VERSION)
+        status = dict(mode='save', build=build, version=VERSION)
         if error:
             status['error'] = error
         payload = normalise({'players': [dict(id=1, uid=10, name='Alex Example', club_id=club,
             registered_club_id=str(club) if club else '', registered_team_id=team)],
             'managed_club_ids': ['500'], 'source_stamp': list(file_stamp(self.c['source'])),
             'squad_status': status, 'save_squads': {} if error else {
-                '1': role(1, 500, old_kind), '3': role(3, 501, 'first')}})
+                '1': role(1, 500, old_kind, build), '3': role(3, 501, 'first', build)}})
         return self.engine.ingest(payload, now=self.counter)
 
     def job(self):
@@ -114,6 +128,21 @@ class SaveSquadEngineTests(unittest.TestCase):
         self.c['scope_rules'].update(clubs={'501': 'incoming'}, squad_types=['first'])
         row = self.engine.enrich_squads(self.job())
         self.assertEqual(row['squad_evidence']['incoming']['kind'], 'first')
+
+    def test_patch_upgrade_keeps_old_departure_evidence_and_new_snapshot_build(self):
+        self.ingest(500, 1, build=BUILD)
+        self.ingest(501, 3, build='27.1.1+2511875')
+        self.assertTrue(self.engine.save_squad_backend())
+        self.assertEqual(self.engine.saved_squad(3, '501')['build'], '27.1.1+2511875')
+        row = self.engine.enrich_squads(self.job())
+        self.assertEqual(row['squad_evidence']['outgoing']['kind'], 'reserve')
+        self.assertEqual(row['squad_evidence']['outgoing']['build'], BUILD)
+        self.assertIsNotNone(self.engine.next_job(1000))
+        self.assertEqual(self.engine.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
+        reopened = Engine(self.c)
+        self.addCleanup(reopened.close)
+        self.assertTrue(reopened.save_squad_backend())
+        self.assertEqual(reopened.enrich_squads(self.job(), reuse=True)['squad_evidence']['outgoing']['build'], BUILD)
 
     def test_unknown_save_structure_blocks_ai_and_does_not_use_dll(self):
         self.ingest(500, 1, error='unsupported team structure')
@@ -218,7 +247,8 @@ class SaveSquadEngineTests(unittest.TestCase):
         self.ingest(501, 3)
         original = json.loads(self.job()['data'])
         for change in ({'club_id': '501'}, {'reader_version': 'unverified'},
-                       {'registered_team_id': True}, {'kind': ['first']}):
+                       {'registered_team_id': True}, {'kind': ['first']},
+                       {'build': '27.1.2+9999999'}, {'build': ['invalid']}):
             with self.subTest(change=change):
                 data = copy.deepcopy(original)
                 data['from_squad_role'].update(change)

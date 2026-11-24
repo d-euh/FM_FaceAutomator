@@ -1,5 +1,33 @@
 # Squad classification investigation
 
+## FM27 27.1.1 compatibility enabled 2026-11-25
+
+The user authorized a save-reading/classification compatibility update after the
+read-only investigation below. Production now explicitly accepts only the two
+save-team builds `27.1.0+2505117` and `27.1.1+2511875`. The player reader shares
+this explicit compatibility list; strict fmsave and team-table/owner checks remain
+in force. Future/unrecognized builds are still rejected. Existing registered
+older fmsave builds retain their previous basic-reading behavior, not new squad
+classification support.
+
+Role evidence and backend status retain the actual save build. Frozen departure
+proofs from either supported build remain valid across a patch upgrade; the
+parser rules/version are unchanged. No settings/history/facepack migration or
+paid regeneration is introduced. Unknown states/owners remain unknown and
+restricted tasks block before AI. Existing Steam build 26620374/native hash/API
+gates and DLL binaries are unchanged; this is not support for graphics refresh
+on the patched game. Earlier native evidence must not be described as a new
+27.1.1 in-game verification.
+
+Unmodified production calls (no in-memory build substitution) subsequently read
+both supplied real saves and ingested them in sequence into a disposable workspace.
+The old baseline had 95,386 players; the patched snapshot had 95,050. Each had
+47,155 club-team entries with actual-build provenance. Manchester United's three
+control roles passed for both. The later snapshot added three scoped transfer
+jobs; no AI/native request or facepack write occurred. The original files and
+user workspace were untouched. UnknownBuildWarnings were retained. Windows/game
+execution and patched-game graphics refresh remain unverified.
+
 ## FM27 27.1.1 save investigation 2026-11-25
 
 This is a read-only compatibility investigation, not an enabled production build.

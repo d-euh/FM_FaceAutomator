@@ -93,9 +93,9 @@ WATCH_POLL_SECONDS = 2
 
 LEGACY_STYLE = "Photorealistic square head-and-shoulders football portrait, clean neutral background, no text or frame. Preserve the original person's identity and facial features; change only the jersey to the reference kit."
 
-# fmsave 0.12.6 registers this build's club layout, but known_build remains
-# false until layouts for ALL readers exist. We only need people and clubs.
-COMPATIBLE_FM27_BUILDS = frozenset({"27.1.0+2505117"})
+# These saves passed our structural comparisons, but fmsave still reports them
+# as unverified. Keep strict reader checks; this is not support for all fields.
+COMPATIBLE_FM27_BUILDS = save_teams.SUPPORTED_BUILDS
 
 
 def check_save_reader():
@@ -1209,7 +1209,7 @@ class Engine:
     def save_squad_backend(self):
         status = json.loads(self.meta('squad_status') or '{}')
         return (status.get('mode') == 'save' and status.get('version') == save_teams.VERSION
-                and status.get('build') == save_teams.BUILD)
+                and status.get('build') in save_teams.SUPPORTED_BUILDS)
 
     def saved_squad(self, index, club):
         found = self.db.execute('SELECT club_id,data FROM save_squads WHERE team_id=?', (index,)).fetchone()
@@ -1219,7 +1219,7 @@ class Engine:
         if current and found and found['club_id'] == str(club):
             evidence = json.loads(found['data'])
         else:
-            evidence = {'kind': 'unknown', 'source': 'save', 'build': save_teams.BUILD,
+            evidence = {'kind': 'unknown', 'source': 'save', 'build': status.get('build'),
                         'registered_team_id': index, 'club_id': str(club),
                         'reason': ('세이브 팀 구분 캐시가 현재 스냅샷과 다릅니다.' if not current else None)
                                   or status.get('error') or ('세이브 팀의 저장 구단과 판정 구단이 다릅니다.' if found
@@ -1314,7 +1314,7 @@ class Engine:
                         if frozen is not None:
                             valid = (isinstance(frozen, dict) and frozen.get('source') == 'save'
                                      and frozen.get('reader_version') == save_teams.VERSION
-                                     and frozen.get('build') == save_teams.BUILD
+                                     and frozen.get('build') in save_teams.SUPPORTED_BUILDS
                                      and frozen.get('kind') in ('first', 'reserve', 'youth', 'unknown')
                                      and type(frozen.get('registered_team_id')) is int
                                      and frozen.get('registered_team_id') == index and frozen.get('club_id') == str(club))

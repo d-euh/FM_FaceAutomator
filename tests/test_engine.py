@@ -1576,18 +1576,20 @@ class EngineTests(unittest.TestCase):
     def test_reported_fm27_271_build_reads_even_when_known_build_is_false(self):
         self.c["source"] = str(self.root / "fm27-271.fm")
         Path(self.c["source"]).write_bytes(b"mock FM27 27.1 save")
-        fake = SimpleNamespace(
-            info=SimpleNamespace(game="FM27", known_build=False, build="27.1.0+2505117", game_date="2027-01-01"),
-            clubs=lambda: [SimpleNamespace(uid=0, unique_id=20)],
-            managed_clubs=lambda: [SimpleNamespace(club_uid=0)],
-            players=lambda: [SimpleNamespace(unique_id=900001, uid=100, name="Player", birth_date="2006-01-01", age=21, club_uid=0, club_name="Club")])
-        with patch("fmsave.open") as opened:
-            opened.return_value.__enter__.return_value = fake
-            data = read_source(self.c)
-            self.assertEqual(data["build"], "27.1.0+2505117")
-            self.assertEqual(data["reader_mode"], "compatible")
-            self.assertEqual(data["players"][0]["club_id"], "20")
-            self.assertTrue(opened.call_args.kwargs["strict"])
+        for build in ("27.1.0+2505117", "27.1.1+2511875"):
+            with self.subTest(build=build):
+                fake = SimpleNamespace(
+                    info=SimpleNamespace(game="FM27", known_build=False, build=build, game_date="2027-01-01"),
+                    clubs=lambda: [SimpleNamespace(uid=0, unique_id=20)],
+                    managed_clubs=lambda: [SimpleNamespace(club_uid=0)],
+                    players=lambda: [SimpleNamespace(unique_id=900001, uid=100, name="Player", birth_date="2006-01-01", age=21, club_uid=0, club_name="Club")])
+                with patch("fmsave.open") as opened:
+                    opened.return_value.__enter__.return_value = fake
+                    data = read_source(self.c)
+                    self.assertEqual(data["build"], build)
+                    self.assertEqual(data["reader_mode"], "compatible")
+                    self.assertEqual(data["players"][0]["club_id"], "20")
+                    self.assertTrue(opened.call_args.kwargs["strict"])
 
     def test_unrecognised_future_build_is_still_rejected(self):
         self.c["source"] = str(self.root / "future.fm")
@@ -1610,14 +1612,16 @@ class EngineTests(unittest.TestCase):
     def test_compatible_build_does_not_suppress_reader_integrity_errors(self):
         self.c["source"] = str(self.root / "inconsistent.fm")
         Path(self.c["source"]).write_bytes(b"mock inconsistent save")
-        with patch("fmsave.open") as opened:
-            fake = opened.return_value.__enter__.return_value
-            fake.info = SimpleNamespace(game="FM27", known_build=False, build="27.1.0+2505117")
-            fake.clubs.side_effect = ValueError("club integrity check failed")
-            with self.assertRaisesRegex(ValueError, "club integrity check failed"):
-                read_source(self.c)
-            self.assertTrue(opened.call_args.kwargs["strict"])
-            self.assertEqual(self.e.jobs(), [])
+        for build in ("27.1.0+2505117", "27.1.1+2511875"):
+            with self.subTest(build=build):
+                with patch("fmsave.open") as opened:
+                    fake = opened.return_value.__enter__.return_value
+                    fake.info = SimpleNamespace(game="FM27", known_build=False, build=build)
+                    fake.clubs.side_effect = ValueError("club integrity check failed")
+                    with self.assertRaisesRegex(ValueError, "club integrity check failed"):
+                        read_source(self.c)
+                    self.assertTrue(opened.call_args.kwargs["strict"])
+                    self.assertEqual(self.e.jobs(), [])
 
     def test_invalid_image_rejected(self):
         path = self.root / "bad.png"
