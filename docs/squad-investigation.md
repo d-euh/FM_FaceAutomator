@@ -1,5 +1,31 @@
 # Squad classification investigation
 
+## Graphics-refresh 0.2.4 runtime connection observed 2026-11-25
+
+A subsequent user live diagnostic shows the patch profile
+`fm27-steam-26797085-v1`, plugin 0.2.4, available=true, idle/idle, with heartbeat
+0.218 seconds before export. Runtime observations report None/CanContinue and
+zero pending scans. This is actual evidence that the new DLL loaded, passed its
+binary/signature initialization and reached state observation on Windows.
+It is not refresh-completion evidence: accepted/started=false and scan/callback/
+cache-panel counters are all zero, with no response in the current session.
+
+The workspace still stores an older session and the generic connection-wait
+message, plus a queued refresh with no request ID. Automatic refresh is disabled.
+Replaying the supplied session data at export time in a disposable local directory
+makes the pre-0.2.4 Python client return that exact connection-wait message; the
+current two-profile client returns connected/experimental. No requests/native
+calls were made by replay. This makes an older running app client a strong
+candidate, but does not distinguish it from an unrefreshed saved workspace status
+when automatic/manual polling is off. The report does not identify the running
+EXE's client capabilities, so this is not proof that the user's EXE is old.
+
+Next check: with the game still open, use Home -> face refresh once to activate
+manual polling, without generating another image. If connection-wait persists,
+verify the app itself was rebuilt/installed from the new source and which EXE is
+running. Reinstalling the already healthy DLL is not indicated by this report.
+A new report plus actual visual change remains necessary for refresh validation.
+
 ## Graphics-refresh 0.2.4 candidate 2026-11-25
 
 The supplied `refresh-compatibility.json` reports Steam 26797085, 179 scanned
