@@ -162,7 +162,8 @@ def discover_defaults(config, base, home=None, environ=None, stop=None):
         source = Path(search["source"]) if search.get("source") else None
         adjacent = source.parent.parent / "graphics" if source and source.parent.name.lower() == "games" else None
         graphics = adjacent if adjacent and adjacent.is_dir() else next((p for p in roots if p.name.lower() == "graphics"), roots[0])
-        updates["pack_dir"] = str(graphics / "000_FMFaceAutomator")
+        faces = graphics / "faces"
+        updates["pack_dir"] = str((faces if faces.is_dir() else graphics) / "Z_FMFaceAutomator")
     if stop is not None and stop.is_set():
         return {}, []
     if config.get("codex", "codex") == "codex":

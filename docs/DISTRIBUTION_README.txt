@@ -61,7 +61,9 @@ FM Newgen Face Studio를 설치하거나 연결할 필요는 없습니다.
    유니폼 키트 폴더
      합성할 유니폼 이미지와 매핑 자료가 있는 폴더를 선택합니다.
    생성 페이스팩 저장 위치
-     게임에서 사용하는 graphics 폴더 아래의 전용 폴더를 권장합니다.
+     자동 지정은 graphics에 faces 폴더가 있으면 faces\Z_FMFaceAutomator,
+     없으면 graphics 바로 아래 Z_FMFaceAutomator를 사용합니다.
+     기존에 저장한 경로는 유지하며 폴더 이름만으로 인게임 최상위 적용을 보장하지는 않습니다.
      기존 사진·키트 자료 폴더와 구분해 새 폴더를 지정하세요.
    Codex 실행 파일
      자동으로 찾은 codex.exe 경로를 확인합니다.

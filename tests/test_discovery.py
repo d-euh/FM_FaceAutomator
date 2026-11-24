@@ -49,7 +49,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(found["source"], str(recent))
         self.assertEqual(found["portraits_dir"], face)
         self.assertEqual(found["kits_dir"], str(self.graphics / "kits"))
-        self.assertEqual(found["pack_dir"], str(self.graphics / "000_FMFaceAutomator"))
+        self.assertEqual(found["pack_dir"], str(self.graphics / "faces" / "Z_FMFaceAutomator"))
         self.assertEqual(found["codex"], "/usr/bin/codex")
 
     def test_existing_custom_choices_are_preserved_even_when_missing(self):
@@ -89,7 +89,7 @@ class DiscoveryTests(unittest.TestCase):
         self.c.update(source=str(self.root / 'career.fm'), portraits_dir=str(self.graphics),
                       kits_dir=str(self.graphics), codex='custom-codex')
         with patch('discovery.discover_packs', side_effect=AssertionError('unnecessary pack search')):
-            self.assertEqual(self.discover(), {'pack_dir': str(self.graphics / '000_FMFaceAutomator')})
+            self.assertEqual(self.discover(), {'pack_dir': str(self.graphics / 'Z_FMFaceAutomator')})
 
     def test_first_run_classification_does_not_resolve_or_stat_individual_images(self):
         face = self.pack('faces', 'graphics/pictures/person/1/portrait')
@@ -98,6 +98,18 @@ class DiscoveryTests(unittest.TestCase):
             found = self.discover()
         self.assertEqual(found['portraits_dir'], face)
         self.assertEqual(found['kits_dir'], str(self.graphics / 'kits'))
+
+    def test_output_uses_existing_faces_without_scanning_or_creating_folders(self):
+        faces = self.graphics / 'faces'
+        faces.mkdir()
+        self.c.update(portraits_dir=str(faces), kits_dir=str(self.graphics / 'kits'), codex='custom-codex')
+        with patch('discovery.discover_packs', side_effect=AssertionError('unnecessary pack search')):
+            self.assertEqual(self.discover(), {'pack_dir': str(faces / 'Z_FMFaceAutomator')})
+        self.assertFalse((faces / 'Z_FMFaceAutomator').exists())
+
+    def test_faces_file_does_not_become_output_parent(self):
+        (self.graphics / 'faces').write_bytes(b'unrelated file')
+        self.assertEqual(self.discover()['pack_dir'], str(self.graphics / 'Z_FMFaceAutomator'))
 
     def test_large_xml_is_sampled_without_reading_the_whole_pack(self):
         xml = self.graphics / 'config.xml'
