@@ -875,8 +875,8 @@ class App:
         self.background(task)
 
     def request_manual(self, player_id, club_id, instructions, identity, reference_path=None):
-        if self.request_active() or (self.active() and (not self.watching or self.stop.is_set())):
-            self.status.set('현재 작업이 끝난 뒤 생성 요청을 다시 누르세요.')
+        if self.request_active():
+            self.status.set('직접 생성 요청을 대기열에 추가하는 중입니다. 잠시 후 다시 누르세요.')
             return
         if self.auth_active() and self.auth_logging_in:
             self.status.set('ChatGPT 로그인이 끝난 뒤 생성 요청을 누르세요.')
@@ -1717,8 +1717,7 @@ class App:
             self.append_log(text)
         self.login_button.configure(state="disabled" if self.active() or self.auth_active() else "normal")
         self.update_controls()
-        self.manual_panel.set_available(not self.request_active() and not (self.auth_active() and self.auth_logging_in) and
-                                        (not self.active() or (self.watching and not self.stop.is_set())))
+        self.manual_panel.set_available(not self.request_active() and not (self.auth_active() and self.auth_logging_in))
         database = Path(self.config["state_dir"]) / "queue.sqlite"
         if database.exists():
             self.poll_dashboard()

@@ -237,3 +237,65 @@ class QueueSelectionTests(unittest.TestCase):
             self.assertTrue(child.winfo_exists())
         finally:
             child.destroy()
+
+    def test_direct_generation_can_enqueue_another_player_while_one_off_worker_is_busy(self):
+        engine = self.engine
+        engine.setmeta('club_catalog', json.dumps([{'id': '20', 'name': 'Arsenal'}]))
+        engine.db.commit()
+        panel = self.app.manual_panel
+        panel.workspace = self.app.config['state_dir']
+        panel.player = json.loads(engine.db.execute("SELECT data FROM people WHERE id='2'").fetchone()[0])
+        panel.club_id = '20'
+        panel.clubs = {'20': {'id': '20', 'name': 'Arsenal'}}
+        started, release = threading.Event(), threading.Event()
+        def busy(current):
+            current.update(1, 'running')
+            started.set()
+            release.wait(5)
+        with patch.object(self.app, 'save', return_value=True):
+            self.app.background(busy)
+        try:
+            self.assertTrue(started.wait(3))
+            self.assertTrue(self.app.active())
+            self.assertFalse(self.app.watching)
+            with patch.object(self.app, 'poll_dashboard'):
+                self.app.drain()
+            self.assertFalse(panel.generate_button.instate(['disabled']))
+            worker = self.app.thread
+            panel.generate_button.invoke()
+            self.assertIsNotNone(self.app.request_thread)
+            self.app.request_thread.join(3)
+            self.assertFalse(self.app.request_active())
+            self.assertIs(self.app.thread, worker)
+            self.assertTrue(self.app.active())
+            job = engine.db.execute('SELECT * FROM jobs ORDER BY id DESC LIMIT 1').fetchone()
+            self.assertEqual((job['player_id'], job['status']), ('2', 'pending'))
+            self.assertTrue(json.loads(job['data'])['manual_request'])
+            self.assertEqual(engine.db.execute('SELECT status FROM jobs WHERE id=1').fetchone()[0], 'running')
+            self.assertEqual(engine.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
+            with patch.object(self.app, 'poll_dashboard'):
+                self.app.drain()
+            self.assertFalse(panel.generate_button.instate(['disabled']))
+        finally:
+            release.set()
+            self.app.thread.join(3)
+            if self.app.request_thread:
+                self.app.request_thread.join(3)
+
+    def test_manual_request_stays_disabled_only_while_enqueue_is_in_progress(self):
+        panel = self.app.manual_panel
+        panel.player = {'id': '2'}
+        panel.club_id = '20'
+        panel.clubs = {'20': {'id': '20', 'name': 'Arsenal'}}
+        with patch.object(self.app, 'request_active', return_value=True), \
+             patch.object(self.app, 'poll_dashboard'), \
+             patch.object(self.app, 'background') as background, \
+             patch('app.Engine') as engine:
+            self.app.drain()
+            self.assertTrue(panel.generate_button.instate(['disabled']))
+            self.app.request_manual('2', '20', '', 'identity')
+            background.assert_not_called()
+            engine.assert_not_called()
+        with patch.object(self.app, 'poll_dashboard'):
+            self.app.drain()
+        self.assertFalse(panel.generate_button.instate(['disabled']))
