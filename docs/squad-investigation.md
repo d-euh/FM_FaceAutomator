@@ -1,5 +1,30 @@
 # Squad classification investigation
 
+## Graphics-refresh Steam 26797085 investigation 2026-11-25
+
+The user's installer screenshot reports Steam build `26797085`; this is not the
+save header build `27.1.1+2511875`. No binaries or API observations from that new
+game installation are available in this workspace yet. Runtime/installer build
+and hash guards remain restricted to 26620374; no DLL was changed or installed.
+
+`export_refresh_compatibility.bat` / `refresh_compatibility.py` and the standalone
+`tools/FMRefreshMetadata` helper now collect an offline report from the user's
+installation. The helper links the existing PE metadata reader `Report.cs` and
+does not load assemblies, execute game APIs or install plugins. It records game
+hashes and refresh-related method signatures, including errors, without exposing
+installation paths. Input file stamp changes/manifest changes fail the export;
+outputs are bounded to 24 MiB, outside the game directory, and published atomically
+only after validation. The old report is retained on failure. These are research
+tools, not part of the normal app installer or a new runtime support profile.
+
+Windows win-x64 self-contained compilation succeeded. Python wrapper checks and
+Linux CLI checks cover the new-build report, PE signature decoding, corrupt DLL
+isolation, original-file preservation, no game execution, output boundaries and
+old-output preservation. Actual Windows execution and API/cleanup/runtime refresh
+on the new game remain unverified. The next required input is the user's generated
+`diagnostics/refresh-compatibility.json`; no native support expansion is justified
+by the screenshot or save alone.
+
 ## FM27 27.1.1 compatibility enabled 2026-11-25
 
 The user authorized a save-reading/classification compatibility update after the
