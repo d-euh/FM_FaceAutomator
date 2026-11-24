@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import sys
 
-from refresh_diagnostics import find_steam_games, game_process_running, install_component, validate_game
+from refresh_diagnostics import find_steam_games, game_process_running, install_component, validate_game, REFRESH_BUILDS
 from release_package import apply_update
 
 
@@ -19,7 +19,7 @@ def install_plugins(game, *, bundle=None):
     """Use existing installers and gates; do not change any native API or DLL."""
     if game_process_running():
         raise ValueError('FM27을 완전히 종료한 뒤 설치하세요.')
-    game = validate_game(game)
+    game = validate_game(game, builds=REFRESH_BUILDS)
     bundle = Path(bundle) if bundle is not None else resource_root() / 'plugins'
     components = [('FMFaceRefresh', 'FMFaceRefresh.dll')]
     # Verify every supplied DLL before installing the first one.

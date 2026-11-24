@@ -38,6 +38,8 @@ public sealed class GameRuntime : IGraphicsRuntime
         register = Method(resource, "RegisterLocalPath", "System.String", "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStringArray");
         clear = Method(resource, "ClearCache"); reload = Method(panel, "ReloadPanels");
         if (rescan.IsStatic || rescan.ReturnType != typeof(void) || clear.IsStatic || reload.IsStatic
+            || clear.ReturnType != typeof(void) || reload.ReturnType != typeof(void)
+            || !find.IsStatic || !il2cppType.IsStatic
             || register.IsStatic || register.ReturnType.Name != "LocalPathScan")
             throw new InvalidOperationException("Unexpected graphics API signature");
         convert = GameType("Il2CppInterop.Runtime", "Il2CppInterop.Runtime.DelegateSupport").GetMethods(All)

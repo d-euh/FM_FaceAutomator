@@ -50,6 +50,28 @@ class LiveRefreshTests(unittest.TestCase):
         self.assertIsNone(live_refresh.pump(pending, self.bridge, 1001)[0])
         self.assertIn("처리 완료", live_refresh.pump(pending, self.bridge, 1001)[1])
 
+    def test_patch_profile_is_bound_to_requests_and_replies(self):
+        self.connect(profile=live_refresh.PATCH_PROFILE, plugin_version='0.2.4')
+        pending, _ = live_refresh.pump(self.pending, self.bridge, 1000)
+        request = self.bridge / 'requests' / self.session / (pending['request_id'] + '.json')
+        self.assertEqual(json.loads(request.read_text())['profile'], live_refresh.PATCH_PROFILE)
+        reply = dict(protocol=1, profile=live_refresh.PROFILE, session=self.session,
+                     id=pending['request_id'], status='refreshed',
+                     execution=dict(started=True, rescan_attempts=1, completion_callbacks=1, cache_and_panel_attempts=1))
+        path = self.directory / 'responses' / request.name
+        live_refresh.write_json(path, reply)
+        self.assertIsNotNone(live_refresh.pump(pending, self.bridge, 1001)[0])
+        live_refresh.write_json(path, reply | {'profile': live_refresh.PATCH_PROFILE})
+        self.assertIsNone(live_refresh.pump(pending, self.bridge, 1001)[0])
+
+    def test_patch_profile_requires_new_plugin_and_unknown_profile_cannot_submit(self):
+        for profile, version in ((live_refresh.PATCH_PROFILE, '0.2.3'), ('fm27-steam-99999999-v1', '0.2.4')):
+            with self.subTest(profile=profile):
+                self.connect(profile=profile, plugin_version=version)
+                pending, _ = live_refresh.pump(self.pending, self.bridge, 1000)
+                self.assertNotIn('request_id', pending)
+        self.assertFalse((self.bridge / 'requests').exists())
+
     def test_stale_wrong_profile_and_ambiguous_sessions_do_not_receive_requests(self):
         for update in ({"heartbeat": 980}, {"profile": "fm26"}):
             self.connect(**update)

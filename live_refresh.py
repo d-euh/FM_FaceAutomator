@@ -11,12 +11,14 @@ import time
 import uuid
 
 PROFILE = "fm27-steam-26620374-v1"
+PATCH_PROFILE = "fm27-steam-26797085-v1"
+PROFILES = (PROFILE, PATCH_PROFILE)
 MIN_PLUGIN_VERSION = (0, 2, 3)
 
 
 def plugin_is_current(session):
     match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(session.get("plugin_version", "")))
-    return bool(match and tuple(map(int, match.groups())) >= MIN_PLUGIN_VERSION)
+    return bool(match and tuple(map(int, match.groups())) >= ((0, 2, 4) if session.get("profile") == PATCH_PROFILE else MIN_PLUGIN_VERSION))
 
 
 def wait_description(session):
@@ -91,7 +93,7 @@ def connection(root, now):
             value = read_json(path)
             session = value.get("session", "")
             pid = value.get("pid")
-            if (value.get("protocol") == 1 and value.get("profile") == PROFILE
+            if (value.get("protocol") == 1 and value.get("profile") in PROFILES
                     and re.fullmatch(r"[a-f0-9]{32}", session) and type(pid) is int and pid > 0
                     and path.parent.name == f"{pid}-{session}"
                     and 0 <= now - float(value["heartbeat"]) <= 5):
@@ -132,7 +134,7 @@ def pump(pending, root=None, now=None):
         reply = directory / "responses" / (request_id + ".json")
         if reply.is_file():
             value = read_json(reply)
-            if (value.get("protocol"), value.get("id"), value.get("session"), value.get("profile")) != (1, request_id, session["session"], PROFILE):
+            if (value.get("protocol"), value.get("id"), value.get("session"), value.get("profile")) != (1, request_id, session["session"], session["profile"]):
                 return pending, "게임 갱신 응답 확인 필요 · 요청 정보 불일치"
             result = value.get("status")
             if result == "refreshed":
@@ -156,7 +158,7 @@ def pump(pending, root=None, now=None):
         return None, "게임 갱신 대상 config.xml이 없습니다."
     digest = hashlib.sha256(config.read_bytes()).hexdigest()
     request_id = uuid.uuid4().hex
-    request = {"protocol": 1, "profile": PROFILE, "id": request_id, "session": session["session"],
+    request = {"protocol": 1, "profile": session["profile"], "id": request_id, "session": session["session"],
                "pack_dir": str(config.parent.resolve()), "config_sha256": digest,
                "created_at": now, "expires_at": now + 180}
     write_json(root / "requests" / session["session"] / (request_id + ".json"), request)

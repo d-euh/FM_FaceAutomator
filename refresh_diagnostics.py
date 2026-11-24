@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 
 EXPECTED_BUILD = "26620374"
+REFRESH_BUILDS = (EXPECTED_BUILD, "26797085")
 ROOT = Path(__file__).resolve().parent
 PLUGIN_NAME = "FMFaceRefresh.Diagnostics.dll"
 REPORT_PARTS = ("BepInEx", "diagnostics", "FMFaceRefresh", "refresh-diagnostic.json")
@@ -34,13 +35,13 @@ def steam_manifest(game):
     raise ValueError("Steam 설치 정보를 찾지 못했습니다. Steam의 ‘설치된 파일 → 찾아보기’에서 연 폴더의 fm.exe를 선택하세요.")
 
 
-def validate_game(game, require_loader=True):
+def validate_game(game, require_loader=True, *, builds=(EXPECTED_BUILD,)):
     game = Path(game).resolve()
     if not (game / "fm.exe").is_file() or not (game / "GameAssembly.dll").is_file():
         raise ValueError("fm.exe와 GameAssembly.dll이 있는 FM27 설치 폴더를 선택하세요.")
     manifest = steam_manifest(game)
-    if manifest["name"].casefold() != "football manager 27" or manifest["build"] != EXPECTED_BUILD:
-        raise ValueError(f"이 진단 설치 도구는 FM27 Steam 빌드 {EXPECTED_BUILD}용입니다. 확인된 게임: {manifest['name']} · {manifest['build']}")
+    if manifest["name"].casefold() != "football manager 27" or manifest["build"] not in builds:
+        raise ValueError(f"이 진단 설치 도구는 FM27 Steam 빌드 {', '.join(builds)}용입니다. 확인된 게임: {manifest['name']} · {manifest['build']}")
     if require_loader and any(not (game / "BepInEx" / "core" / name).is_file()
                               for name in ("BepInEx.Core.dll", "BepInEx.Unity.IL2CPP.dll")):
         raise ValueError("BepInEx 6 Unity IL2CPP x64가 먼저 필요합니다. 공식 Bleeding Edge be.793 이상을 사용하세요. BepInEx 5·Mono·구형 pre.2 설치 파일은 사용하지 마세요. 기존 BepInEx를 이 도구가 교체하지는 않습니다.\n공식 다운로드: https://builds.bepinex.dev/projects/bepinex_be")
@@ -96,7 +97,7 @@ def install_plugin(game, bundle=None):
 
 
 def install_component(game, bundle, filename, folder):
-    game = validate_game(game)
+    game = validate_game(game, builds=REFRESH_BUILDS if filename == "FMFaceRefresh.dll" else (EXPECTED_BUILD,))
     bundle = ROOT / "plugins" / folder if bundle is None else Path(bundle)
     source = bundle / filename
     expected = (bundle / "SHA256SUMS").read_text(encoding="ascii").split()[0]

@@ -2,6 +2,33 @@ using FMFaceRefresh;
 using System.Text.Json;
 
 void Check(bool value, string message) { if (!value) throw new Exception(message); }
+using var patchApi = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "patch-api.json")));
+var patchHashes = patchApi.RootElement.GetProperty("game_file_sha256").EnumerateObject()
+    .ToDictionary(p => p.Name, p => p.Value.GetString()!);
+Check(GameProfiles.Resolve("26797085", file => patchHashes[file]) == "fm27-steam-26797085-v1", "New profile must match the supplied game's complete hash set");
+foreach (var changed in patchHashes.Keys)
+{
+    try { GameProfiles.Resolve("26797085", file => file == changed ? new string('0', 64) : patchHashes[file]); throw new Exception("Changed binary accepted"); }
+    catch (InvalidOperationException exception) { Check(exception.Message.StartsWith("game_file_hash_mismatch:"), "Wrong changed-hash failure"); }
+}
+var oldHashes = new Dictionary<string, string> {
+    ["fm.exe"] = "a8247abcb57f409b4b45daf28234f09aca335a34e93b753004f1d438efb02349",
+    ["GameAssembly.dll"] = "3f4a26c4869d6429d2e73c276adc64bdfaf6f3c86ce44fe0de93d14683a5d7e9",
+    ["fm_Data/Plugins/x86_64/game_plugin.dll"] = "d12202dd01c3911d4c4e55e778f37b2251ffb10f9cf8cecc3b9ec08ece622c6b"
+};
+Check(GameProfiles.Resolve("26620374", file => oldHashes[file]) == "fm27-steam-26620374-v1", "Original profile must remain supported");
+try { GameProfiles.Resolve("26797085", file => oldHashes[file]); throw new Exception("Cross-build binaries accepted"); }
+catch (InvalidOperationException) { }
+foreach (var unknown in new string?[] { null, "99999999" })
+{
+    try { GameProfiles.Resolve(unknown, _ => throw new Exception("Unknown build must not hash/read files")); throw new Exception("Unknown build accepted"); }
+    catch (InvalidOperationException) { }
+}
+var resourceMethods = patchApi.RootElement.GetProperty("types").GetProperty("SI.Core.ResourcesSubsystem").GetProperty("methods");
+Check(resourceMethods.EnumerateArray().Any(m => m.GetProperty("name").GetString() == "RescanLocalPaths"
+    && m.GetProperty("return_type").GetString() == "Void" && !m.GetProperty("is_static").GetBoolean()
+    && m.GetProperty("parameters").EnumerateArray().Select(p => p.GetString()).SequenceEqual(new[] { "Il2CppSystem.Action" })),
+    "Patch metadata must confirm the asynchronous rescan signature, not prove runtime execution");
 var chosen = @"D:\Sports Interactive\Football Manager 27\Graphics\faces\Y_new";
 foreach (var root in new[] { @"d:\sports interactive\football manager 27\graphics\", "D:/Sports Interactive/Football Manager 27/Graphics",
                             "file:///D:/Sports%20Interactive/Football%20Manager%2027/Graphics/", @"\\?\D:\Sports Interactive\Football Manager 27\Graphics" })

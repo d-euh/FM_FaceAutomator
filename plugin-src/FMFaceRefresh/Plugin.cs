@@ -22,10 +22,10 @@ public sealed class RefreshRequest
     public double expires_at { get; set; }
 }
 
-[BepInPlugin("io.github.d_euh.fmface.refresh", "FM Face Refresh Experimental", "0.2.3")]
+[BepInPlugin("io.github.d_euh.fmface.refresh", "FM Face Refresh Experimental", "0.2.4")]
 public sealed class Plugin : BasePlugin
 {
-    public const string Profile = "fm27-steam-26620374-v1";
+    private string profile = "fm27-steam-26620374-v1";
     private static Plugin? instance;
     private readonly string session = Guid.NewGuid().ToString("N");
     private readonly string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FMFaceAutomator", "live-refresh");
@@ -56,28 +56,31 @@ public sealed class Plugin : BasePlugin
         instance = this;
         try
         {
-            if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess || Report.SteamBuild(Paths.GameRootPath) != Report.ExpectedBuild)
+            if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess)
                 throw new InvalidOperationException("unsupported_platform_or_steam_build");
-            var hashes = new Dictionary<string, string> {
-                ["fm.exe"] = "a8247abcb57f409b4b45daf28234f09aca335a34e93b753004f1d438efb02349",
-                ["GameAssembly.dll"] = "3f4a26c4869d6429d2e73c276adc64bdfaf6f3c86ce44fe0de93d14683a5d7e9",
-                ["fm_Data/Plugins/x86_64/game_plugin.dll"] = "d12202dd01c3911d4c4e55e778f37b2251ffb10f9cf8cecc3b9ec08ece622c6b"
-            };
-            foreach (var pair in hashes)
-                if (Hash(Path.Combine(Paths.GameRootPath, pair.Key)) != pair.Value) throw new InvalidOperationException("game_file_hash_mismatch:" + pair.Key);
+            profile = GameProfiles.Resolve(Report.SteamBuild(Paths.GameRootPath),
+                relative => Hash(Path.Combine(Paths.GameRootPath, relative)));
             runtime = new GameRuntime();
             controller = new Controller(runtime, () => active is not null && Current(active), Reply);
             harmony = new Harmony("io.github.d_euh.fmface.refresh");
             var manager = GameRuntime.GameType("FM.UI", "FM.UI.ContinueManagerModule");
             var proceed = manager.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
                 .Single(m => m.Name == "ContinueGame" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsEnum);
+            var events = new[] { "FM.UI.ContinueGameEvent", "SI.Bindable.DynamicReference" }
+                .Select(argument => GameRuntime.Method(manager, "ProcessCurrentContinueFlowState", argument)).ToArray();
+            var pause = GameRuntime.Method(manager, "ShouldPauseCountdown");
+            var tick = GameRuntime.Method(GameRuntime.GameType("SI.Core", "SI.Core.TickSubsystem"), "Update");
+            if (proceed.IsStatic || proceed.ReturnType != typeof(void)
+                || events.Any(method => method.IsStatic || method.ReturnType != typeof(void))
+                || pause.IsStatic || pause.ReturnType != typeof(bool) || tick.IsStatic || tick.ReturnType != typeof(void))
+                throw new InvalidOperationException("Unexpected game-state hook signature");
             harmony.Patch(proceed, prefix: new HarmonyMethod(typeof(Plugin), nameof(ContinuePrefix)));
-            foreach (var argument in new[] { "FM.UI.ContinueGameEvent", "SI.Bindable.DynamicReference" })
-                harmony.Patch(GameRuntime.Method(manager, "ProcessCurrentContinueFlowState", argument), prefix: new HarmonyMethod(typeof(Plugin), nameof(ContinuePrefix)));
-            harmony.Patch(GameRuntime.Method(manager, "ShouldPauseCountdown"), prefix: new HarmonyMethod(typeof(Plugin), nameof(PausePrefix)));
-            harmony.Patch(GameRuntime.Method(GameRuntime.GameType("SI.Core", "SI.Core.TickSubsystem"), "Update"), postfix: new HarmonyMethod(typeof(Plugin), nameof(AfterTick)));
+            foreach (var method in events)
+                harmony.Patch(method, prefix: new HarmonyMethod(typeof(Plugin), nameof(ContinuePrefix)));
+            harmony.Patch(pause, prefix: new HarmonyMethod(typeof(Plugin), nameof(PausePrefix)));
+            harmony.Patch(tick, postfix: new HarmonyMethod(typeof(Plugin), nameof(AfterTick)));
             enabled = true; problem = "";
-            Log.LogInfo("Experimental graphics refresh bridge loaded for Steam 26620374. Waiting for app opt-in and a safe game state.");
+            Log.LogInfo("Experimental graphics refresh bridge loaded for " + profile + ". Waiting for app opt-in and a safe game state.");
         }
         catch (Exception exception)
         {
@@ -138,7 +141,7 @@ public sealed class Plugin : BasePlugin
                 || Path.GetFileName(file) != request.id + ".json") continue;
             var response = Path.Combine(SessionDir, "responses", request.id + ".json");
             if (File.Exists(response)) { File.Delete(file); continue; }
-            if (request.protocol != 1 || request.profile != Profile || request.created_at > Now + 5 || request.expires_at > Now + 240)
+            if (request.protocol != 1 || request.profile != profile || request.created_at > Now + 5 || request.expires_at > Now + 240)
             { active = request; Reply("failed", "invalid_request"); File.Delete(file); return; }
             if (request.expires_at < Now)
             { active = request; Reply("failed", state.Idle ? "request_expired" : "idle_wait_timeout:" + state.Reason); File.Delete(file); return; }
@@ -167,7 +170,7 @@ public sealed class Plugin : BasePlugin
         if (active is null) return;
         var destination = Path.Combine(SessionDir, "responses", active.id + ".json");
         var payload = JsonSerializer.SerializeToElement(new {
-            protocol = 1, id = active.id, session, profile = Profile, status, reason, completed_at = Now,
+            protocol = 1, id = active.id, session, profile, status, reason, completed_at = Now,
             visual_result_verified = false, observations = runtime?.Observations, execution = Execution()
         });
         mailbox.QueueReply(() => Write(destination, payload));
@@ -185,8 +188,8 @@ public sealed class Plugin : BasePlugin
     };
 
     private void Status() => Write(Path.Combine(SessionDir, "status.json"), new {
-        protocol = 1, profile = Profile, session, pid = Environment.ProcessId, heartbeat = Now,
-        plugin_version = "0.2.3", experimental = true, visual_result_verified = false,
+        protocol = 1, profile, session, pid = Environment.ProcessId, heartbeat = Now,
+        plugin_version = "0.2.4", experimental = true, visual_result_verified = false,
         available = enabled && controller?.Faulted == false, stage = mailbox.HasReply ? "responding" : controller?.Stage ?? "unavailable",
         request_id = active?.id, reason = mailbox.HasReply ? "response_delivery_retry" : controller?.Faulted == true || activeStarted ? controller?.Reason : problem,
         mailbox = new { retry_failures = mailbox.Failures, last_error = mailbox.LastError, last_failure_utc = mailbox.LastFailureUtc },

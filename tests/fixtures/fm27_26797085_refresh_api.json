@@ -1,0 +1,187 @@
+{
+  "kind": "refresh_metadata_signature_fixture",
+  "steam_build": "26797085",
+  "runtime_verified": false,
+  "game_file_sha256": {
+    "fm.exe": "f8a46c63cdaab5710a6520094c93e0766998a9dbb07161be7923b6ac13e09fe6",
+    "GameAssembly.dll": "8b5707a924a6c8cb493cd67bc620be25a456ae5dc6b6f313f3f1d4f70fdeb552",
+    "fm_Data/Plugins/x86_64/game_plugin.dll": "4781439443abfb4b8197de03f1bed5b76063c862d014cfe01c5f54d83c9875ee"
+  },
+  "types": {
+    "FM.UI.ContinueManagerModule": {
+      "assembly": "FM.UI.dll",
+      "module_id": "a67ca4b0-bc06-4340-983d-d9da991afdff",
+      "methods": [
+        {
+          "name": "get_IsInProcessingCardState",
+          "is_static": false,
+          "return_type": "Boolean",
+          "parameters": []
+        },
+        {
+          "name": "get_IsLoading",
+          "is_static": false,
+          "return_type": "Boolean",
+          "parameters": []
+        },
+        {
+          "name": "ProcessCurrentContinueFlowState",
+          "is_static": false,
+          "return_type": "Void",
+          "parameters": [
+            "FM.UI.ContinueGameEvent"
+          ]
+        },
+        {
+          "name": "ProcessCurrentContinueFlowState",
+          "is_static": false,
+          "return_type": "Void",
+          "parameters": [
+            "SI.Bindable.DynamicReference"
+          ]
+        },
+        {
+          "name": "ContinueGame",
+          "is_static": false,
+          "return_type": "Void",
+          "parameters": [
+            ".TimerType"
+          ]
+        },
+        {
+          "name": "ShouldPauseCountdown",
+          "is_static": false,
+          "return_type": "Boolean",
+          "parameters": []
+        },
+        {
+          "name": "get_m_isInMainGameScene",
+          "is_static": false,
+          "return_type": "Boolean",
+          "parameters": []
+        },
+        {
+          "name": "get_m_active",
+          "is_static": false,
+          "return_type": "Boolean",
+          "parameters": []
+        },
+        {
+          "name": "get_m_gameStateFlags",
+          "is_static": false,
+          "return_type": ".ContinueFlowFlags",
+          "parameters": []
+        },
+        {
+          "name": "get_m_isProcessingInstantResult",
+          "is_static": false,
+          "return_type": "Boolean",
+          "parameters": []
+        },
+        {
+          "name": "get_m_continueState",
+          "is_static": false,
+          "return_type": "SI.Core.ValueWithChangeNotify`1<.ContinueFlowState>",
+          "parameters": []
+        }
+      ]
+    },
+    "SI.Bindable.PanelManager": {
+      "assembly": "SI.Bindable.dll",
+      "module_id": "3114b6f8-6be3-4354-9ad6-3b564965d8d6",
+      "methods": [
+        {
+          "name": "ReloadPanels",
+          "is_static": false,
+          "return_type": "Void",
+          "parameters": []
+        }
+      ]
+    },
+    "SI.Core.ResourcesSubsystem": {
+      "assembly": "SI.Core.dll",
+      "module_id": "a14c9f5b-0e7e-45eb-9182-7ff6cbb3f234",
+      "methods": [
+        {
+          "name": "get_AddressablesInitialised",
+          "is_static": false,
+          "return_type": "Boolean",
+          "parameters": []
+        },
+        {
+          "name": "get_IsInitialised",
+          "is_static": true,
+          "return_type": "Boolean",
+          "parameters": []
+        },
+        {
+          "name": "RegisterLocalPath",
+          "is_static": false,
+          "return_type": ".LocalPathScan",
+          "parameters": [
+            "String",
+            "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStringArray"
+          ]
+        },
+        {
+          "name": "RescanLocalPaths",
+          "is_static": false,
+          "return_type": "Void",
+          "parameters": [
+            "Il2CppSystem.Action"
+          ]
+        },
+        {
+          "name": "ClearCache",
+          "is_static": false,
+          "return_type": "Void",
+          "parameters": []
+        },
+        {
+          "name": "get_m_localPaths",
+          "is_static": false,
+          "return_type": "Il2CppSystem.Collections.Generic.List`1<.LocalPathRegistration>",
+          "parameters": []
+        },
+        {
+          "name": "get_m_pendingScans",
+          "is_static": false,
+          "return_type": "Il2CppSystem.Collections.Generic.List`1<.LocalPathScan>",
+          "parameters": []
+        }
+      ]
+    },
+    "SI.Core.TickSubsystem": {
+      "assembly": "SI.Core.dll",
+      "module_id": "a14c9f5b-0e7e-45eb-9182-7ff6cbb3f234",
+      "methods": [
+        {
+          "name": "Update",
+          "is_static": false,
+          "return_type": "Void",
+          "parameters": []
+        }
+      ]
+    },
+    "UnityEngine.Resources": {
+      "assembly": "UnityEngine.CoreModule.dll",
+      "module_id": "6df5b716-c77d-4559-93bb-744e3c70c526",
+      "methods": [
+        {
+          "name": "FindObjectsOfTypeAll",
+          "is_static": true,
+          "return_type": "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray`1<UnityEngine.Object>",
+          "parameters": [
+            "Il2CppSystem.Type"
+          ]
+        },
+        {
+          "name": "FindObjectsOfTypeAll",
+          "is_static": true,
+          "return_type": "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase`1<!!0>",
+          "parameters": []
+        }
+      ]
+    }
+  }
+}

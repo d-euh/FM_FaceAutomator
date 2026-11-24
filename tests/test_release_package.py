@@ -220,6 +220,13 @@ class ReleasePluginTests(unittest.TestCase):
         self.assertEqual(other.read_bytes(), b'keep')
         self.assertEqual((self.game / 'BepInEx/core/BepInEx.Core.dll').read_bytes(), b'6.0.0-be.793')
 
+    def test_patch_build_installs_refresh_only_and_keeps_build_gate_for_unknown_games(self):
+        self.manifest.write_text(self.manifest.read_text().replace('26620374', '26797085'))
+        with patch('release_tools.game_process_running', return_value=False):
+            targets = install_plugins(self.game, bundle=self.bundle)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].name, 'FMFaceRefresh.dll')
+
     def test_running_game_unsupported_build_or_corrupt_dll_prevents_install(self):
         with patch('release_tools.game_process_running', return_value=True), self.assertRaisesRegex(ValueError, '종료'):
             install_plugins(self.game, bundle=self.bundle)

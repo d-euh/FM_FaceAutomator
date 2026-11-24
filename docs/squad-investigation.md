@@ -1,5 +1,41 @@
 # Squad classification investigation
 
+## Graphics-refresh 0.2.4 candidate 2026-11-25
+
+The supplied `refresh-compatibility.json` reports Steam 26797085, 179 scanned
+assemblies and no read errors. It confirms the three hashes now pinned in
+`GameProfiles.cs`. A reduced nonpersonal API fixture records exact refresh/state
+method signatures and assembly module IDs. RescanLocalPaths(Action),
+RegisterLocalPath(String, Il2CppStringArray), ClearCache(), ReloadPanels(),
+ContinueGame(TimerType), both ProcessCurrentContinueFlowState overloads,
+ShouldPauseCountdown(), TickSubsystem.Update(), Unity Resources lookup and the
+state/registration getters match the existing invocation shapes. Nested metadata
+names such as `.TimerType` are not assertions of fully qualified runtime names.
+
+0.2.4 retains the old exact binary set and adds only this observed new set with a
+separate request/reply profile. Runtime initialization rechecks binary hashes and
+method signatures; all hook signatures are checked before the first Harmony
+patch. Unknown builds/mixed or altered files fail closed. Original team DLL
+installation/research gates and static baseline Report.ExpectedBuild are not
+expanded. Python refresh installation alone accepts the two observed builds;
+the runtime applies the binary gates. App transport accepts only the two known
+profiles, requires 0.2.4 for the patch profile, and checks matching reply profile.
+
+No new game API or refresh sequence is introduced. Controller/delegate roots,
+busy/idle policy, one-shot scan, callback completion, cache/panel reload, timeout
+faulting and unload/own-hook cleanup are retained. Linux .NET tests cover actual
+hash fixtures, rejection of changed/mixed/unknown sets, old reported game states,
+callback/timeout/config-lock and response-delivery behavior. The DLL targets
+net6.0 and compiles against the same existing be.697 reference SDK API surface;
+the installer still requires the user's be.793+ runtime. The references are not
+shipped or substituted into the game. This is not proof of new-game execution.
+
+A fresh DLL/checksum is distributed with the app. Final validation needs the
+user to install 0.2.4 with FM27 closed, run the patched game and test refresh on
+an existing image without an AI request. Both a fresh live-refresh report
+(callback/reload evidence) and actual visual change are needed. Neither Windows
+plugin loading nor actual 26797085 refresh completion has been observed here.
+
 ## Graphics-refresh Steam 26797085 investigation 2026-11-25
 
 The user's installer screenshot reports Steam build `26797085`; this is not the
