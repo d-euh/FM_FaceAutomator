@@ -18,7 +18,8 @@ def terminate_tree(process):
     if os.name == 'nt':
         try:
             subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         except (OSError, subprocess.TimeoutExpired):
             process.kill()
     else:
@@ -48,7 +49,7 @@ def run_codex(command, *, input, stdout, stderr, timeout, text=True, encoding='u
     with tempfile.TemporaryFile() as source:
         source.write(input.encode(encoding))
         source.seek(0)
-        flags = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
+        flags = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {'start_new_session': True}
         process = subprocess.Popen(command, stdin=source, stdout=stdout, stderr=stderr, shell=False, **flags)
         started, checked = time.monotonic(), time.monotonic()
         try:

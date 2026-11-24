@@ -452,7 +452,7 @@ class EngineTests(unittest.TestCase):
         def runner(cmd, **kwargs):
             self.assertIn("Rainy stadium", kwargs["input"])
             self.assertIn("Laughing with arms raised", kwargs["input"])
-            self.assertNotIn("Preserve the original hair, expression and pose", kwargs["input"])
+            self.assertIn("Preserve the original hair, expression and pose", kwargs["input"])
             return self.good_runner(cmd, **kwargs)
         self.e.run_one(runner)
         with Image.open(Path(self.c["pack_dir"]) / "900001.png") as card:
@@ -757,7 +757,7 @@ class EngineTests(unittest.TestCase):
         def runner(cmd, **kwargs):
             self.assertIn('Arsenal', kwargs['input'])
             self.assertIn('Laugh with arms raised', kwargs['input'])
-            self.assertNotIn('Preserve the original hair', kwargs['input'])
+            self.assertIn('Preserve the original hair', kwargs['input'])
             self.assertEqual((Path(cmd[cmd.index('--cd')+1])/'kit.png').read_bytes(), reference_png(Path(self.c['kits_dir'])/'20.png'))
             return self.good_runner(cmd, **kwargs)
         self.assertTrue(self.e.run_one(runner, job_id=jid))
@@ -1635,11 +1635,29 @@ class EngineTests(unittest.TestCase):
         self.assertIn("EXACT 350x350", prompt)
         self.assertIn("Do not draw any name", prompt)
 
+    def test_local_reference_keeps_framing_with_or_without_general_or_personal_directions(self):
+        row = snapshot()["players"][0]
+        for general, personal in (('', ''), ('Use a blue jersey', ''), ('', 'Smile'),
+                                  ('Night lighting', 'Raise the right hand')):
+            with self.subTest(general=general, personal=personal):
+                options = request_options(self.c, row) | {'general': general, 'personal': personal}
+                for web_kit in (False, True):
+                    prompt = build_prompt(self.c, dict(row, kit_origin='web' if web_kit else 'local', kit_variant='home'), options)
+                    self.assertIn('original face/head size and position', prompt)
+                    self.assertIn('crop boundaries, visible body extent, background, lighting', prompt)
+                    self.assertIn('change only elements explicitly requested', prompt)
+                    self.assertIn('Do not zoom out', prompt)
+                    self.assertIn('Change only the visible jersey by default', prompt)
+                    self.assertNotIn('bottom 90 pixels', prompt)
+                    self.assertNotIn('Include enough of the upper torso', prompt)
+                    self.assertNotIn('Default visual style', prompt)
+
     def test_kit_branding_is_required_and_not_contradicted_by_caption_bans(self):
         prompt = build_prompt(self.c, snapshot()["players"][0])
         self.assertIn("club crest, manufacturer logo, sponsor wordmarks and lettering", prompt)
         self.assertIn("physically printed on the reference jersey are ALLOWED", prompt)
-        self.assertIn("avoid a face-only crop", prompt)
+        self.assertIn("Do not zoom out", prompt)
+        self.assertNotIn("avoid a face-only crop", prompt)
         self.assertIn("second image, kit.png", prompt)
         self.assertNotIn("no text or frame", prompt)
         self.assertNotIn("Do not draw any name, text, letters", prompt)
@@ -1685,10 +1703,10 @@ class EngineTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         load_config(path)
 
-    def test_common_directions_remove_pose_preservation(self):
+    def test_common_directions_only_override_explicitly_requested_elements(self):
         self.c["additional_instructions"] = "골을 넣고 활짝 웃으며 오른팔을 들어주세요."
         prompt = build_prompt(self.c, snapshot()["players"][0])
-        self.assertNotIn("Preserve the original hair, expression and pose", prompt)
+        self.assertIn("Preserve the original hair, expression and pose", prompt)
         self.assertIn(self.c["additional_instructions"], prompt)
         self.assertIn("preserve facial identity", prompt)
 
@@ -1701,7 +1719,7 @@ class EngineTests(unittest.TestCase):
         prompt = build_prompt(self.c, row)
         self.assertIn("take priority over the common", prompt)
         self.assertIn("Laughing, arms raised", prompt)
-        self.assertNotIn("Preserve the original hair, expression and pose", prompt)
+        self.assertIn("Preserve the original hair, expression and pose", prompt)
         self.c["player_overrides"][row["id"]]["identity"] = "old person"
         self.assertEqual(request_options(self.c, row)["personal"], "")
 

@@ -507,7 +507,7 @@ class App:
         self.support_frame = ttk.Frame(parent,style='Panel.Card.TFrame',padding=10)
         self.support_frame.columnconfigure(1,weight=1)
         self.vars['graphics_root'] = tk.StringVar()
-        ttk.Label(self.support_frame,text='자료 검색 위치 · 선택',style='CardText.TLabel').grid(row=0,column=0,sticky='w',padx=(0,10))
+        ttk.Label(self.support_frame,text='자료 검색 위치(선택)',style='CardText.TLabel').grid(row=0,column=0,sticky='w',padx=(0,10))
         ttk.Entry(self.support_frame,textvariable=self.vars['graphics_root']).grid(row=0,column=1,sticky='ew')
         ttk.Button(self.support_frame,text='선택',style='Compact.TButton',command=lambda:self.choose('graphics_root','dir')).grid(row=0,column=2,padx=(8,0))
         tools = ttk.Frame(self.support_frame,style='Card.TFrame')

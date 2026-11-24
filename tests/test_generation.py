@@ -3,7 +3,8 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from generation import GenerationCancelled, run_codex
 
@@ -36,6 +37,40 @@ class GenerationProcessTests(unittest.TestCase):
             self.assertIsNotNone(processes[0].poll())
         finally:
             timer.cancel()
+
+    def test_windows_generation_is_hidden_and_keeps_file_io(self):
+        process = Mock(returncode=0)
+        process.poll.return_value = 0
+        inputs = []
+        def start(command, **kwargs):
+            inputs.append(kwargs['stdin'].read())
+            self.assertFalse(kwargs['shell'])
+            self.assertEqual(kwargs['creationflags'], 0x08000000 | 0x200)
+            return process
+        with patch('generation.os', SimpleNamespace(name='nt')), \
+             patch('generation.subprocess.CREATE_NO_WINDOW', 0x08000000, create=True), \
+             patch('generation.subprocess.CREATE_NEW_PROCESS_GROUP', 0x200, create=True), \
+             patch('generation.subprocess.Popen', side_effect=start):
+            self.assertEqual(self.run_process('pass').returncode, 0)
+        self.assertEqual(inputs, [b'reference data'])
+
+    def test_windows_cancel_hides_taskkill_and_terminates_child_tree(self):
+        cancel = threading.Event()
+        process = Mock(pid=123)
+        process.poll.return_value = None
+        def start(*args, **kwargs):
+            cancel.set()
+            return process
+        with patch('generation.os', SimpleNamespace(name='nt')), \
+             patch('generation.subprocess.CREATE_NO_WINDOW', 0x08000000, create=True), \
+             patch('generation.subprocess.CREATE_NEW_PROCESS_GROUP', 0x200, create=True), \
+             patch('generation.subprocess.Popen', side_effect=start), \
+             patch('generation.subprocess.run') as stop:
+            with self.assertRaises(GenerationCancelled):
+                self.run_process('pass', cancel_event=cancel)
+        self.assertEqual(stop.call_args.args[0], ['taskkill', '/PID', '123', '/T', '/F'])
+        self.assertEqual(stop.call_args.kwargs['creationflags'], 0x08000000)
+        process.wait.assert_called_once_with(timeout=2)
 
     def test_already_cancelled_request_never_launches(self):
         cancel = threading.Event()
