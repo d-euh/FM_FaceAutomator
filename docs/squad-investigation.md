@@ -1,5 +1,43 @@
 # Squad classification investigation
 
+## FM27 27.1.1 save investigation 2026-11-25
+
+This is a read-only compatibility investigation, not an enabled production build.
+The save supplied in `d-euh/any` release `v3` is 171,091,625 bytes, SHA-256
+`7dbdf4692c1cedbfceeffdcc4b698952884818d2e909022eeb78d7ccb70e7785`.
+Its header reports FM27 `27.1.1+2511875`, game date 2028-09-02.
+The released app correctly rejects this build as outside its current allowlist.
+
+A disposable diagnostic process temporarily substituted the candidate build in
+memory only. The unchanged `fmsave==0.12.6` strict readers, existing ownership
+checks and team decoder read 95,050 players and produced 47,155 club-team entries:
+21,445 first, 2,910 reserve, 9,709 youth, and 13,091 unknown. Unknown entries were
+not promoted or sent to AI. The raw table contains 55,063 records, including
+national teams; this is a different count from production club-team entries.
+
+Comparison with the previously verified 27.1.0 save dated 2028-07-07 found:
+
+- All section schema version numbers match.
+- All 55,063 team unique IDs, indexes, secondary IDs, owner indexes, record kinds,
+  national markers, raw types and tail flags match.
+- All 21,445 club identity/team-reference graphs match.
+- 49 raw age fields and one prefix flag changed over the simulated interval.
+  The changed prefix is team index 29223, type 1, flags 1 to 128; no new raw
+  type/prefix combination appears compared with that older save. This does not
+  extend the production set of semantically verified states.
+- The decoder's kind/owning-club result for every club-team unique ID matches,
+  including the Manchester United first/reserve/youth controls. This is a
+  cross-save decoder comparison, not new in-game role verification.
+
+`fmsave` emitted two UnknownBuildWarnings: it has no complete registered layout
+for 27.1.1 and borrows existing FM27 layouts, including the 27.1.0 club/finance
+layout. Structural success does not establish all field semantics. No new game
+UI/native observations were collected. The production allowlist, save decoder
+gate and Steam/hash restrictions remain unchanged. The new Steam build number,
+game binaries, graphics-refresh DLL compatibility and Windows execution cannot
+be established from this save alone. No user settings, queue, facepack or save
+was modified and no image/AI request was made.
+
 ## Live team lookup removed 2026-11-24
 
 Production classification uses only the verified save decoder. Native fallback,
