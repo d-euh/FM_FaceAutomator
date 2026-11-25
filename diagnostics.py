@@ -73,7 +73,8 @@ def export_bundle(destination, *, config_path=None, config=None, root=None, brid
         except (OSError, ValueError, KeyError, TypeError) as exc:
             report["errors"].append("config:" + type(exc).__name__)
     if config is not None:
-        report["settings"] = {key: config.get(key) for key in ("source", "state_dir", "pack_dir", "live_refresh_enabled")}
+        report["settings"] = {key: config.get(key) for key in (
+            "source", "state_dir", "pack_dir", "portraits_dir", "kits_dir", "graphics_root", "live_refresh_enabled")}
         scope = config.get("scope_rules")
         if isinstance(scope, dict):
             report["settings"]["scope_rules"] = {
@@ -84,7 +85,7 @@ def export_bundle(destination, *, config_path=None, config=None, root=None, brid
             try:
                 with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=2) as db:
                     db.row_factory = sqlite3.Row
-                    report["workspace"] = dict(db.execute("SELECT key,value FROM meta WHERE key IN ('live_refresh_pending','live_refresh_status','live_refresh_session','live_refresh_last_result','source_stamp','detection_summary','squad_status')"))
+                    report["workspace"] = dict(db.execute("SELECT key,value FROM meta WHERE key IN ('live_refresh_pending','live_refresh_status','live_refresh_session','live_refresh_last_result','source_stamp','detection_summary','squad_status','league_status','catalog_key','catalog_updated','game_date')"))
                     for job in db.execute("SELECT id,player_id,data,status,note,created,started,artifact FROM jobs ORDER BY id DESC LIMIT 30"):
                         item = {key: job[key] for key in ("id", "player_id", "status", "note", "created", "started")}
                         try:

@@ -56,6 +56,35 @@ class DiagnosticBundleTests(unittest.TestCase):
         self.assertIn("live_plugin_session_not_found", report["errors"])
         self.assertFalse((self.root / "state").exists())
 
+    def test_league_diagnostics_and_asset_roots_survive_read_only_export(self):
+        self.config.update({key: str(self.root / key) for key in ("portraits_dir", "kits_dir", "graphics_root")})
+        status = {"requested": True, "resolved": [], "error_code": "club_references_not_found",
+                  "leagues": {"11": {"season_fixtures": 10, "unmatched_club_refs": 20, "clubs": 0}}}
+        engine = Engine(self.config)
+        try:
+            with engine.db:
+                engine.setmeta("league_status", json.dumps(status))
+                engine.setmeta("detection_summary", json.dumps({"league_status": status}))
+                engine.setmeta("catalog_key", "leagues")
+                engine.setmeta("catalog_updated", "123")
+                engine.setmeta("game_date", "2027-08-02")
+        finally:
+            engine.close()
+        database = self.root / "state" / "queue.sqlite"
+        original = database.read_bytes()
+        report = self.export()
+        for key in ("portraits_dir", "kits_dir", "graphics_root"):
+            self.assertEqual(report["settings"][key], self.config[key])
+            self.assertFalse(Path(self.config[key]).exists())
+        workspace = report["workspace"]
+        self.assertEqual(json.loads(workspace["league_status"]), status)
+        self.assertEqual(json.loads(workspace["detection_summary"])["league_status"], status)
+        self.assertEqual(workspace["catalog_key"], "leagues")
+        self.assertEqual(workspace["catalog_updated"], "123")
+        self.assertEqual(workspace["game_date"], "2027-08-02")
+        self.assertEqual(database.read_bytes(), original)
+        self.assertNotIn("SECRET", self.output.read_text())
+
     def test_corrupt_session_does_not_hide_other_responses_or_static_header(self):
         session = self.bridge / "sessions" / "12-session"
         session.mkdir(parents=True)

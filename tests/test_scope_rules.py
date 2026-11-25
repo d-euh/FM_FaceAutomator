@@ -119,6 +119,59 @@ class LeagueCatalogTests(unittest.TestCase):
         self.assertEqual(index["101"]["league_ids"], [])
         self.assertEqual(index["103"]["league_ids"], ["11"])
         self.assertEqual(status["season"], "2027/2028")
+        self.assertEqual(status["window"], {"start": "2027-07-01", "end_exclusive": "2028-07-01"})
+        self.assertEqual(status["counts"], {"competitions": 2, "fixtures": 3})
+        self.assertEqual(status["leagues"]["11"], {
+            "competitions": 1, "fixtures": 2, "season_fixtures": 1, "unmatched_club_refs": 0, "clubs": 2})
+        self.assertEqual(status["error_code"], "")
+
+    def test_diagnostics_distinguish_empty_competition_calendar_and_club_joins(self):
+        fixture = NS(competition_id=9000, date="2027-08-01", home_club_uid=1, away_club_uid=2)
+        competition = NS(id=9000, database_id=11)
+        cases = (
+            ([], [fixture], self.clubs(), "competition_not_found"),
+            ([competition], [NS(**(vars(fixture) | {"date": "2026-08-01"}))], self.clubs(), "season_fixtures_not_found"),
+            ([competition], [fixture], {}, "club_references_not_found"),
+        )
+        for competitions, fixtures, clubs, code in cases:
+            with self.subTest(code=code):
+                save = NS(competitions=lambda: iter(competitions), fixtures=lambda: iter(fixtures))
+                catalog, status = read_catalog(save, clubs, "2027-08-02", True)
+                self.assertEqual(status["error_code"], code)
+                self.assertEqual(status["resolved"], [])
+                self.assertNotIn("일정 생성 후", status["error"])
+                self.assertIn("자동으로 다시 감지되지 않습니다", status["error"])
+                self.assertTrue(all(not club["league_ids"] for club in catalog))
+                self.assertEqual(status["leagues"]["11"]["unmatched_club_refs"], 2 if not clubs else 0)
+
+    def test_season_boundaries_are_reported_and_applied_without_guessing_membership(self):
+        save = NS(competitions=lambda: [NS(id=9000, database_id=11)],
+                  fixtures=lambda: [NS(competition_id=9000, date="2027-06-30", home_club_uid=1, away_club_uid=2),
+                                    NS(competition_id=9000, date="2027-07-01", home_club_uid=3, away_club_uid=4)])
+        for game_date, season, ids in (("2027-06-30", "2026/2027", {"101", "102"}),
+                                      ("2027-07-01", "2027/2028", {"103", "104"})):
+            with self.subTest(game_date=game_date):
+                catalog, status = read_catalog(save, self.clubs(), game_date, True)
+                self.assertEqual(status["season"], season)
+                self.assertEqual({c["id"] for c in catalog if c["league_ids"]}, ids)
+
+    def test_partial_calendar_failure_records_progress_without_publishing_partial_members(self):
+        def fixtures():
+            yield NS(competition_id=9000, date="2027-08-01", home_club_uid=1, away_club_uid=2)
+            raise ValueError("broken calendar")
+        save = NS(competitions=lambda: [NS(id=9000, database_id=11)], fixtures=fixtures)
+        catalog, status = read_catalog(save, self.clubs(), "2027-08-02", True)
+        self.assertEqual(status["error_code"], "read_failed")
+        self.assertIn("broken calendar", status["error"])
+        self.assertEqual(status["counts"]["fixtures"], 1)
+        self.assertEqual(status["leagues"]["11"]["season_fixtures"], 1)
+        self.assertEqual(status["resolved"], [])
+        self.assertTrue(all(not club["league_ids"] for club in catalog))
+
+    def test_invalid_game_date_is_reported_before_reading_calendar(self):
+        _, status = read_catalog(NS(), self.clubs(), "2027-99-01", True)
+        self.assertEqual(status["error_code"], "read_failed")
+        self.assertEqual(status["counts"], {"competitions": 0, "fixtures": 0})
 
     def test_missing_league_reader_never_invents_real_world_members(self):
         catalog, status = read_catalog(NS(), self.clubs(), "2027-08-02", True)
@@ -130,3 +183,4 @@ class LeagueCatalogTests(unittest.TestCase):
         _, status = read_catalog(NS(), self.clubs(), "2027-08-02", False)
         self.assertFalse(status["requested"])
         self.assertEqual(status["error"], "")
+        self.assertNotIn("counts", status)
