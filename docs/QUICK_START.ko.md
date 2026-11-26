@@ -10,10 +10,12 @@
    기존 설치가 있으면 그 경로를 우선 사용하며 데이터를 자동으로 다른 드라이브로 옮기지 않습니다.
    시작 메뉴와 선택한 바탕화면 바로가기를 만들며, 설치 완료 후 앱을 실행할 수 있습니다.
 2. 받는 PC에 Python, 가상환경 또는 Git은 필요하지 않습니다.
-   Codex CLI와 로그인은 별도로 필요합니다. 공식 설치 안내:
+   기본 생성 방식인 Codex CLI와 로그인은 별도로 필요합니다. 공식 설치 안내:
    https://developers.openai.com/codex/cli/
    npm으로 설치한다면 Node.js LTS 설치 후 `npm install -g @openai/codex`를 실행합니다.
    사용 계정과 Codex 환경에서 이미지 생성 도구를 사용할 수 있어야 합니다.
+   Gemini로 합성하려면 대신 `gemini-api.exe`와 유료 API 키를 준비하고
+   [Gemini 연결 안내](https://github.com/d-euh/FM_FaceAutomator/blob/main/docs/GEMINI.ko.md)를 따릅니다.
 3. `FMFaceAutomator.exe`를 실행하세요. 첫 실행에는 경로 검색을 마친 뒤
    **폴더 · 연결** 창이 열립니다. 세이브·기존 페이스팩·유니폼·생성 저장 위치를 확인하고
    **ChatGPT 로그인**으로 연결한 다음 **설정 저장**을 누릅니다.

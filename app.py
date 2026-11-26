@@ -27,6 +27,7 @@ from gunzo import BUNDLED_FONTS, DEFAULT_NAME_COLOR, DEFAULT_NAME_FONT_SIZE, DEF
 from theme import BACKGROUND, LOG_BACKGROUND, MUTED, PREVIEW_BACKGROUND, PURPLE, apply_theme
 from diagnostics import APP_VERSION, export_bundle
 from codex_login import STATUS_TEXT, browser_login, login_status, resolve_codex
+import gemini_cli
 from player_catalog import find_players
 from manual_ui import ManualPanel
 from transfer_types import TRANSFER_TYPES, event_type
@@ -202,7 +203,9 @@ class App:
         self.log = tk.Text(log_host, height=4, font=(family, 9), state="disabled", background=LOG_BACKGROUND, foreground=MUTED, relief="flat", padx=10, pady=8)
         self.load()
         self.vars["codex"].trace_add("write", self.codex_path_changed)
-        self.codex_path_changed()
+        self.vars["gemini"].trace_add("write", self.codex_path_changed)
+        self.vars['image_provider'].trace_add('write', self.provider_changed)
+        self.provider_changed()
         self.window.after(100, self.auto_paths)
         self.window.after(500, self.drain)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
@@ -464,26 +467,43 @@ class App:
         right = ttk.Frame(body,style='Panel.Card.TFrame',padding=12)
         right.grid(row=0,column=1,sticky='nsew')
         right.columnconfigure(0,weight=1)
-        ttk.Label(left,text='파일 · Codex',style='CardTitle.TLabel').grid(row=0,column=0,columnspan=3,sticky='w',pady=(0,6))
+        ttk.Label(left,text='파일 · AI 연결',style='CardTitle.TLabel').grid(row=0,column=0,columnspan=3,sticky='w',pady=(0,6))
         ttk.Label(left,text='연결 폴더를 확인해주세요',style='CardMuted.TLabel').grid(row=1,column=0,columnspan=3,sticky='w',pady=(0,6))
         rows = [('source','연결할 세이브 파일','file'),('portraits_dir','기존 페이스팩 폴더','dir'),
-                ('kits_dir','유니폼 키트 폴더','dir'),('pack_dir','생성 페이스팩 저장 위치','dir'),('codex','Codex 실행 파일','exe')]
+                ('kits_dir','유니폼 키트 폴더','dir'),('pack_dir','생성 페이스팩 저장 위치','dir')]
         for index,(key,label,chooser) in enumerate(rows,2):
             self.vars[key] = tk.StringVar()
             ttk.Label(left,text=label,style='CardText.TLabel').grid(row=index,column=0,sticky='w',padx=(0,8),pady=4)
             ttk.Entry(left,textvariable=self.vars[key],width=22).grid(row=index,column=1,sticky='ew',pady=4)
             ttk.Button(left,text='선택',style='Compact.TButton',command=lambda k=key,c=chooser:self.choose(k,c)).grid(row=index,column=2,padx=(6,0))
+        self.vars['image_provider'] = tk.StringVar()
+        ttk.Label(left,text='이미지 생성 방식',style='CardText.TLabel').grid(row=6,column=0,sticky='w',pady=4)
+        ttk.Combobox(left,textvariable=self.vars['image_provider'],values=list(gemini_cli.PROVIDERS.values()),
+                     state='readonly',width=22).grid(row=6,column=1,columnspan=2,sticky='ew',pady=4)
+        self.vars['codex'], self.vars['gemini'] = tk.StringVar(), tk.StringVar()
+        self.cli_label = ttk.Label(left,text='Codex 실행 파일',style='CardText.TLabel')
+        self.cli_label.grid(row=7,column=0,sticky='w',pady=4)
+        self.cli_entry = ttk.Entry(left,textvariable=self.vars['codex'],width=22)
+        self.cli_entry.grid(row=7,column=1,sticky='ew',pady=4)
+        ttk.Button(left,text='선택',style='Compact.TButton',command=lambda:self.choose(
+            'gemini' if self.selected_provider() == 'gemini' else 'codex','exe')).grid(row=7,column=2,padx=(6,0))
         login = ttk.Frame(left,style='Card.TFrame')
-        login.grid(row=7,column=0,columnspan=3,sticky='ew',pady=6)
+        login.grid(row=8,column=0,columnspan=3,sticky='ew',pady=6)
         self.auth_status = tk.StringVar(value='로그인 상태 확인 중…')
         self.login_button = ttk.Button(login,text='ChatGPT 로그인',style='Compact.TButton',command=self.login_chatgpt)
         self.login_button.pack(side='left',padx=(0,10))
         ttk.Label(login,textvariable=self.auth_status,style='CardMuted.TLabel',wraplength=330).pack(side='left',fill='x',expand=True)
-        ttk.Label(left,text='합성에 사용할 유니폼',style='CardText.TLabel').grid(row=8,column=0,sticky='w',pady=6)
+        self.gemini_model_row = ttk.Frame(left,style='Card.TFrame')
+        self.gemini_model_row.grid(row=9,column=0,columnspan=3,sticky='ew',pady=4)
+        self.gemini_model_row.columnconfigure(1,weight=1)
+        self.vars['gemini_model'] = tk.StringVar()
+        ttk.Label(self.gemini_model_row,text='Gemini 이미지 모델',style='CardText.TLabel').grid(row=0,column=0,padx=(0,8))
+        ttk.Entry(self.gemini_model_row,textvariable=self.vars['gemini_model'],width=22).grid(row=0,column=1,sticky='ew')
+        ttk.Label(left,text='합성에 사용할 유니폼',style='CardText.TLabel').grid(row=10,column=0,sticky='w',pady=6)
         self.vars['kit_variant'] = tk.StringVar()
-        ttk.Combobox(left,textvariable=self.vars['kit_variant'],values=list(KIT_LABELS.values()),state='readonly',width=12).grid(row=8,column=1,sticky='w')
+        ttk.Combobox(left,textvariable=self.vars['kit_variant'],values=list(KIT_LABELS.values()),state='readonly',width=12).grid(row=10,column=1,sticky='w')
         self.path_status = tk.StringVar(value='경로를 자동 확인합니다. 다른 항목만 직접 바꾸세요.')
-        ttk.Label(left,textvariable=self.path_status,style='CardMuted.TLabel',wraplength=500).grid(row=9,column=0,columnspan=3,sticky='w',pady=(6,0))
+        ttk.Label(left,textvariable=self.path_status,style='CardMuted.TLabel',wraplength=500).grid(row=11,column=0,columnspan=3,sticky='w',pady=(6,0))
 
         ttk.Label(right,text='이름 스타일',style='CardTitle.TLabel').grid(row=0,column=0,sticky='w')
         ttk.Label(right,text='글꼴 · TTF/OTF/TTC',style='CardText.TLabel').grid(row=1,column=0,sticky='w',pady=(10,4))
@@ -586,6 +606,21 @@ class App:
     def auth_active(self):
         return self.auth_thread is not None and self.auth_thread.is_alive()
 
+    def selected_provider(self):
+        value = self.vars['image_provider'].get()
+        return {label:key for key,label in gemini_cli.PROVIDERS.items()}.get(value, value)
+
+    def provider_changed(self, *args):
+        gemini = self.selected_provider() == 'gemini'
+        self.cli_entry.configure(textvariable=self.vars['gemini' if gemini else 'codex'])
+        self.cli_label.configure(text='Gemini API CLI' if gemini else 'Codex 실행 파일')
+        self.login_button.configure(text='Gemini API 설정' if gemini else 'ChatGPT 로그인')
+        if gemini:
+            self.gemini_model_row.grid()
+        else:
+            self.gemini_model_row.grid_remove()
+        self.codex_path_changed()
+
     def codex_path_changed(self, *args):
         if self.auth_check_timer is not None:
             self.window.after_cancel(self.auth_check_timer)
@@ -604,7 +639,7 @@ class App:
         if self.auth_active():
             return
         if self.active():
-            messagebox.showinfo("ChatGPT 로그인", "자동 생성을 멈춘 뒤 로그인하세요. ‘작업 종료 후 멈춤’을 누르면 진행 중인 합성이 끝난 뒤 멈춥니다.")
+            messagebox.showinfo("AI 연결", "자동 생성을 멈춘 뒤 연결을 설정하세요. ‘작업 종료 후 멈춤’을 누르면 진행 중인 합성이 끝난 뒤 멈춥니다.")
             return
         if self.auth_check_timer is not None:
             self.window.after_cancel(self.auth_check_timer)
@@ -612,45 +647,56 @@ class App:
         self.run_auth(login=True)
 
     def run_auth(self, *, login):
-        value = self.vars["codex"].get()
+        provider = self.selected_provider()
+        key = 'gemini' if provider == 'gemini' else 'codex'
+        value = self.vars[key].get()
         try:
-            executable = resolve_codex(value, self.path.parent)
+            executable = (gemini_cli.resolve_executable if provider == 'gemini' else resolve_codex)(value, self.path.parent)
             if login:
                 # Logging in must work before a save or any graphics folders are selected.
-                config = dict(self.config, codex=executable)
+                config = self.config | {key: executable, 'image_provider': provider}
                 write_atomic(self.path, json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8"))
                 self.config = config
-                self.vars["codex"].set(executable)
+                self.vars[key].set(executable)
                 value = executable
         except (ValueError, OSError) as exc:
             self.auth_status.set(str(exc))
             if login:
-                messagebox.showerror("ChatGPT 로그인", str(exc))
+                messagebox.showerror("Gemini API 설정" if provider == 'gemini' else "ChatGPT 로그인", str(exc))
             return
-        self.auth_status.set("브라우저에서 ChatGPT 로그인을 완료하세요. 열리지 않으면 Codex 로그인 창의 주소를 사용하세요." if login else "로그인 상태 확인 중…")
+        self.auth_status.set(('열린 창에서 API 키를 설정하세요. API 사용량은 과금되며 구독 크레딧을 연결할 수 있습니다.'
+                             if provider == 'gemini' else '브라우저에서 ChatGPT 로그인을 완료하세요. 열리지 않으면 Codex 로그인 창의 주소를 사용하세요.')
+                            if login else '연결 상태 확인 중…')
         self.login_button.configure(state="disabled")
         self.auth_logging_in = login
         def worker():
             try:
-                result = browser_login(executable, self.path.parent, self.auth_cancel) if login else login_status(executable, self.path.parent)
+                if provider == 'gemini':
+                    result = gemini_cli.configure(executable, self.path.parent, self.auth_cancel) if login else gemini_cli.status(executable, self.path.parent)
+                else:
+                    result = browser_login(executable, self.path.parent, self.auth_cancel) if login else login_status(executable, self.path.parent)
             except Exception:
                 result = "launch_failed"  # Do not copy CLI auth output or tokens into app logs.
-            self.events.put({"auth": True, "login": login, "value": value, "result": result})
+            self.events.put({"auth": True, "provider": provider, "login": login, "value": value, "result": result})
         self.auth_thread = threading.Thread(target=worker, daemon=True)
         self.auth_thread.start()
 
     def accept_auth(self, event):
-        if self.vars["codex"].get() != event["value"]:
-            self.auth_status.set("Codex 경로 변경됨 · 로그인 상태를 다시 확인합니다.")
+        provider = event.get('provider', 'codex')
+        if self.selected_provider() != provider or self.vars['gemini' if provider == 'gemini' else 'codex'].get() != event["value"]:
+            self.auth_status.set("AI 연결 변경됨 · 연결 상태를 다시 확인합니다.")
             self.codex_path_changed()
             return
         result = event["result"]
         text = STATUS_TEXT.get(result, {
+            'gemini_ready': gemini_cli.READY,
+            'gemini_configured': 'Gemini API 설정 명령 완료 · 키 유효성·이미지 권한은 생성 요청 시 확인합니다.',
+            'gemini_unknown': 'Gemini API CLI 확인 불가 · 실행 파일과 설치 상태를 확인하세요.',
             "complete": "ChatGPT 로그인 완료 · 이 계정으로 합성을 요청합니다.",
             "cancelled": "로그인이 취소되었습니다. 필요할 때 다시 로그인하세요.",
             "incomplete": "로그인이 완료되지 않았습니다. 로그인 창에서 안내를 확인한 뒤 다시 시도하세요.",
             "unconfirmed": "로그인 명령이 끝났지만 ChatGPT 연결을 확인하지 못했습니다. 다시 로그인하세요.",
-            "launch_failed": "Codex 로그인을 실행하지 못했습니다. 실행 파일과 설치 상태를 확인하세요.",
+            "launch_failed": "AI 연결 설정을 실행하지 못했습니다. 실행 파일과 설치 상태를 확인하세요.",
         }.get(result, STATUS_TEXT["unknown"]))
         self.auth_status.set(text)
         if event["login"]:
@@ -762,6 +808,8 @@ class App:
             value = c[key]
             if key == "kit_variant":
                 value = KIT_LABELS[value]
+            if key == 'image_provider':
+                value = gemini_cli.PROVIDERS[value]
             if key in AdvancedPanel.UNLIMITED and value == 0:
                 value = AdvancedPanel.UNLIMITED[key]
             var.set(",".join(value) if isinstance(value, list) else value)
@@ -785,6 +833,8 @@ class App:
                 value = var.get()
                 if key == "kit_variant":
                     value = {label: variant for variant, label in KIT_LABELS.items()}[value]
+                if key == 'image_provider':
+                    value = {label: provider for provider,label in gemini_cli.PROVIDERS.items()}[value]
                 if key in AdvancedPanel.UNLIMITED and str(value).strip() in ("", AdvancedPanel.UNLIMITED[key]):
                     value = 0
                 if key in ("club_ids", "player_ids", "exclude_player_ids", "regen_player_ids"):
@@ -824,7 +874,7 @@ class App:
 
     def background(self, task, watching=False):
         if self.auth_active() and self.auth_logging_in:
-            self.status.set("ChatGPT 로그인이 끝난 뒤 실행하세요.")
+            self.status.set("AI 연결 설정이 끝난 뒤 실행하세요.")
             return
         if self.active() or self.request_active() or not self.save():
             return
@@ -879,7 +929,7 @@ class App:
             self.status.set('직접 생성 요청을 대기열에 추가하는 중입니다. 잠시 후 다시 누르세요.')
             return
         if self.auth_active() and self.auth_logging_in:
-            self.status.set('ChatGPT 로그인이 끝난 뒤 생성 요청을 누르세요.')
+            self.status.set('AI 연결 설정이 끝난 뒤 생성 요청을 누르세요.')
             return
         workspace = self.manual_panel.workspace
         actual_club = self.manual_panel.player['club_id'] if self.manual_panel.player else None
@@ -926,7 +976,7 @@ class App:
             converted = e.prepare_watch()
             if converted:
                 self.events.put(f"기존 결과 {converted}개를 선수 ID 파일명으로 갱신했습니다. 재합성하지 않습니다.")
-            self.events.put("감시·합성 실행 중 · Codex 사용량이 발생할 수 있습니다.")
+            self.events.put("감시·합성 실행 중 · 선택한 AI의 사용량 또는 API 비용이 발생할 수 있습니다.")
             self.events.put("감시 파일: " + e.c["source"])
             self.events.put(f'생성 간격: 세이브 업데이트 {e.c["save_update_interval"]}회마다 · 최초 기준 읽기는 제외')
             last_wait_message = None
@@ -964,7 +1014,7 @@ class App:
     def pause(self):
         self.start_after_discovery = False
         self.stop.set()
-        self.status.set("정지 요청 · 진행 중인 Codex 작업이 끝나면 멈춥니다.")
+        self.status.set("정지 요청 · 진행 중인 합성이 끝나면 멈춥니다.")
 
     def export_diagnostics(self):
         path = filedialog.asksaveasfilename(title="문제 진단 내보내기", defaultextension=".json",

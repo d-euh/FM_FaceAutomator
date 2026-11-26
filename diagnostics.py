@@ -74,7 +74,8 @@ def export_bundle(destination, *, config_path=None, config=None, root=None, brid
             report["errors"].append("config:" + type(exc).__name__)
     if config is not None:
         report["settings"] = {key: config.get(key) for key in (
-            "source", "state_dir", "pack_dir", "portraits_dir", "kits_dir", "graphics_root", "live_refresh_enabled")}
+            "source", "state_dir", "pack_dir", "portraits_dir", "kits_dir", "graphics_root", "live_refresh_enabled",
+            "image_provider", "gemini_model")}
         scope = config.get("scope_rules")
         if isinstance(scope, dict):
             report["settings"]["scope_rules"] = {

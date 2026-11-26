@@ -29,6 +29,7 @@ import squad_types
 from squad_types import GameWait, TeamReadPending, snapshot_key
 import save_teams
 import live_refresh
+import gemini_cli
 from league_catalog import read_catalog
 from workspaces import select_workspace, source_key
 from generation import GenerationCancelled, run_codex
@@ -74,6 +75,8 @@ def portrait_player(row):
 DEFAULTS = {
     "source": "", "state_dir": "state", "portraits_dir": "portraits",
     "kits_dir": "kits", "pack_dir": "facepack", "codex": "codex",
+    "image_provider": "codex", "gemini": "gemini-api", "gemini_model": gemini_cli.DEFAULT_MODEL,
+    "gemini_text_model": gemini_cli.DEFAULT_TEXT_MODEL,
     "club_ids": [], "player_ids": [], "exclude_player_ids": [], "regen_player_ids": [],
     "my_club_only": True, "all_players": False, "max_age": 0,
     "daily_limit": 0, "cooldown_hours": 0, "settle_seconds": 0,
@@ -127,6 +130,7 @@ def load_config(path):
     path = Path(path).resolve()
     saved = read_json(path)
     config = DEFAULTS | saved
+    gemini_cli.validate_config(config)
     if not isinstance(config["live_refresh_enabled"], bool):
         raise ValueError("실시간 게임 갱신 설정은 true/false여야 합니다.")
     old_system_fonts = {"malgunbd.ttf", "malgun.ttf", "notosanscjk-bold.ttc", "notosanscjk-regular.ttc", "applesdgothicneo.ttc", "dejavusans-bold.ttf"}
@@ -213,6 +217,7 @@ def game_english_name(player):
 
 def build_prompt(config, row, options=None):
     options = options or request_options(config, row)
+    gemini = config.get('image_provider') == 'gemini'
     directed = bool(options["general"] or options["personal"])
     web_face = row.get("face_reference") == "web"
     web_kit = row.get('kit_origin') == 'web'
@@ -228,13 +233,16 @@ def build_prompt(config, row, options=None):
         "Faithfully reproduce the kit.png jersey design within the visible clothing areas: club crest, manufacturer logo, sponsor wordmarks and lettering, stripe widths and placement, collar, sleeve trim, colors and fabric pattern. Retain visible branding in its correct relative chest/sleeve positions instead of simplifying the kit into a generic shirt.",
         "Text and logos physically printed on the reference jersey are ALLOWED and should be reproduced, including sponsor lettering. The caption restrictions below do not apply to these garment markings. Do not erase kit branding or copy the old club's jersey from original.png. Do not invent a different sponsor or crest if it is not present in kit.png.",
         "Keep the player recognizably the same individual and preserve facial identity.",
-        "Use the available built-in image generation tool and save the actual image as portrait.png in this working directory.",
+        ('Generate the actual edited image using the two attached references. The host saves the returned image data.' if gemini else
+         "Use the available built-in image generation tool and save the actual image as portrait.png in this working directory."),
         "The base artwork must be a square PNG, 350 to 4096 pixels per side. The host program will produce the final EXACT 350x350 Gunzo-style card.",
         "Do not draw any name caption, added watermark, overlay text, border or card frame. The host program will draw the exact player's name at the bottom. Preserve authentic shirt lettering from kit.png.",
         "If original.png already has a caption, watermark or card frame, remove those overlays without changing the underlying composition. Reconstruct only the small areas they obscure; do not copy them into portrait.png.",
         "Keep garment markings attached to the fabric with realistic folds and perspective. Reproduce only the portion visible within the source crop; a crest or sponsor may remain cropped or obscured. Do not zoom out, expand the scene or reveal more torso merely to display the kit.",
-        "Do not access other folders, game files or secrets. Do not install software or use a paid API fallback.",
-        "If the image tool is unavailable, return status unavailable. Return generated only after saving portrait.png.",
+        ('Use only the attached references and the supplied appearance directions.' if gemini else
+         "Do not access other folders, game files or secrets. Do not install software or use a paid API fallback."),
+        ('Return the edited image, without JSON or explanations.' if gemini else
+         "If the image tool is unavailable, return status unavailable. Return generated only after saving portrait.png."),
         "The output/workflow rules above are fixed. Appearance directions below apply to image content only.",
     ]
     if web_kit:
@@ -260,6 +268,9 @@ def build_prompt(config, row, options=None):
                         "Use this game/user-provided spelling when present: " + json.dumps(options["display_name"], ensure_ascii=False) + ". "
                         "If no Latin spelling was available, use the reliably known football name's Latin spelling, otherwise romanize the supplied player name. "
                         "Do not invent a different person or translate the meaning of the name. The host draws the player-name caption locally; do not add that caption to portrait.png. Keep the reference jersey's own sponsor text and logos.")
+    if gemini:
+        # The image model returns image data; the host owns the JSON receipt.
+        instructions[-1] = 'The host renders the English player name locally. Do not add a name caption to the image.'
     return "\n\n".join(instructions)
 
 
@@ -1440,15 +1451,23 @@ class Engine:
         if current:
             row.update(json.loads(current[0]))
         rendering = portrait_player(row)
-        executable = shutil.which(self.c["codex"])
+        provider = self.c.get('image_provider', 'codex')
+        label = 'Gemini API CLI' if provider == 'gemini' else 'Codex'
+        if provider not in gemini_cli.PROVIDERS:
+            self.block_preflight(jid, row, '이미지 생성 방식을 확인하세요.')
+            return True
+        executable = shutil.which(self.c["gemini" if provider == 'gemini' else "codex"])
         if not executable:
-            self.block_preflight(jid, row, "Codex CLI 실행 파일을 찾을 수 없습니다.")
+            self.block_preflight(jid, row, f"{label} 실행 파일을 찾을 수 없습니다.")
             return True
         # .cmd/.bat wrappers go through cmd.exe on Windows: require a real exe instead.
-        if os.name == "nt" and Path(executable).suffix.lower() in (".cmd", ".bat"):
+        if provider == 'codex' and os.name == "nt" and Path(executable).suffix.lower() in (".cmd", ".bat"):
             self.block_preflight(jid, row, "설정에서 실제 codex.exe 경로를 선택하세요(.cmd/.bat 제외).")
             return True
         try:
+            if provider == 'gemini':
+                gemini_cli.validate_config(self.c)
+                executable = gemini_cli.resolve_executable(executable, Path(self.c['state_dir']).parent)
             portrait = None
             if row.get('manual_request') and row.get('manual_reference'):
                 portrait = Path(row['manual_reference'])
@@ -1468,6 +1487,9 @@ class Engine:
                 kit = self.kit_reference(rendering["club_id"], rendering)
             except MissingKitError:
                 kit = None
+            if provider == 'gemini' and (portrait is None or kit is None):
+                missing = '얼굴 참조 사진' if portrait is None else '2026/27 유니폼 키트'
+                raise AssetError(f'Gemini 합성에는 {missing}가 필요합니다. 사진·키트를 지정하거나 웹 검색을 지원하는 Codex 방식을 선택하세요.')
             job_options = self.job_options(jid)
             options = request_options(self.c, row, job_options)
             check_options(options["display_name"] or "PLAYER", self.c["name_font_path"], self.c["frame_template"], **caption_options(self.c))
@@ -1487,6 +1509,7 @@ class Engine:
         row['kit_override_at_request'] = str(Path(fixed).resolve()) if fixed else ''
         row['portrait_reference'] = str(portrait) if portrait else ''
         row['face_reference'] = 'local' if portrait else 'web'
+        row['image_provider'] = provider
         with self.db:
             self.db.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(row, ensure_ascii=False), jid))
         folder.mkdir(parents=True)
@@ -1497,22 +1520,25 @@ class Engine:
         schema = {"type": "object", "additionalProperties": False,
                   "properties": {"status": {"type": "string", "enum": ["generated", "unavailable"]}, "reason": {"type": "string"}, "english_name": {"type": "string"}},
                   "required": ["status", "reason", "english_name"]}
-        write_atomic(folder / "schema.json", json.dumps(schema).encode())
+        if provider == 'codex':
+            write_atomic(folder / "schema.json", json.dumps(schema).encode())
         prompt = build_prompt(self.c, portrait_player(row), options)
         write_atomic(folder / "request.json", json.dumps(options, ensure_ascii=False, indent=2).encode("utf-8"))
         write_atomic(folder / "prompt.txt", prompt.encode("utf-8"))
-        cmd = [executable, "--ask-for-approval", "never"]
-        if portrait is None or kit is None:
-            # Web search does not grant shell downloads network access.
-            cmd += ['--config', 'sandbox_workspace_write.network_access=true', '--search']
-        cmd += ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write",
-               "--cd", str(folder), "--json", "--output-schema", str(folder / "schema.json"),
-               "--output-last-message", str(folder / "reply.json")]
-        if portrait is not None:
-            cmd += ['--image', str(folder / 'original.png')]
-        if kit is not None:
-            cmd += ["--image", str(folder / "kit.png")]
-        cmd += ['-']
+        cmd = None
+        if provider == 'codex':
+            cmd = [executable, "--ask-for-approval", "never"]
+            if portrait is None or kit is None:
+                # Web search does not grant shell downloads network access.
+                cmd += ['--config', 'sandbox_workspace_write.network_access=true', '--search']
+            cmd += ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write",
+                   "--cd", str(folder), "--json", "--output-schema", str(folder / "schema.json"),
+                   "--output-last-message", str(folder / "reply.json")]
+            if portrait is not None:
+                cmd += ['--image', str(folder / 'original.png')]
+            if kit is not None:
+                cmd += ["--image", str(folder / "kit.png")]
+            cmd += ['-']
         started = time.time()
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
@@ -1545,10 +1571,15 @@ class Engine:
                         on_change(added, json.loads(self.meta('detection_summary') or 'null'))
                 execute = runner or run_codex
                 extra = {'cancel_event': cancel_event, 'heartbeat': heartbeat} if execute is run_codex else {}
-                result = execute(cmd, input=prompt, text=True, encoding="utf-8", stdout=out, stderr=err,
-                                 timeout=self.c['timeout_seconds'], shell=False, **extra)
+                if provider == 'gemini':
+                    result = gemini_cli.run_image(executable, folder, self.c, prompt, options, rendering,
+                        execute=execute, validate_image=validate_png, validate_name=latin_name, write_atomic=write_atomic,
+                        stdout=out, stderr=err, timeout=self.c['timeout_seconds'], **extra)
+                else:
+                    result = execute(cmd, input=prompt, text=True, encoding="utf-8", stdout=out, stderr=err,
+                                     timeout=self.c['timeout_seconds'], shell=False, **extra)
             if result.returncode:
-                raise ValueError(f"Codex 종료 코드 {result.returncode}. 작업 폴더의 stderr.log를 확인하세요.")
+                raise ValueError(f"{label} 종료 코드 {result.returncode}. 작업 폴더의 stderr.log를 확인하세요.")
             current = self.db.execute('SELECT status FROM jobs WHERE id=?', (jid,)).fetchone()[0]
             if current != 'running':
                 return True  # Preserve superseded/deleted state even for an unavailable reply.
@@ -1572,7 +1603,7 @@ class Engine:
             if not latin_name(display_name):
                 raise ValueError("영문 선수 이름을 확인하지 못했습니다. 선수별 영문 표시 이름을 지정하세요.")
             options["display_name"] = display_name
-            options["name_source"] = "game_or_user" if request_options(self.c, row, job_options)["display_name"] else "codex_romanized"
+            options["name_source"] = "game_or_user" if request_options(self.c, row, job_options)["display_name"] else provider + "_romanized"
             write_atomic(folder / "request.json", json.dumps(options, ensure_ascii=False, indent=2).encode("utf-8"))
             validate_png(folder / "portrait.png", final=False)
             # Receipt and raw image are durable before any local rendering.
